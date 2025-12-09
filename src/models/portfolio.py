@@ -135,11 +135,47 @@ class Portfolio:
         return dict(sorted(monthly.items()))
 
     def get_monthly_premium_collected(self) -> Dict[str, float]:
-        """Get premium collected by month (from opening short trades)."""
+        """Get NET premium collected by month, accounting for rolls.
+
+        When rolling an option:
+        - Close old position (debit/cost)
+        - Open new position (credit/premium)
+        - Net premium = new premium - close cost
+
+        This method detects same-day close+open pairs on the same underlying
+        and nets them properly.
+        """
         monthly = defaultdict(float)
+
+        # Group trades by day and underlying to detect rolls
+        daily_trades: Dict[str, Dict[str, List]] = defaultdict(lambda: defaultdict(list))
         for trade in self.option_trades:
-            if trade.premium_collected > 0:
-                monthly[trade.month_key] += trade.premium_collected
+            day_key = trade.trade_date.strftime("%Y-%m-%d")
+            daily_trades[day_key][trade.underlying].append(trade)
+
+        # Process each day's trades
+        for day_key, underlying_trades in daily_trades.items():
+            for underlying, trades in underlying_trades.items():
+                opens = [t for t in trades if t.is_opening and t.quantity < 0]
+                closes = [t for t in trades if t.is_closing and t.quantity > 0]
+
+                if opens and closes:
+                    # This is a roll - calculate net premium
+                    # Opens: we receive premium (positive proceeds for short sales)
+                    # Closes: we pay to close (negative proceeds for buying back)
+                    open_credit = sum(abs(t.proceeds) for t in opens)
+                    close_debit = sum(abs(t.proceeds) for t in closes)
+                    net_premium = open_credit - close_debit
+
+                    # Only count if net positive (received more than paid)
+                    if net_premium > 0:
+                        month_key = opens[0].month_key
+                        monthly[month_key] += net_premium
+                else:
+                    # Fresh opens (no corresponding close) - count full premium
+                    for trade in opens:
+                        monthly[trade.month_key] += abs(trade.proceeds)
+
         return dict(sorted(monthly.items()))
 
     def get_monthly_trades_count(self) -> Dict[str, int]:
@@ -156,8 +192,9 @@ class Portfolio:
 
     @property
     def total_premium_collected(self) -> float:
-        """Total premium collected from opening short trades."""
-        return sum(t.premium_collected for t in self.option_trades)
+        """Total NET premium collected, accounting for rolls."""
+        monthly = self.get_monthly_premium_collected()
+        return sum(monthly.values())
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
