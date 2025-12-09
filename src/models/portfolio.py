@@ -121,6 +121,50 @@ class Portfolio:
         """Get options expiring within specified days."""
         return [opt for opt in self.options if opt.days_to_expiration <= days]
 
+    def merge(self, other: 'Portfolio') -> None:
+        """Merge another portfolio into this one.
+
+        - Positions are replaced (uses latest file's positions)
+        - Trades are combined and deduplicated
+        - Account info uses the first non-empty value
+        """
+        # For positions, use the other portfolio's positions (latest upload)
+        # This assumes the latest file has the current positions
+        if other.options:
+            self.options = other.options
+        if other.stocks:
+            self.stocks = other.stocks
+
+        # Merge trades, deduplicating by (symbol, date, quantity, price)
+        existing_trades = {
+            (t.symbol, t.trade_date, t.quantity, t.price): t
+            for t in self.trades
+        }
+        for trade in other.trades:
+            key = (trade.symbol, trade.trade_date, trade.quantity, trade.price)
+            if key not in existing_trades:
+                self.trades.append(trade)
+                existing_trades[key] = trade
+
+        # Use first non-empty account info
+        if not self.account_id and other.account_id:
+            self.account_id = other.account_id
+        if not self.account_name and other.account_name:
+            self.account_name = other.account_name
+
+        # Update NAV from latest
+        if other.net_asset_value:
+            self.net_asset_value = other.net_asset_value
+        if other.cash_balance:
+            self.cash_balance = other.cash_balance
+
+        # Combine statement periods
+        if other.statement_period:
+            if self.statement_period:
+                self.statement_period = f"{self.statement_period}, {other.statement_period}"
+            else:
+                self.statement_period = other.statement_period
+
     @property
     def option_trades(self) -> List[Trade]:
         """Get all option trades."""

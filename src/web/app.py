@@ -43,50 +43,71 @@ def create_app(config=None):
     
     @app.route('/upload', methods=['GET', 'POST'])
     def upload():
-        """Handle file upload."""
+        """Handle file upload (supports multiple files)."""
         if request.method == 'POST':
             if 'file' not in request.files:
                 flash('No file selected', 'error')
                 return redirect(request.url)
-            
-            file = request.files['file']
-            if file.filename == '':
+
+            files = request.files.getlist('file')
+            if not files or all(f.filename == '' for f in files):
                 flash('No file selected', 'error')
                 return redirect(request.url)
-            
+
             try:
-                # Read and parse the file
-                content = file.read().decode('utf-8-sig')
+                # Parse all files and merge into one portfolio
                 parser = IBActivityStatementParser()
-                portfolio = parser.parse_content(content)
-                
+                merged_portfolio = None
+                files_processed = 0
+
+                for file in files:
+                    if file.filename == '':
+                        continue
+
+                    content = file.read().decode('utf-8-sig')
+                    portfolio = parser.parse_content(content)
+
+                    if merged_portfolio is None:
+                        merged_portfolio = portfolio
+                    else:
+                        merged_portfolio.merge(portfolio)
+
+                    files_processed += 1
+
+                if merged_portfolio is None:
+                    flash('No valid files found', 'error')
+                    return redirect(request.url)
+
                 # Fetch missing prices
-                update_portfolio_prices(portfolio)
-                
+                update_portfolio_prices(merged_portfolio)
+
                 # Calculate Greeks
-                calculate_portfolio_greeks(portfolio)
-                
+                calculate_portfolio_greeks(merged_portfolio)
+
                 # Calculate Margin
-                calculate_portfolio_margin(portfolio, margin_type="reg_t")
-                
+                calculate_portfolio_margin(merged_portfolio, margin_type="reg_t")
+
                 # Analyze Risk
                 config = storage.get_config()
-                risk_analysis = analyze_portfolio_risk(portfolio, config)
-                
+                risk_analysis = analyze_portfolio_risk(merged_portfolio, config)
+
                 # Store in app context
-                app.portfolio = portfolio
+                app.portfolio = merged_portfolio
                 app.risk_analysis = risk_analysis
-                
+
                 # Save to file
-                storage.save_portfolio(portfolio)
-                
-                flash(f'Successfully loaded {portfolio.total_option_positions} options', 'success')
+                storage.save_portfolio(merged_portfolio)
+
+                if files_processed > 1:
+                    flash(f'Merged {files_processed} files: {merged_portfolio.total_option_positions} options, {len(merged_portfolio.trades)} trades', 'success')
+                else:
+                    flash(f'Successfully loaded {merged_portfolio.total_option_positions} options', 'success')
                 return redirect(url_for('index'))
-                
+
             except Exception as e:
                 flash(f'Error parsing file: {str(e)}', 'error')
                 return redirect(request.url)
-        
+
         return render_template('upload.html')
     
     @app.route('/positions')

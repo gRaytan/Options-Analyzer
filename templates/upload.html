@@ -8,24 +8,24 @@
         <!-- Upload Card -->
         <div class="card mb-4">
             <div class="card-header">
-                <i class="bi bi-cloud-upload me-2"></i>Upload IB Activity Statement
+                <i class="bi bi-cloud-upload me-2"></i>Upload IB Activity Statement(s)
             </div>
             <div class="card-body p-4">
                 <form method="POST" action="/upload" enctype="multipart/form-data" id="uploadForm">
                     <div class="mb-4">
                         <div class="upload-zone" id="uploadZone">
-                            <input type="file" class="form-control d-none" id="file" name="file" accept=".csv,.txt,.plain" required>
+                            <input type="file" class="form-control d-none" id="file" name="file" accept=".csv,.txt,.plain" multiple required>
                             <div class="upload-icon">
                                 <i class="bi bi-file-earmark-arrow-up"></i>
                             </div>
                             <div class="upload-text">
-                                <strong>Drop your file here</strong>
+                                <strong>Drop your files here</strong>
                                 <span class="d-block text-muted mt-1">or click to browse</span>
                             </div>
                             <div class="upload-filename d-none" id="fileName"></div>
                         </div>
                         <div class="form-text text-center mt-2">
-                            Supports CSV, TXT, and PLAIN files
+                            Supports multiple CSV, TXT, and PLAIN files (trades will be merged)
                         </div>
                     </div>
                     <button type="submit" class="btn btn-primary w-100 btn-lg" id="submitBtn">
@@ -154,7 +154,11 @@
 
     function updateFileName() {
         if (fileInput.files.length) {
-            fileName.textContent = fileInput.files[0].name;
+            if (fileInput.files.length === 1) {
+                fileName.textContent = fileInput.files[0].name;
+            } else {
+                fileName.textContent = `${fileInput.files.length} files selected`;
+            }
             fileName.classList.remove('d-none');
             uploadZone.classList.add('has-file');
         }
