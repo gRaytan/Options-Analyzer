@@ -148,13 +148,13 @@
             </div>
             <div class="card-body p-0">
                 <div class="table-responsive">
-                    <table class="table mb-0">
+                    <table class="table mb-0 sortable-table" id="dashboardRiskTable">
                         <thead>
                             <tr>
-                                <th>Position</th>
-                                <th>Delta</th>
-                                <th>DTE</th>
-                                <th>P&L</th>
+                                <th data-sort="string" class="sortable-header">Position <i class="bi bi-chevron-expand text-muted"></i></th>
+                                <th data-sort="number" class="sortable-header">Delta <i class="bi bi-chevron-expand text-muted"></i></th>
+                                <th data-sort="number" class="sortable-header">DTE <i class="bi bi-chevron-expand text-muted"></i></th>
+                                <th data-sort="number" class="sortable-header">P&L <i class="bi bi-chevron-expand text-muted"></i></th>
                                 <th>Risk Flags</th>
                             </tr>
                         </thead>
@@ -198,3 +198,59 @@
 </div>
 {% endblock %}
 
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('.sortable-table').forEach(table => {
+        const headers = table.querySelectorAll('th[data-sort]');
+
+        headers.forEach((header, index) => {
+            header.style.cursor = 'pointer';
+            header.addEventListener('click', () => sortTable(table, index, header));
+        });
+    });
+
+    function sortTable(table, columnIndex, header) {
+        const tbody = table.querySelector('tbody');
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+        const sortType = header.dataset.sort;
+        const icon = header.querySelector('i');
+
+        const isAsc = header.classList.contains('sort-asc');
+        const newDir = isAsc ? 'desc' : 'asc';
+
+        table.querySelectorAll('th[data-sort]').forEach(th => {
+            th.classList.remove('sort-asc', 'sort-desc', 'active');
+            const thIcon = th.querySelector('i');
+            if (thIcon) thIcon.className = 'bi bi-chevron-expand text-muted';
+        });
+
+        header.classList.add('sort-' + newDir, 'active');
+        if (icon) icon.className = 'bi bi-chevron-' + (newDir === 'asc' ? 'up' : 'down');
+
+        rows.sort((a, b) => {
+            const aCell = a.cells[columnIndex];
+            const bCell = b.cells[columnIndex];
+            if (!aCell || !bCell) return 0;
+
+            let aVal = aCell.textContent.trim();
+            let bVal = bCell.textContent.trim();
+
+            if (sortType === 'number') {
+                aVal = parseFloat(aVal.replace(/[$,%d]/g, '').replace(/,/g, '')) || 0;
+                bVal = parseFloat(bVal.replace(/[$,%d]/g, '').replace(/,/g, '')) || 0;
+            } else {
+                aVal = aVal.toLowerCase();
+                bVal = bVal.toLowerCase();
+            }
+
+            if (aVal < bVal) return newDir === 'asc' ? -1 : 1;
+            if (aVal > bVal) return newDir === 'asc' ? 1 : -1;
+            return 0;
+        });
+
+        rows.forEach(row => tbody.appendChild(row));
+    }
+});
+</script>
+{% endblock %}
