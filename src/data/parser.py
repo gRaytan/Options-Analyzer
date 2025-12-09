@@ -1,0 +1,370 @@
+"""Parser for Interactive Brokers Activity Statement CSV files."""
+import csv
+import re
+from datetime import datetime, date
+from typing import List, Dict, Tuple, Optional
+from io import StringIO
+
+from src.models.position import OptionPosition, StockPosition, OptionType, Trade, TradeAction
+from src.models.portfolio import Portfolio
+
+
+class IBActivityStatementParser:
+    """Parser for IB Activity Statement CSV exports."""
+    
+    def __init__(self):
+        self.sections: Dict[str, List[Dict]] = {}
+        
+    def parse_file(self, filepath: str) -> Portfolio:
+        """Parse an IB Activity Statement CSV file."""
+        with open(filepath, 'r', encoding='utf-8-sig') as f:
+            content = f.read()
+        return self.parse_content(content)
+    
+    def parse_content(self, content: str) -> Portfolio:
+        """Parse CSV content string."""
+        self._extract_sections(content)
+        
+        portfolio = Portfolio()
+        
+        # Parse account info
+        self._parse_account_info(portfolio)
+        
+        # Parse NAV
+        self._parse_nav(portfolio)
+        
+        # Parse stock positions
+        portfolio.stocks = self._parse_stock_positions()
+        
+        # Parse option positions
+        portfolio.options = self._parse_option_positions()
+        
+        # Enrich options with financial instrument info
+        self._enrich_options_with_instrument_info(portfolio.options)
+
+        # Set underlying prices from stock positions
+        self._set_underlying_prices(portfolio)
+
+        # Parse trades
+        portfolio.trades = self._parse_trades()
+
+        return portfolio
+    
+    def _extract_sections(self, content: str) -> None:
+        """Extract all sections from the CSV content."""
+        self.sections = {}
+        reader = csv.reader(StringIO(content))
+        
+        current_section = None
+        current_headers = []
+        
+        for row in reader:
+            if len(row) < 2:
+                continue
+                
+            section_name = row[0]
+            row_type = row[1]
+            
+            if section_name not in self.sections:
+                self.sections[section_name] = []
+            
+            if row_type == "Header":
+                current_section = section_name
+                current_headers = row[2:]  # Skip section name and "Header"
+            elif row_type == "Data" and current_headers:
+                data = dict(zip(current_headers, row[2:]))
+                data['_section'] = section_name
+                self.sections[section_name].append(data)
+    
+    def _parse_account_info(self, portfolio: Portfolio) -> None:
+        """Parse account information section."""
+        account_info = self.sections.get("Account Information", [])
+        for item in account_info:
+            field_name = item.get("Field Name", "")
+            field_value = item.get("Field Value", "")
+            
+            if field_name == "Account":
+                portfolio.account_id = field_value
+            elif field_name == "Name":
+                portfolio.account_name = field_value
+            elif field_name == "Base Currency":
+                portfolio.base_currency = field_value
+        
+        # Parse statement period
+        statement_info = self.sections.get("Statement", [])
+        for item in statement_info:
+            if item.get("Field Name") == "Period":
+                portfolio.statement_period = item.get("Field Value", "")
+    
+    def _parse_nav(self, portfolio: Portfolio) -> None:
+        """Parse Net Asset Value section."""
+        nav_data = self.sections.get("Net Asset Value", [])
+        for item in nav_data:
+            asset_class = item.get("Asset Class", "")
+            if asset_class == "Total":
+                portfolio.net_asset_value = self._parse_float(item.get("Current Total", "0"))
+            elif asset_class == "Cash ":  # Note: IB has trailing space
+                portfolio.cash_balance = self._parse_float(item.get("Current Total", "0"))
+    
+    def _parse_stock_positions(self) -> List[StockPosition]:
+        """Parse stock positions from Open Positions section."""
+        positions = []
+        open_positions = self.sections.get("Open Positions", [])
+        
+        for item in open_positions:
+            if item.get("Asset Category") != "Stocks":
+                continue
+            if item.get("DataDiscriminator") != "Summary":
+                continue
+                
+            try:
+                position = StockPosition(
+                    symbol=item.get("Symbol", ""),
+                    quantity=self._parse_int(item.get("Quantity", "0")),
+                    cost_price=self._parse_float(item.get("Cost Price", "0")),
+                    current_price=self._parse_float(item.get("Close Price", "0")),
+                    currency=item.get("Currency", "USD"),
+                )
+                positions.append(position)
+            except (ValueError, KeyError) as e:
+                print(f"Warning: Could not parse stock position: {e}")
+                
+        return positions
+    
+    def _parse_option_positions(self) -> List[OptionPosition]:
+        """Parse option positions from Open Positions section."""
+        positions = []
+        open_positions = self.sections.get("Open Positions", [])
+        
+        for item in open_positions:
+            if item.get("Asset Category") != "Equity and Index Options":
+                continue
+            if item.get("DataDiscriminator") != "Summary":
+                continue
+                
+            try:
+                symbol = item.get("Symbol", "")
+                underlying, strike, expiration, opt_type = self._parse_option_symbol(symbol)
+                
+                position = OptionPosition(
+                    symbol=symbol,
+                    underlying=underlying,
+                    strike=strike,
+                    expiration=expiration,
+                    option_type=opt_type,
+                    quantity=self._parse_int(item.get("Quantity", "0")),
+                    cost_price=self._parse_float(item.get("Cost Price", "0")),
+                    current_price=self._parse_float(item.get("Close Price", "0")),
+                    currency=item.get("Currency", "USD"),
+                )
+                positions.append(position)
+            except (ValueError, KeyError) as e:
+                print(f"Warning: Could not parse option position {item.get('Symbol', 'unknown')}: {e}")
+                
+        return positions
+    
+    def _parse_option_symbol(self, symbol: str) -> Tuple[str, float, Optional[date], Optional[OptionType]]:
+        """Parse option symbol like 'AAPL 15JAN27 110 P' or 'BRK B 18JUN26 240 P' into components."""
+        # Pattern: UNDERLYING DDMMMYY STRIKE TYPE (underlying may have spaces)
+        # We parse from the end since the last 3 parts are always: DATE STRIKE TYPE
+        parts = symbol.strip().split()
+
+        if len(parts) < 4:
+            return symbol, 0.0, None, None
+
+        # Last part is option type (C or P)
+        opt_type_str = parts[-1]
+        if opt_type_str not in ('C', 'P'):
+            return symbol, 0.0, None, None
+        opt_type = OptionType.CALL if opt_type_str == 'C' else OptionType.PUT
+
+        # Second to last is strike
+        try:
+            strike = float(parts[-2])
+        except ValueError:
+            return symbol, 0.0, None, None
+
+        # Third to last is date (DDMMMYY format)
+        date_str = parts[-3]
+        expiration = self._parse_expiry_string(date_str)
+
+        # Everything before that is the underlying (handles "BRK B" etc.)
+        underlying = " ".join(parts[:-3])
+
+        return underlying, strike, expiration, opt_type
+
+    def _parse_expiry_string(self, date_str: str) -> Optional[date]:
+        """Parse expiry string like '15JAN27' to date."""
+        pattern = r'^(\d{1,2})([A-Z]{3})(\d{2})$'
+        match = re.match(pattern, date_str.strip())
+
+        if not match:
+            return None
+
+        day = int(match.group(1))
+        month_str = match.group(2)
+        year = int(match.group(3)) + 2000
+
+        months = {'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
+                  'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12}
+        month = months.get(month_str, 1)
+
+        try:
+            return date(year, month, day)
+        except ValueError:
+            return None
+
+    def _enrich_options_with_instrument_info(self, options: List[OptionPosition]) -> None:
+        """Enrich options with data from Financial Instrument Information section."""
+        instrument_info = self.sections.get("Financial Instrument Information", [])
+
+        # Build lookup by symbol
+        info_lookup = {}
+        for item in instrument_info:
+            if item.get("Asset Category") == "Equity and Index Options":
+                # The Description field contains the readable symbol
+                desc = item.get("Description", "")
+                info_lookup[desc] = item
+
+        for option in options:
+            info = info_lookup.get(option.symbol)
+            if info:
+                # Update expiration from more reliable source
+                expiry_str = info.get("Expiry", "")
+                if expiry_str:
+                    try:
+                        option.expiration = datetime.strptime(expiry_str, "%Y-%m-%d").date()
+                    except ValueError:
+                        pass
+
+                # Update strike if available
+                strike_str = info.get("Strike", "")
+                if strike_str:
+                    try:
+                        option.strike = float(strike_str)
+                    except ValueError:
+                        pass
+
+                # Update underlying
+                underlying = info.get("Underlying", "")
+                if underlying:
+                    option.underlying = underlying
+
+                # Update option type
+                opt_type = info.get("Type", "")
+                if opt_type == "P":
+                    option.option_type = OptionType.PUT
+                elif opt_type == "C":
+                    option.option_type = OptionType.CALL
+
+    def _set_underlying_prices(self, portfolio: Portfolio) -> None:
+        """Set underlying prices for options from stock positions."""
+        stock_prices = {stock.symbol: stock.current_price for stock in portfolio.stocks}
+
+        for option in portfolio.options:
+            if option.underlying in stock_prices:
+                option.underlying_price = stock_prices[option.underlying]
+
+    def _parse_trades(self) -> List[Trade]:
+        """Parse trades from Trades section."""
+        trades = []
+        trades_data = self.sections.get("Trades", [])
+
+        for item in trades_data:
+            if item.get("DataDiscriminator") != "Order":
+                continue
+
+            asset_category = item.get("Asset Category", "")
+            is_option = asset_category == "Equity and Index Options"
+
+            try:
+                symbol = item.get("Symbol", "")
+
+                # Parse date/time
+                date_str = item.get("Date/Time", "")
+                trade_date = self._parse_trade_datetime(date_str)
+
+                # Parse action from Code field (O=Open, C=Close, Ep=Expired, A=Assigned)
+                code = item.get("Code", "")
+                action = self._parse_trade_action(code)
+
+                # Parse option details if applicable
+                underlying = ""
+                strike = 0.0
+                expiration = None
+                opt_type = None
+
+                if is_option:
+                    underlying, strike, expiration, opt_type = self._parse_option_symbol(symbol)
+
+                trade = Trade(
+                    symbol=symbol,
+                    trade_date=trade_date,
+                    quantity=self._parse_int(item.get("Quantity", "0")),
+                    price=self._parse_float(item.get("T. Price", "0")),
+                    proceeds=self._parse_float(item.get("Proceeds", "0")),
+                    commission=self._parse_float(item.get("Comm/Fee", "0")),
+                    realized_pnl=self._parse_float(item.get("Realized P/L", "0")),
+                    asset_type="Option" if is_option else "Stock",
+                    underlying=underlying,
+                    strike=strike,
+                    expiration=expiration,
+                    option_type=opt_type,
+                    action=action,
+                )
+                trades.append(trade)
+            except (ValueError, KeyError) as e:
+                print(f"Warning: Could not parse trade: {e}")
+
+        return trades
+
+    def _parse_trade_datetime(self, date_str: str) -> datetime:
+        """Parse trade datetime like '2025-12-01, 10:35:16'."""
+        try:
+            return datetime.strptime(date_str.strip(), "%Y-%m-%d, %H:%M:%S")
+        except ValueError:
+            try:
+                return datetime.strptime(date_str.strip(), "%Y-%m-%d")
+            except ValueError:
+                return datetime.now()
+
+    def _parse_trade_action(self, code: str) -> Optional[TradeAction]:
+        """Parse trade action from code field."""
+        if not code:
+            return None
+        codes = code.split(";")
+        for c in codes:
+            c = c.strip()
+            if c == "O":
+                return TradeAction.OPEN
+            elif c == "C":
+                return TradeAction.CLOSE
+            elif c == "A":
+                return TradeAction.ASSIGNED
+            elif c == "Ep":
+                return TradeAction.EXPIRED
+        return None
+
+    @staticmethod
+    def _parse_float(value: str) -> float:
+        """Parse a string to float, handling various formats."""
+        if not value or value == "--":
+            return 0.0
+        # Remove commas and handle negative values
+        cleaned = value.replace(",", "").strip()
+        try:
+            return float(cleaned)
+        except ValueError:
+            return 0.0
+
+    @staticmethod
+    def _parse_int(value: str) -> int:
+        """Parse a string to int."""
+        if not value or value == "--":
+            return 0
+        cleaned = value.replace(",", "").strip()
+        try:
+            return int(float(cleaned))
+        except ValueError:
+            return 0
+

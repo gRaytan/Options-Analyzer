@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+
+{% block title %}Charts - Options Analyzer{% endblock %}
+
+{% block content %}
+<!-- Page Header -->
+<div class="page-header">
+    <h4><i class="bi bi-bar-chart-line"></i> Performance Charts</h4>
+    <p class="subtitle">{{ portfolio.statement_period }}</p>
+</div>
+
+<!-- Summary Cards -->
+<div class="row g-4 mb-4">
+    <div class="col-lg-4 col-md-6">
+        <div class="card metric-card {{ 'profit' if chart_data.total_realized_pnl >= 0 else 'loss' }}">
+            <div class="metric-value {{ 'text-profit' if chart_data.total_realized_pnl >= 0 else 'text-loss' }}">
+                ${{ "{:,.0f}".format(chart_data.total_realized_pnl) }}
+            </div>
+            <div class="metric-label">Total Realized P&L</div>
+        </div>
+    </div>
+    <div class="col-lg-4 col-md-6">
+        <div class="card metric-card profit">
+            <div class="metric-value text-profit">${{ "{:,.0f}".format(chart_data.total_premium_collected) }}</div>
+            <div class="metric-label">Premium Collected</div>
+        </div>
+    </div>
+    <div class="col-lg-4 col-md-6">
+        <div class="card metric-card neutral">
+            <div class="metric-value">{{ chart_data.total_trades }}</div>
+            <div class="metric-label">Option Trades</div>
+        </div>
+    </div>
+</div>
+
+<!-- Charts Row -->
+<div class="row g-4 mb-4">
+    <div class="col-lg-6">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-graph-up me-2"></i>Monthly Realized P&L
+            </div>
+            <div class="card-body">
+                <canvas id="realizedPnlChart" height="280"></canvas>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-6">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-cash-stack me-2"></i>Monthly Premium Collected
+            </div>
+            <div class="card-body">
+                <canvas id="premiumChart" height="280"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Trades Table -->
+<div class="card">
+    <div class="card-header">
+        <i class="bi bi-clock-history me-2"></i>Recent Option Trades
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table mb-0">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Symbol</th>
+                        <th>Action</th>
+                        <th>Qty</th>
+                        <th>Price</th>
+                        <th>Proceeds</th>
+                        <th>Realized P&L</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for trade in portfolio.option_trades[-20:]|reverse %}
+                    <tr>
+                        <td>
+                            <span class="text-muted">{{ trade.trade_date.strftime('%Y-%m-%d') }}</span>
+                            <small class="d-block text-muted">{{ trade.trade_date.strftime('%H:%M') }}</small>
+                        </td>
+                        <td>
+                            <strong>{{ trade.underlying }}</strong>
+                            <span class="text-muted">{{ trade.strike }} {{ 'C' if trade.option_type and trade.option_type.value == 'C' else 'P' }}</span>
+                        </td>
+                        <td>
+                            {% if trade.action %}
+                            <span class="badge bg-{{ 'success' if trade.action.value == 'O' else 'info' if trade.action.name == 'EXPIRED' else 'secondary' }}">
+                                {{ trade.action.name }}
+                            </span>
+                            {% endif %}
+                        </td>
+                        <td>{{ trade.quantity }}</td>
+                        <td><code>${{ "{:.2f}".format(trade.price) }}</code></td>
+                        <td>${{ "{:,.0f}".format(trade.proceeds) }}</td>
+                        <td class="{{ 'text-profit' if trade.realized_pnl >= 0 else 'text-loss' }}">
+                            <strong>${{ "{:,.0f}".format(trade.realized_pnl) }}</strong>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="7" class="text-center text-muted py-5">
+                            <i class="bi bi-inbox fs-1 d-block mb-3"></i>
+                            No trades in this period
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+    const months = {{ chart_data.months | tojson }};
+    const realizedPnl = {{ chart_data.realized_pnl | tojson }};
+    const premiumCollected = {{ chart_data.premium_collected | tojson }};
+
+    // Chart.js dark theme defaults
+    Chart.defaults.color = '#8b949e';
+    Chart.defaults.borderColor = '#30363d';
+
+    // Realized P&L Chart
+    new Chart(document.getElementById('realizedPnlChart'), {
+        type: 'bar',
+        data: {
+            labels: months,
+            datasets: [{
+                label: 'Realized P&L ($)',
+                data: realizedPnl,
+                backgroundColor: realizedPnl.map(v => v >= 0 ? 'rgba(63, 185, 80, 0.8)' : 'rgba(248, 81, 73, 0.8)'),
+                borderColor: realizedPnl.map(v => v >= 0 ? '#3fb950' : '#f85149'),
+                borderWidth: 2,
+                borderRadius: 6
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: '#21262d',
+                    titleColor: '#e6edf3',
+                    bodyColor: '#e6edf3',
+                    borderColor: '#30363d',
+                    borderWidth: 1,
+                    padding: 12,
+                    cornerRadius: 8
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    grid: { color: '#21262d' }
+                },
+                x: {
+                    grid: { display: false }
+                }
+            }
+        }
+    });
+
+    // Premium Collected Chart
+    new Chart(document.getElementById('premiumChart'), {
+        type: 'bar',
+        data: {
+            labels: months,
+            datasets: [{
+                label: 'Premium Collected ($)',
+                data: premiumCollected,
+                backgroundColor: 'rgba(88, 166, 255, 0.8)',
+                borderColor: '#58a6ff',
+                borderWidth: 2,
+                borderRadius: 6
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: '#21262d',
+                    titleColor: '#e6edf3',
+                    bodyColor: '#e6edf3',
+                    borderColor: '#30363d',
+                    borderWidth: 1,
+                    padding: 12,
+                    cornerRadius: 8
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    grid: { color: '#21262d' }
+                },
+                x: {
+                    grid: { display: false }
+                }
+            }
+        }
+    });
+</script>
+{% endblock %}
+

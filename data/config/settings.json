@@ -1,0 +1,14 @@
+{
+  "profit_target_percentage": 50,
+  "high_delta_threshold": 0.6,
+  "margin_warning_level": 0.8,
+  "days_to_expiration_warning": 7,
+  "risk_free_rate": 0.05,
+  "recommendation_weights": {
+    "assignment_risk": 0.4,
+    "margin_pressure": 0.3,
+    "profit_target": 0.2,
+    "time_urgency": 0.1
+  }
+}
+

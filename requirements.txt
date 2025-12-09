@@ -1,0 +1,29 @@
+# Web Framework
+Flask==3.0.0
+Werkzeug==3.0.1
+
+# Data Processing
+pandas==2.1.4
+numpy==1.26.2
+
+# Options Calculations
+py-vollib==1.0.1
+scipy==1.11.4
+
+# Market Data
+yfinance==0.2.36
+
+# Date/Time Handling
+python-dateutil==2.8.2
+
+# Testing
+pytest==7.4.3
+pytest-cov==4.1.0
+
+# Code Quality
+black==23.12.1
+pylint==3.0.3
+
+# Utilities
+python-dotenv==1.0.0
+

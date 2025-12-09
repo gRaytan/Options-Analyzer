@@ -1,0 +1,200 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Options Analyzer{% endblock %}
+
+{% block content %}
+<!-- Page Header -->
+<div class="page-header">
+    <h4><i class="bi bi-speedometer2"></i> Portfolio Dashboard</h4>
+    <p class="subtitle">{{ portfolio.account_name }} • {{ portfolio.statement_period }}</p>
+</div>
+
+<!-- Key Metrics -->
+<div class="row g-4 mb-4">
+    <div class="col-lg-3 col-md-6">
+        <div class="card metric-card neutral">
+            <div class="metric-value">${{ "{:,.0f}".format(portfolio.net_asset_value) }}</div>
+            <div class="metric-label">Net Asset Value</div>
+        </div>
+    </div>
+    <div class="col-lg-3 col-md-6">
+        <div class="card metric-card {{ 'profit' if portfolio.total_unrealized_pnl >= 0 else 'loss' }}">
+            <div class="metric-value {{ 'text-profit' if portfolio.total_unrealized_pnl >= 0 else 'text-loss' }}">
+                ${{ "{:,.0f}".format(portfolio.total_unrealized_pnl) }}
+            </div>
+            <div class="metric-label">Unrealized P&L</div>
+        </div>
+    </div>
+    <div class="col-lg-3 col-md-6">
+        <div class="card metric-card neutral">
+            <div class="metric-value">${{ "{:,.0f}".format(portfolio.total_margin_requirement) }}</div>
+            <div class="metric-label">Margin Requirement</div>
+        </div>
+    </div>
+    <div class="col-lg-3 col-md-6">
+        {% set margin_util = risk_analysis.margin_utilization * 100 %}
+        <div class="card metric-card {{ 'loss' if margin_util > 80 else 'warning' if margin_util > 60 else 'profit' }}">
+            <div class="metric-value {{ 'text-loss' if margin_util > 80 else 'text-warning' if margin_util > 60 else 'text-profit' }}">
+                {{ "{:.1f}".format(margin_util) }}%
+            </div>
+            <div class="metric-label">Margin Utilization</div>
+        </div>
+    </div>
+</div>
+
+<!-- Greeks and Risk -->
+<div class="row g-4 mb-4">
+    <div class="col-lg-6">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-activity me-2"></i>Portfolio Greeks
+            </div>
+            <div class="card-body">
+                {% set greeks = portfolio.portfolio_greeks %}
+                <div class="row text-center g-4">
+                    <div class="col-3">
+                        <div class="greek-value">{{ "{:.1f}".format(greeks.delta) }}</div>
+                        <div class="greek-label">Delta</div>
+                    </div>
+                    <div class="col-3">
+                        <div class="greek-value">{{ "{:.2f}".format(greeks.gamma) }}</div>
+                        <div class="greek-label">Gamma</div>
+                    </div>
+                    <div class="col-3">
+                        <div class="greek-value text-profit">${{ "{:.0f}".format(greeks.theta) }}</div>
+                        <div class="greek-label">Theta/Day</div>
+                    </div>
+                    <div class="col-3">
+                        <div class="greek-value">${{ "{:.0f}".format(greeks.vega) }}</div>
+                        <div class="greek-label">Vega</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-6">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-shield-exclamation me-2"></i>Risk Summary
+            </div>
+            <div class="card-body">
+                <div class="row text-center g-4">
+                    <div class="col-3">
+                        <div class="greek-value">
+                            <span class="risk-indicator risk-high">{{ risk_analysis.summary.high_delta_calls }}</span>
+                        </div>
+                        <div class="greek-label">High Δ Calls</div>
+                    </div>
+                    <div class="col-3">
+                        <div class="greek-value">
+                            <span class="risk-indicator risk-medium">{{ risk_analysis.summary.itm_options }}</span>
+                        </div>
+                        <div class="greek-label">ITM Options</div>
+                    </div>
+                    <div class="col-3">
+                        <div class="greek-value">
+                            <span class="risk-indicator risk-medium">{{ risk_analysis.summary.expiring_soon }}</span>
+                        </div>
+                        <div class="greek-label">Expiring Soon</div>
+                    </div>
+                    <div class="col-3">
+                        <div class="greek-value">
+                            <span class="risk-indicator risk-low">{{ risk_analysis.summary.profit_targets_reached }}</span>
+                        </div>
+                        <div class="greek-label">At Target</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Position Summary -->
+<div class="row g-4 mb-4">
+    <div class="col-lg-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-pie-chart me-2"></i>Position Breakdown
+            </div>
+            <div class="card-body p-0">
+                <div class="list-group list-group-flush">
+                    <div class="list-group-item d-flex justify-content-between align-items-center bg-transparent">
+                        <span><i class="bi bi-collection me-2 text-muted"></i>Total Options</span>
+                        <span class="badge bg-primary rounded-pill">{{ portfolio.total_option_positions }}</span>
+                    </div>
+                    <div class="list-group-item d-flex justify-content-between align-items-center bg-transparent">
+                        <span><i class="bi bi-arrow-up-circle me-2" style="color: var(--accent-blue);"></i>Short Calls</span>
+                        <span class="badge badge-call rounded-pill">{{ portfolio.short_calls|length }}</span>
+                    </div>
+                    <div class="list-group-item d-flex justify-content-between align-items-center bg-transparent">
+                        <span><i class="bi bi-arrow-down-circle me-2" style="color: var(--accent-purple);"></i>Short Puts</span>
+                        <span class="badge badge-put rounded-pill">{{ portfolio.short_puts|length }}</span>
+                    </div>
+                    <div class="list-group-item d-flex justify-content-between align-items-center bg-transparent">
+                        <span><i class="bi bi-building me-2 text-muted"></i>Stock Positions</span>
+                        <span class="badge bg-secondary rounded-pill">{{ portfolio.total_stock_positions }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-8">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-exclamation-triangle me-2"></i>High Risk Positions</span>
+                <a href="/positions?risk=high" class="btn btn-sm btn-outline-danger">
+                    <i class="bi bi-arrow-right"></i> View All
+                </a>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table mb-0">
+                        <thead>
+                            <tr>
+                                <th>Position</th>
+                                <th>Delta</th>
+                                <th>DTE</th>
+                                <th>P&L</th>
+                                <th>Risk Flags</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for pr in risk_analysis.high_risk_positions[:5] %}
+                            {% set opt = pr.option %}
+                            <tr>
+                                <td>
+                                    <span class="badge {{ 'badge-call' if opt.is_call else 'badge-put' }} me-2">
+                                        {{ 'C' if opt.is_call else 'P' }}
+                                    </span>
+                                    <strong>{{ opt.underlying }}</strong> {{ opt.strike }}
+                                </td>
+                                <td><code>{{ "{:.3f}".format(opt.delta) }}</code></td>
+                                <td>{{ opt.days_to_expiration }}d</td>
+                                <td class="{{ 'text-profit' if opt.unrealized_pnl >= 0 else 'text-loss' }}">
+                                    <strong>${{ "{:,.0f}".format(opt.unrealized_pnl) }}</strong>
+                                </td>
+                                <td>
+                                    {% for flag in pr.flags %}
+                                    <span class="badge bg-{{ 'danger' if flag.severity == 'high' else 'warning text-dark' if flag.severity == 'medium' else 'success' }} flag-badge">
+                                        {{ flag.flag_type.replace('_', ' ')[:15] }}
+                                    </span>
+                                    {% endfor %}
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="5" class="text-center text-muted py-4">
+                                    <i class="bi bi-check-circle fs-4 d-block mb-2 text-success"></i>
+                                    No high-risk positions detected
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+

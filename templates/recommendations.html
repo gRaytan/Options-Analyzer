@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+
+{% block title %}Recommendations - Options Analyzer{% endblock %}
+
+{% block content %}
+<!-- Page Header -->
+<div class="page-header">
+    <h4><i class="bi bi-lightbulb"></i> Trading Recommendations</h4>
+    <p class="subtitle">Actionable insights based on your portfolio analysis</p>
+</div>
+
+<!-- Profit Target Reached -->
+<div class="card mb-4">
+    <div class="card-header d-flex align-items-center" style="border-left: 4px solid var(--accent-green);">
+        <i class="bi bi-check-circle-fill me-2 text-profit"></i>
+        <span>Consider Closing - Profit Target Reached (50%+)</span>
+        <span class="badge bg-success ms-auto">{{ risk_analysis.summary.profit_targets_reached }} positions</span>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table mb-0">
+                <thead>
+                    <tr>
+                        <th>Position</th>
+                        <th>Entry</th>
+                        <th>Current</th>
+                        <th>Profit %</th>
+                        <th>P&L</th>
+                        <th>DTE</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for pr in risk_analysis.position_risks %}
+                    {% if 'PROFIT_TARGET_REACHED' in pr.option.flags %}
+                    {% set opt = pr.option %}
+                    {% set profit_pct = ((opt.cost_price - opt.current_price) / opt.cost_price * 100) if opt.cost_price > 0 else 0 %}
+                    <tr>
+                        <td>
+                            <span class="badge {{ 'badge-call' if opt.is_call else 'badge-put' }} me-2">{{ 'C' if opt.is_call else 'P' }}</span>
+                            <strong>{{ opt.underlying }}</strong> {{ opt.strike }}
+                        </td>
+                        <td><code>${{ "{:.2f}".format(opt.cost_price) }}</code></td>
+                        <td><code>${{ "{:.2f}".format(opt.current_price) }}</code></td>
+                        <td class="text-profit"><strong>{{ "{:.0f}%".format(profit_pct) }}</strong></td>
+                        <td class="text-profit"><strong>${{ "{:,.0f}".format(opt.unrealized_pnl) }}</strong></td>
+                        <td>{{ opt.days_to_expiration }}d</td>
+                        <td><span class="badge bg-success">Close for Profit</span></td>
+                    </tr>
+                    {% endif %}
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- High Risk - Immediate Action -->
+<div class="card mb-4">
+    <div class="card-header d-flex align-items-center" style="border-left: 4px solid var(--accent-red);">
+        <i class="bi bi-exclamation-triangle-fill me-2 text-loss"></i>
+        <span>High Risk - Consider Immediate Action</span>
+        <span class="badge bg-danger ms-auto">{{ risk_analysis.high_risk_positions|length }} positions</span>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table mb-0">
+                <thead>
+                    <tr>
+                        <th>Position</th>
+                        <th>Delta</th>
+                        <th>Underlying</th>
+                        <th>P&L</th>
+                        <th>Risk</th>
+                        <th>Recommendation</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for pr in risk_analysis.high_risk_positions %}
+                    {% set opt = pr.option %}
+                    <tr>
+                        <td>
+                            <span class="badge {{ 'badge-call' if opt.is_call else 'badge-put' }} me-2">{{ 'C' if opt.is_call else 'P' }}</span>
+                            <strong>{{ opt.underlying }}</strong> {{ opt.strike }}
+                        </td>
+                        <td><code>{{ "{:.3f}".format(opt.delta) }}</code></td>
+                        <td><code>${{ "{:.2f}".format(opt.underlying_price) }}</code></td>
+                        <td class="{{ 'text-profit' if opt.unrealized_pnl >= 0 else 'text-loss' }}">
+                            <strong>${{ "{:,.0f}".format(opt.unrealized_pnl) }}</strong>
+                        </td>
+                        <td>
+                            {% for flag in pr.flags %}
+                            <span class="badge bg-{{ 'danger' if flag.severity == 'high' else 'warning text-dark' }} flag-badge">
+                                {{ flag.flag_type.replace('_', ' ')[:15] }}
+                            </span>
+                            {% endfor %}
+                        </td>
+                        <td>
+                            {% if 'HIGH_DELTA_SHORT_CALL' in opt.flags %}
+                            <span class="badge bg-danger">Roll or Close</span>
+                            {% elif 'LARGE_LOSS' in opt.flags %}
+                            <span class="badge bg-warning text-dark">Review Position</span>
+                            {% elif 'ITM_OPTION' in opt.flags %}
+                            <span class="badge bg-warning text-dark">Monitor ITM</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="6" class="text-center text-muted py-4">
+                            <i class="bi bi-shield-check fs-4 d-block mb-2 text-success"></i>
+                            No high-risk positions detected
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Expiring Soon -->
+<div class="card mb-4">
+    <div class="card-header d-flex align-items-center" style="border-left: 4px solid var(--accent-yellow);">
+        <i class="bi bi-clock-fill me-2 text-warning"></i>
+        <span>Expiring Within 7 Days</span>
+        <span class="badge bg-warning text-dark ms-auto">{{ portfolio.get_options_expiring_soon(7)|length }} positions</span>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table mb-0">
+                <thead>
+                    <tr>
+                        <th>Position</th>
+                        <th>Expiration</th>
+                        <th>DTE</th>
+                        <th>Delta</th>
+                        <th>P&L</th>
+                        <th>Recommendation</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for opt in portfolio.get_options_expiring_soon(7) %}
+                    <tr>
+                        <td>
+                            <span class="badge {{ 'badge-call' if opt.is_call else 'badge-put' }} me-2">{{ 'C' if opt.is_call else 'P' }}</span>
+                            <strong>{{ opt.underlying }}</strong> {{ opt.strike }}
+                        </td>
+                        <td>{{ opt.expiration.strftime('%b %d, %Y') if opt.expiration else 'N/A' }}</td>
+                        <td>
+                            <span class="badge bg-{{ 'danger' if opt.days_to_expiration <= 2 else 'warning text-dark' }}">
+                                {{ opt.days_to_expiration }}d
+                            </span>
+                        </td>
+                        <td><code>{{ "{:.3f}".format(opt.delta) }}</code></td>
+                        <td class="{{ 'text-profit' if opt.unrealized_pnl >= 0 else 'text-loss' }}">
+                            <strong>${{ "{:,.0f}".format(opt.unrealized_pnl) }}</strong>
+                        </td>
+                        <td>
+                            {% if opt.is_itm %}
+                            <span class="badge bg-danger">Close or Roll</span>
+                            {% elif opt.unrealized_pnl > 0 %}
+                            <span class="badge bg-success">Let Expire</span>
+                            {% else %}
+                            <span class="badge bg-secondary">Monitor</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="6" class="text-center text-muted py-4">
+                            <i class="bi bi-calendar-check fs-4 d-block mb-2 text-success"></i>
+                            No positions expiring within 7 days
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+

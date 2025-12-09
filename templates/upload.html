@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+
+{% block title %}Upload Statement - Options Analyzer{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-5 col-md-8">
+        <!-- Upload Card -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="bi bi-cloud-upload me-2"></i>Upload IB Activity Statement
+            </div>
+            <div class="card-body p-4">
+                <form method="POST" action="/upload" enctype="multipart/form-data" id="uploadForm">
+                    <div class="mb-4">
+                        <div class="upload-zone" id="uploadZone">
+                            <input type="file" class="form-control d-none" id="file" name="file" accept=".csv,.txt,.plain" required>
+                            <div class="upload-icon">
+                                <i class="bi bi-file-earmark-arrow-up"></i>
+                            </div>
+                            <div class="upload-text">
+                                <strong>Drop your file here</strong>
+                                <span class="d-block text-muted mt-1">or click to browse</span>
+                            </div>
+                            <div class="upload-filename d-none" id="fileName"></div>
+                        </div>
+                        <div class="form-text text-center mt-2">
+                            Supports CSV, TXT, and PLAIN files
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100 btn-lg" id="submitBtn">
+                        <i class="bi bi-lightning-charge me-2"></i>Analyze Portfolio
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Instructions Card -->
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-question-circle me-2"></i>How to Export from Interactive Brokers
+            </div>
+            <div class="card-body p-0">
+                <div class="list-group list-group-flush">
+                    <div class="list-group-item bg-transparent d-flex align-items-start">
+                        <span class="badge bg-primary rounded-pill me-3">1</span>
+                        <span>Log in to <strong>Client Portal</strong></span>
+                    </div>
+                    <div class="list-group-item bg-transparent d-flex align-items-start">
+                        <span class="badge bg-primary rounded-pill me-3">2</span>
+                        <span>Go to <strong>Performance & Reports → Statements</strong></span>
+                    </div>
+                    <div class="list-group-item bg-transparent d-flex align-items-start">
+                        <span class="badge bg-primary rounded-pill me-3">3</span>
+                        <span>Select <strong>Activity</strong> statement type</span>
+                    </div>
+                    <div class="list-group-item bg-transparent d-flex align-items-start">
+                        <span class="badge bg-primary rounded-pill me-3">4</span>
+                        <span>Choose your date range (YTD for full history)</span>
+                    </div>
+                    <div class="list-group-item bg-transparent d-flex align-items-start">
+                        <span class="badge bg-primary rounded-pill me-3">5</span>
+                        <span>Select <strong>CSV</strong> format</span>
+                    </div>
+                    <div class="list-group-item bg-transparent d-flex align-items-start">
+                        <span class="badge bg-primary rounded-pill me-3">6</span>
+                        <span>Click <strong>Run</strong> and download the file</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+    .upload-zone {
+        border: 2px dashed var(--border-color);
+        border-radius: 12px;
+        padding: 3rem 2rem;
+        text-align: center;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        background: var(--bg-tertiary);
+    }
+
+    .upload-zone:hover, .upload-zone.dragover {
+        border-color: var(--accent-blue);
+        background: rgba(88, 166, 255, 0.1);
+    }
+
+    .upload-zone .upload-icon {
+        font-size: 3rem;
+        color: var(--accent-blue);
+        margin-bottom: 1rem;
+    }
+
+    .upload-zone .upload-text {
+        font-size: 1rem;
+    }
+
+    .upload-zone .upload-filename {
+        margin-top: 1rem;
+        padding: 0.5rem 1rem;
+        background: var(--bg-secondary);
+        border-radius: 6px;
+        display: inline-block;
+    }
+
+    .upload-zone.has-file {
+        border-color: var(--accent-green);
+        background: rgba(63, 185, 80, 0.1);
+    }
+
+    .upload-zone.has-file .upload-icon {
+        color: var(--accent-green);
+    }
+
+    .upload-zone.has-file .upload-icon i::before {
+        content: "\F3ED"; /* bi-file-earmark-check */
+    }
+</style>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    const uploadZone = document.getElementById('uploadZone');
+    const fileInput = document.getElementById('file');
+    const fileName = document.getElementById('fileName');
+    const submitBtn = document.getElementById('submitBtn');
+
+    uploadZone.addEventListener('click', () => fileInput.click());
+
+    uploadZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        uploadZone.classList.add('dragover');
+    });
+
+    uploadZone.addEventListener('dragleave', () => {
+        uploadZone.classList.remove('dragover');
+    });
+
+    uploadZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        uploadZone.classList.remove('dragover');
+        if (e.dataTransfer.files.length) {
+            fileInput.files = e.dataTransfer.files;
+            updateFileName();
+        }
+    });
+
+    fileInput.addEventListener('change', updateFileName);
+
+    function updateFileName() {
+        if (fileInput.files.length) {
+            fileName.textContent = fileInput.files[0].name;
+            fileName.classList.remove('d-none');
+            uploadZone.classList.add('has-file');
+        }
+    }
+
+    document.getElementById('uploadForm').addEventListener('submit', function() {
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Analyzing...';
+    });
+</script>
+{% endblock %}
+

@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+
+{% block title %}Positions - Options Analyzer{% endblock %}
+
+{% macro sort_header(column, label) %}
+{% set is_active = sort_by == column %}
+{% set new_dir = 'desc' if (is_active and sort_dir == 'asc') else 'asc' %}
+<a href="?type={{ filter_type }}&risk={{ filter_risk }}&sort={{ column }}&dir={{ new_dir }}"
+   class="sortable-header {{ 'active' if is_active }}">
+    {{ label }}
+    {% if is_active %}
+    <i class="bi bi-chevron-{{ 'up' if sort_dir == 'asc' else 'down' }}"></i>
+    {% else %}
+    <i class="bi bi-chevron-expand text-muted"></i>
+    {% endif %}
+</a>
+{% endmacro %}
+
+{% block content %}
+<!-- Page Header with Filters -->
+<div class="page-header d-flex justify-content-between align-items-start flex-wrap gap-3">
+    <div>
+        <h4><i class="bi bi-table"></i> Option Positions</h4>
+        <p class="subtitle">{{ options|length }} of {{ portfolio.total_option_positions }} positions • Click column headers to sort</p>
+    </div>
+    <div class="d-flex flex-wrap gap-2 filter-group">
+        <div class="btn-group">
+            <a href="?type=all&risk={{ filter_risk }}&sort={{ sort_by }}&dir={{ sort_dir }}"
+               class="btn btn-outline-primary {{ 'active' if filter_type == 'all' }}">All</a>
+            <a href="?type=calls&risk={{ filter_risk }}&sort={{ sort_by }}&dir={{ sort_dir }}"
+               class="btn btn-outline-primary {{ 'active' if filter_type == 'calls' }}">Calls</a>
+            <a href="?type=puts&risk={{ filter_risk }}&sort={{ sort_by }}&dir={{ sort_dir }}"
+               class="btn btn-outline-primary {{ 'active' if filter_type == 'puts' }}">Puts</a>
+        </div>
+        <div class="btn-group">
+            <a href="?type={{ filter_type }}&risk=all&sort={{ sort_by }}&dir={{ sort_dir }}"
+               class="btn btn-outline-warning {{ 'active' if filter_risk == 'all' }}">All Risk</a>
+            <a href="?type={{ filter_type }}&risk=high&sort={{ sort_by }}&dir={{ sort_dir }}"
+               class="btn btn-outline-danger {{ 'active' if filter_risk == 'high' }}">High</a>
+            <a href="?type={{ filter_type }}&risk=flagged&sort={{ sort_by }}&dir={{ sort_dir }}"
+               class="btn btn-outline-warning {{ 'active' if filter_risk == 'flagged' }}">Flagged</a>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table mb-0">
+                <thead>
+                    <tr>
+                        <th>Type</th>
+                        <th>{{ sort_header('underlying', 'Underlying') }}</th>
+                        <th>{{ sort_header('strike', 'Strike') }}</th>
+                        <th>{{ sort_header('expiration', 'Expiration') }}</th>
+                        <th>{{ sort_header('dte', 'DTE') }}</th>
+                        <th>{{ sort_header('qty', 'Qty') }}</th>
+                        <th>{{ sort_header('stock_price', 'Stock $') }}</th>
+                        <th>{{ sort_header('option_price', 'Option $') }}</th>
+                        <th>{{ sort_header('delta', 'Delta') }}</th>
+                        <th>{{ sort_header('iv', 'IV') }}</th>
+                        <th>{{ sort_header('pnl', 'P&L') }}</th>
+                        <th>{{ sort_header('margin', 'Margin') }}</th>
+                        <th>Flags</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for opt in options %}
+                    <tr class="{{ 'table-danger' if 'HIGH_DELTA_SHORT_CALL' in opt.flags or 'LARGE_LOSS' in opt.flags else '' }}">
+                        <td>
+                            <span class="badge {{ 'badge-call' if opt.is_call else 'badge-put' }}">
+                                {{ 'CALL' if opt.is_call else 'PUT' }}
+                            </span>
+                        </td>
+                        <td><strong>{{ opt.underlying }}</strong></td>
+                        <td>{{ opt.strike }}</td>
+                        <td>{{ opt.expiration.strftime('%b %d, %Y') if opt.expiration else 'N/A' }}</td>
+                        <td>
+                            <span class="{{ 'text-warning' if opt.days_to_expiration <= 7 else '' }}">
+                                {{ opt.days_to_expiration }}d
+                            </span>
+                        </td>
+                        <td>{{ opt.quantity }}</td>
+                        <td><code>${{ "{:.2f}".format(opt.underlying_price) }}</code></td>
+                        <td><code>${{ "{:.2f}".format(opt.current_price) }}</code></td>
+                        <td><code>{{ "{:.3f}".format(opt.delta) }}</code></td>
+                        <td>{{ "{:.0f}%".format(opt.implied_volatility * 100) }}</td>
+                        <td class="{{ 'text-profit' if opt.unrealized_pnl >= 0 else 'text-loss' }}">
+                            <strong>${{ "{:,.0f}".format(opt.unrealized_pnl) }}</strong>
+                        </td>
+                        <td>${{ "{:,.0f}".format(opt.margin_requirement) }}</td>
+                        <td>
+                            {% for flag in opt.flags %}
+                            <span class="badge bg-{{ 'danger' if 'HIGH' in flag or 'LOSS' in flag else 'warning text-dark' if 'ITM' in flag or 'EXPIR' in flag else 'success' }} flag-badge"
+                                  title="{{ flag }}">
+                                {{ flag.replace('_', ' ')[:12] }}
+                            </span>
+                            {% endfor %}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="13" class="text-center text-muted py-5">
+                            <i class="bi bi-inbox fs-1 d-block mb-3"></i>
+                            No positions match your filters
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
