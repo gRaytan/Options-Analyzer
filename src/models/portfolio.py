@@ -135,48 +135,36 @@ class Portfolio:
         return dict(sorted(monthly.items()))
 
     def get_monthly_premium_collected(self) -> Dict[str, float]:
-        """Get NET premium collected by month, accounting for rolls.
+        """Get NET premium by month (opens - closes).
 
-        When rolling an option:
-        - Close old position (debit/cost)
-        - Open new position (credit/premium)
-        - Net premium = new premium - close cost
+        This calculates the true net cash flow from options trading:
+        - Opens (selling): we receive premium (positive)
+        - Closes (buying back): we pay premium (negative)
+        - Net = received - paid
 
-        This method detects same-day close+open pairs on the same underlying
-        and nets them properly.
+        Can be negative if you paid more to close positions than you received
+        from opening new ones (e.g., during a market downturn when closing losers).
         """
-        monthly = defaultdict(float)
+        monthly_opens = defaultdict(float)
+        monthly_closes = defaultdict(float)
 
-        # Group trades by day and underlying to detect rolls
-        daily_trades: Dict[str, Dict[str, List]] = defaultdict(lambda: defaultdict(list))
         for trade in self.option_trades:
-            day_key = trade.trade_date.strftime("%Y-%m-%d")
-            daily_trades[day_key][trade.underlying].append(trade)
+            month = trade.month_key
+            if trade.is_opening and trade.quantity < 0:
+                # Selling to open - we receive premium
+                monthly_opens[month] += abs(trade.proceeds)
+            elif trade.is_closing and trade.quantity > 0:
+                # Buying to close - we pay premium
+                monthly_closes[month] += abs(trade.proceeds)
 
-        # Process each day's trades
-        for day_key, underlying_trades in daily_trades.items():
-            for underlying, trades in underlying_trades.items():
-                opens = [t for t in trades if t.is_opening and t.quantity < 0]
-                closes = [t for t in trades if t.is_closing and t.quantity > 0]
+        # Calculate net for each month
+        all_months = set(monthly_opens.keys()) | set(monthly_closes.keys())
+        monthly_net = {
+            month: monthly_opens[month] - monthly_closes[month]
+            for month in all_months
+        }
 
-                if opens and closes:
-                    # This is a roll - calculate net premium
-                    # Opens: we receive premium (positive proceeds for short sales)
-                    # Closes: we pay to close (negative proceeds for buying back)
-                    open_credit = sum(abs(t.proceeds) for t in opens)
-                    close_debit = sum(abs(t.proceeds) for t in closes)
-                    net_premium = open_credit - close_debit
-
-                    # Only count if net positive (received more than paid)
-                    if net_premium > 0:
-                        month_key = opens[0].month_key
-                        monthly[month_key] += net_premium
-                else:
-                    # Fresh opens (no corresponding close) - count full premium
-                    for trade in opens:
-                        monthly[trade.month_key] += abs(trade.proceeds)
-
-        return dict(sorted(monthly.items()))
+        return dict(sorted(monthly_net.items()))
 
     def get_monthly_trades_count(self) -> Dict[str, int]:
         """Get number of trades by month."""
