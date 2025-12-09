@@ -20,9 +20,9 @@
         </div>
     </div>
     <div class="col-lg-4 col-md-6">
-        <div class="card metric-card profit">
-            <div class="metric-value text-profit">${{ "{:,.0f}".format(chart_data.total_premium_collected) }}</div>
-            <div class="metric-label">Premium Collected</div>
+        <div class="card metric-card {{ 'profit' if chart_data.total_premium_collected >= 0 else 'loss' }}">
+            <div class="metric-value {{ 'text-profit' if chart_data.total_premium_collected >= 0 else 'text-loss' }}">${{ "{:,.0f}".format(chart_data.total_premium_collected) }}</div>
+            <div class="metric-label">Net Premium</div>
         </div>
     </div>
     <div class="col-lg-4 col-md-6">
@@ -48,7 +48,7 @@
     <div class="col-lg-6">
         <div class="card h-100">
             <div class="card-header">
-                <i class="bi bi-cash-stack me-2"></i>Monthly Premium Collected
+                <i class="bi bi-cash-stack me-2"></i>Monthly Net Premium (Opens - Closes)
             </div>
             <div class="card-body">
                 <canvas id="premiumChart" height="280"></canvas>
@@ -168,16 +168,16 @@
         }
     });
 
-    // Premium Collected Chart
+    // Net Premium Chart (green for positive, red for negative)
     new Chart(document.getElementById('premiumChart'), {
         type: 'bar',
         data: {
             labels: months,
             datasets: [{
-                label: 'Premium Collected ($)',
+                label: 'Net Premium ($)',
                 data: premiumCollected,
-                backgroundColor: 'rgba(88, 166, 255, 0.8)',
-                borderColor: '#58a6ff',
+                backgroundColor: premiumCollected.map(v => v >= 0 ? 'rgba(63, 185, 80, 0.8)' : 'rgba(248, 81, 73, 0.8)'),
+                borderColor: premiumCollected.map(v => v >= 0 ? '#3fb950' : '#f85149'),
                 borderWidth: 2,
                 borderRadius: 6
             }]
