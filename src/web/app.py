@@ -193,6 +193,28 @@ def create_app(config=None):
         # Prepare chart data
         months = sorted(set(list(monthly_pnl.keys()) + list(monthly_premium.keys())))
 
+        # Calculate unrealized P&L by underlying
+        unrealized_by_underlying = {}
+        for opt in portfolio.options:
+            underlying = opt.underlying
+            if underlying not in unrealized_by_underlying:
+                unrealized_by_underlying[underlying] = {'pnl': 0, 'count': 0}
+            unrealized_by_underlying[underlying]['pnl'] += opt.unrealized_pnl
+            unrealized_by_underlying[underlying]['count'] += 1
+
+        # Sort by absolute P&L value (largest impact first)
+        sorted_unrealized = sorted(
+            unrealized_by_underlying.items(),
+            key=lambda x: abs(x[1]['pnl']),
+            reverse=True
+        )
+
+        # Prepare unrealized data for chart and table
+        unrealized_list = [
+            {'underlying': k, 'pnl': v['pnl'], 'count': v['count']}
+            for k, v in sorted_unrealized
+        ]
+
         chart_data = {
             'months': months,
             'realized_pnl': [monthly_pnl.get(m, 0) for m in months],
@@ -201,6 +223,10 @@ def create_app(config=None):
             'total_realized_pnl': portfolio.total_realized_pnl,
             'total_premium_collected': portfolio.total_premium_collected,
             'total_trades': len(portfolio.option_trades),
+            'options_unrealized_pnl': portfolio.options_unrealized_pnl,
+            'unrealized_by_underlying': unrealized_list,
+            'unrealized_labels': [item['underlying'] for item in unrealized_list[:10]],  # Top 10 for chart
+            'unrealized_values': [item['pnl'] for item in unrealized_list[:10]],
         }
 
         return render_template('charts.html',
