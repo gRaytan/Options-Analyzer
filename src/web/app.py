@@ -406,6 +406,7 @@ def create_app(config=None):
         """Dividends page with charts and projections."""
         from datetime import datetime, timedelta
         from collections import defaultdict
+        from src.analysis.income_projection import calculate_income_projection
 
         portfolio, _ = get_active_portfolio()
 
@@ -494,11 +495,49 @@ def create_app(config=None):
             'bond_interest': [monthly_bond_interest.get(m, 0) for m in months],
         }
 
+        # Calculate income projections for next year
+        projection = calculate_income_projection(
+            dividend_stocks=dividend_stocks,
+            bond_list=bond_list,
+            months_of_data=len(months) if months else 12
+        )
+
+        projection_data = {
+            'total_dividend': projection.total_dividend_projection,
+            'total_dividend_with_growth': projection.total_dividend_with_growth,
+            'total_bond': projection.total_bond_projection,
+            'total_income': projection.total_income_projection,
+            'total_income_with_growth': projection.total_income_with_growth,
+            'avg_cagr': projection.avg_dividend_cagr * 100,  # As percentage
+            'stocks': [
+                {
+                    'symbol': p.symbol,
+                    'shares': p.shares,
+                    'forward_rate': p.forward_dividend_rate,
+                    'projected': p.projected_annual,
+                    'yield': p.dividend_yield,
+                    'cagr': p.cagr_5yr * 100 if p.cagr_5yr else None,
+                    'projected_with_growth': p.projected_with_growth,
+                }
+                for p in projection.stock_projections
+            ],
+            'bonds': [
+                {
+                    'symbol': p.symbol,
+                    'bond_name': p.bond_name,
+                    'coupon_rate': p.coupon_rate,
+                    'annual_interest': p.annual_interest,
+                }
+                for p in projection.bond_projections
+            ],
+        }
+
         return render_template('dividends.html',
                              portfolio=portfolio,
                              chart_data=chart_data,
                              dividend_stocks=dividend_stocks,
                              bond_list=bond_list,
+                             projection=projection_data,
                              portfolios=app.portfolios,
                              portfolio_filter=session.get('portfolio_filter', 'all'))
 
