@@ -45,29 +45,32 @@ def calculate_dividend_cagr(symbol: str, years: int = 5) -> Optional[float]:
     try:
         ticker = yf.Ticker(symbol)
         divs = ticker.dividends
-        
+
         if len(divs) < 4:  # Need at least a couple years of data
             return None
-        
-        # Get annual dividends
-        annual = divs.resample('YE').sum()
-        
+
+        # Get annual dividends - try 'YE' first (newer pandas), fall back to 'Y'
+        try:
+            annual = divs.resample('YE').sum()
+        except ValueError:
+            annual = divs.resample('Y').sum()
+
         if len(annual) < 2:
             return None
-        
+
         # Get last N+1 years for N-year CAGR
         recent = annual.tail(min(years + 1, len(annual)))
-        
+
         if len(recent) < 2:
             return None
-        
+
         start_val = recent.iloc[0]
         end_val = recent.iloc[-1]
         n_years = len(recent) - 1
-        
+
         if start_val <= 0 or end_val <= 0:
             return None
-        
+
         cagr = (end_val / start_val) ** (1 / n_years) - 1
         return cagr
     except Exception:
