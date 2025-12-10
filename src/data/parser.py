@@ -5,7 +5,7 @@ from datetime import datetime, date
 from typing import List, Dict, Tuple, Optional
 from io import StringIO
 
-from src.models.position import OptionPosition, StockPosition, OptionType, Trade, TradeAction
+from src.models.position import OptionPosition, StockPosition, OptionType, Trade, TradeAction, Dividend
 from src.models.portfolio import Portfolio
 
 
@@ -47,6 +47,9 @@ class IBActivityStatementParser:
 
         # Parse trades
         portfolio.trades = self._parse_trades()
+
+        # Parse dividends
+        portfolio.dividends = self._parse_dividends()
 
         return portfolio
     
@@ -317,6 +320,41 @@ class IBActivityStatementParser:
                 print(f"Warning: Could not parse trade: {e}")
 
         return trades
+
+    def _parse_dividends(self) -> List[Dividend]:
+        """Parse dividends from Dividends section."""
+        dividends = []
+        dividends_data = self.sections.get("Dividends", [])
+
+        for item in dividends_data:
+            try:
+                # Parse date
+                date_str = item.get("Date", "")
+                if not date_str:
+                    continue
+                payment_date = datetime.strptime(date_str.strip(), "%Y-%m-%d").date()
+
+                # Parse description to extract symbol
+                description = item.get("Description", "")
+                # Format: "JEPI(US46641Q3323) Cash Dividend USD 0.39478 per Share (Ordinary Dividend)"
+                symbol_match = re.match(r'^([A-Z]+)\(', description)
+                symbol = symbol_match.group(1) if symbol_match else ""
+
+                # Parse amount
+                amount = self._parse_float(item.get("Amount", "0"))
+
+                dividend = Dividend(
+                    symbol=symbol,
+                    payment_date=payment_date,
+                    amount=amount,
+                    description=description,
+                    currency=item.get("Currency", "USD"),
+                )
+                dividends.append(dividend)
+            except (ValueError, KeyError) as e:
+                print(f"Warning: Could not parse dividend: {e}")
+
+        return dividends
 
     def _parse_trade_datetime(self, date_str: str) -> datetime:
         """Parse trade datetime like '2025-12-01, 10:35:16'."""

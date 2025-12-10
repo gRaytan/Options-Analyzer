@@ -23,6 +23,21 @@ class TradeAction(Enum):
 
 
 @dataclass
+class Dividend:
+    """Represents a dividend payment."""
+    symbol: str
+    payment_date: date
+    amount: float
+    description: str = ""
+    currency: str = "USD"
+
+    @property
+    def is_payment_in_lieu(self) -> bool:
+        """True if this is a payment in lieu of dividend (from short positions)."""
+        return "Payment in Lieu" in self.description
+
+
+@dataclass
 class Trade:
     """Represents a single trade."""
     symbol: str

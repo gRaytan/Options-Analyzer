@@ -266,6 +266,8 @@ def create_app(config=None):
     @app.route('/charts')
     def charts():
         """Charts and analytics page."""
+        from datetime import datetime, timedelta
+
         portfolio, _ = get_active_portfolio()
 
         if not app.portfolios:
@@ -278,6 +280,15 @@ def create_app(config=None):
 
         # Prepare chart data
         months = sorted(set(list(monthly_pnl.keys()) + list(monthly_premium.keys())))
+
+        # Filter trades to last 30 days
+        thirty_days_ago = datetime.now() - timedelta(days=30)
+        recent_trades = [
+            t for t in portfolio.option_trades
+            if t.trade_date >= thirty_days_ago
+        ]
+        # Sort by date descending (most recent first)
+        recent_trades.sort(key=lambda t: t.trade_date, reverse=True)
 
         # Calculate unrealized P&L by underlying
         unrealized_by_underlying = {}
@@ -318,6 +329,7 @@ def create_app(config=None):
         return render_template('charts.html',
                              portfolio=portfolio,
                              chart_data=chart_data,
+                             recent_trades=recent_trades,
                              portfolios=app.portfolios,
                              portfolio_filter=session.get('portfolio_filter', 'all'))
 

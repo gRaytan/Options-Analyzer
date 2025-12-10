@@ -2,7 +2,7 @@
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 from collections import defaultdict
-from .position import OptionPosition, StockPosition, Trade
+from .position import OptionPosition, StockPosition, Trade, Dividend
 
 
 @dataclass
@@ -20,6 +20,7 @@ class Portfolio:
     options: List[OptionPosition] = field(default_factory=list)
     stocks: List[StockPosition] = field(default_factory=list)
     trades: List[Trade] = field(default_factory=list)
+    dividends: List[Dividend] = field(default_factory=list)
 
     # Account info
     account_id: str = ""

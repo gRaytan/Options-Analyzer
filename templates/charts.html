@@ -117,26 +117,27 @@
 <!-- Trades Table -->
 <div class="card">
     <div class="card-header">
-        <i class="bi bi-clock-history me-2"></i>Recent Option Trades
+        <i class="bi bi-clock-history me-2"></i>Recent Option Trades (Last 30 Days)
+        <span class="badge bg-secondary ms-2">{{ recent_trades|length }} trades</span>
     </div>
     <div class="card-body p-0">
         <div class="table-responsive">
-            <table class="table mb-0">
+            <table class="table mb-0 sortable-table" id="recentTradesTable">
                 <thead>
                     <tr>
-                        <th>Date</th>
-                        <th>Symbol</th>
-                        <th>Action</th>
-                        <th>Qty</th>
-                        <th>Price</th>
-                        <th>Proceeds</th>
-                        <th>Realized P&L</th>
+                        <th data-sort="date" style="cursor: pointer;">Date</th>
+                        <th data-sort="text" style="cursor: pointer;">Symbol</th>
+                        <th data-sort="text" style="cursor: pointer;">Action</th>
+                        <th data-sort="number" style="cursor: pointer;">Qty</th>
+                        <th data-sort="number" style="cursor: pointer;">Price</th>
+                        <th data-sort="number" style="cursor: pointer;">Proceeds</th>
+                        <th data-sort="number" style="cursor: pointer;">Realized P&L</th>
                     </tr>
                 </thead>
                 <tbody>
-                    {% for trade in portfolio.option_trades[-20:]|reverse %}
+                    {% for trade in recent_trades %}
                     <tr>
-                        <td>
+                        <td data-value="{{ trade.trade_date.strftime('%Y-%m-%d %H:%M') }}">
                             <span class="text-muted">{{ trade.trade_date.strftime('%Y-%m-%d') }}</span>
                             <small class="d-block text-muted">{{ trade.trade_date.strftime('%H:%M') }}</small>
                         </td>
@@ -162,7 +163,7 @@
                     <tr>
                         <td colspan="7" class="text-center text-muted py-5">
                             <i class="bi bi-inbox fs-1 d-block mb-3"></i>
-                            No trades in this period
+                            No trades in the last 30 days
                         </td>
                     </tr>
                     {% endfor %}
@@ -313,6 +314,62 @@
                 }
             }
         }
+    });
+
+    // Sortable table functionality
+    document.querySelectorAll('.sortable-table').forEach(table => {
+        const headers = table.querySelectorAll('th[data-sort]');
+        headers.forEach((header, index) => {
+            // Add sort icon
+            const icon = document.createElement('i');
+            icon.className = 'bi bi-chevron-expand ms-1 opacity-50';
+            icon.style.fontSize = '0.75em';
+            header.appendChild(icon);
+
+            header.addEventListener('click', () => {
+                const sortType = header.dataset.sort;
+                const tbody = table.querySelector('tbody');
+                const rows = Array.from(tbody.querySelectorAll('tr'));
+                const isAsc = header.classList.contains('sort-asc');
+
+                // Reset all headers
+                headers.forEach(h => {
+                    h.classList.remove('sort-asc', 'sort-desc');
+                    const hIcon = h.querySelector('i');
+                    if (hIcon) {
+                        hIcon.className = 'bi bi-chevron-expand ms-1 opacity-50';
+                        hIcon.style.fontSize = '0.75em';
+                    }
+                });
+
+                // Set current header
+                header.classList.add(isAsc ? 'sort-desc' : 'sort-asc');
+                const headerIcon = header.querySelector('i');
+                if (headerIcon) {
+                    headerIcon.className = isAsc ? 'bi bi-chevron-down ms-1' : 'bi bi-chevron-up ms-1';
+                    headerIcon.style.fontSize = '0.75em';
+                }
+
+                rows.sort((a, b) => {
+                    let aVal = a.cells[index].dataset.value || a.cells[index].textContent.trim();
+                    let bVal = b.cells[index].dataset.value || b.cells[index].textContent.trim();
+
+                    if (sortType === 'number') {
+                        aVal = parseFloat(aVal.replace(/[$,%]/g, '').replace(/,/g, '')) || 0;
+                        bVal = parseFloat(bVal.replace(/[$,%]/g, '').replace(/,/g, '')) || 0;
+                        return isAsc ? bVal - aVal : aVal - bVal;
+                    } else if (sortType === 'date') {
+                        aVal = new Date(aVal);
+                        bVal = new Date(bVal);
+                        return isAsc ? bVal - aVal : aVal - bVal;
+                    } else {
+                        return isAsc ? bVal.localeCompare(aVal) : aVal.localeCompare(bVal);
+                    }
+                });
+
+                rows.forEach(row => tbody.appendChild(row));
+            });
+        });
     });
 </script>
 {% endblock %}
