@@ -551,6 +551,12 @@ def create_app(config=None):
             months_of_data=len(months) if months else 12
         )
 
+        # Build monthly data arrays for chart
+        month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+        monthly_dividends = [projection.monthly_breakdown[m]['dividends'] for m in range(1, 13)]
+        monthly_bonds = [projection.monthly_breakdown[m]['bonds'] for m in range(1, 13)]
+        monthly_growth = [projection.monthly_breakdown[m]['growth_bonus'] for m in range(1, 13)]
+
         return jsonify({
             'total_dividend': projection.total_dividend_projection,
             'total_dividend_with_growth': projection.total_dividend_with_growth,
@@ -558,6 +564,12 @@ def create_app(config=None):
             'total_income': projection.total_income_projection,
             'total_income_with_growth': projection.total_income_with_growth,
             'avg_cagr': projection.avg_dividend_cagr * 100,
+            'monthly': {
+                'months': month_names,
+                'dividends': monthly_dividends,
+                'bonds': monthly_bonds,
+                'growth_bonus': monthly_growth,
+            },
             'stocks': [
                 {
                     'symbol': p.symbol,
@@ -567,6 +579,8 @@ def create_app(config=None):
                     'yield': p.dividend_yield,
                     'cagr': p.cagr_5yr * 100 if p.cagr_5yr else None,
                     'projected_with_growth': p.projected_with_growth,
+                    'frequency': p.frequency,
+                    'payment_months': p.payment_months,
                 }
                 for p in projection.stock_projections
             ],
@@ -576,6 +590,7 @@ def create_app(config=None):
                     'bond_name': p.bond_name,
                     'coupon_rate': p.coupon_rate,
                     'annual_interest': p.annual_interest,
+                    'payment_months': p.payment_months,
                 }
                 for p in projection.bond_projections
             ],

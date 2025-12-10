@@ -232,15 +232,16 @@
                     <div class="col-lg-7">
                         <h6 class="mb-3"><i class="bi bi-graph-up-arrow me-2"></i>Dividend Stock Projections</h6>
                         <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
-                            <table class="table table-sm mb-0">
+                            <table class="table table-sm mb-0" id="stockProjectionsTable">
                                 <thead style="position: sticky; top: 0; background: var(--bg-secondary); z-index: 10;">
                                     <tr>
-                                        <th>Symbol</th>
-                                        <th>Shares</th>
-                                        <th>Div/Share</th>
-                                        <th>Projected</th>
-                                        <th>CAGR</th>
-                                        <th>With Growth</th>
+                                        <th data-sort="text" style="cursor: pointer;">Symbol</th>
+                                        <th data-sort="number" style="cursor: pointer;">Shares</th>
+                                        <th data-sort="number" style="cursor: pointer;">Div/Share</th>
+                                        <th data-sort="number" style="cursor: pointer;">Projected</th>
+                                        <th data-sort="number" style="cursor: pointer;">CAGR</th>
+                                        <th data-sort="number" style="cursor: pointer;">With Growth</th>
+                                        <th data-sort="text" style="cursor: pointer;">Freq</th>
                                     </tr>
                                 </thead>
                                 <tbody id="stockProjectionsBody">
@@ -253,12 +254,13 @@
                     <div class="col-lg-5">
                         <h6 class="mb-3"><i class="bi bi-bank me-2"></i>Bond Interest Projections</h6>
                         <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
-                            <table class="table table-sm mb-0">
+                            <table class="table table-sm mb-0" id="bondProjectionsTable">
                                 <thead style="position: sticky; top: 0; background: var(--bg-secondary); z-index: 10;">
                                     <tr>
-                                        <th>Bond</th>
-                                        <th>Coupon</th>
-                                        <th>Annual Interest</th>
+                                        <th data-sort="text" style="cursor: pointer;">Bond</th>
+                                        <th data-sort="number" style="cursor: pointer;">Coupon</th>
+                                        <th data-sort="number" style="cursor: pointer;">Annual</th>
+                                        <th data-sort="text" style="cursor: pointer;">Payments</th>
                                     </tr>
                                 </thead>
                                 <tbody id="bondProjectionsBody">
@@ -375,10 +377,24 @@
                 cagrEl.textContent = (data.avg_cagr >= 0 ? '+' : '') + data.avg_cagr.toFixed(1) + '%';
                 cagrEl.className = 'metric-value ' + (data.avg_cagr > 0 ? 'text-profit' : data.avg_cagr < 0 ? 'text-loss' : '');
 
+                // Helper to format frequency
+                function formatFreq(freq) {
+                    const map = {'monthly': 'M', 'quarterly': 'Q', 'semi-annual': 'SA', 'annual': 'A', 'unknown': '?'};
+                    return map[freq] || freq;
+                }
+
+                // Helper to format payment months
+                const monthAbbr = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                function formatPaymentMonths(months) {
+                    if (!months || months.length === 0) return '-';
+                    if (months.length > 4) return 'Monthly';
+                    return months.map(m => monthAbbr[m]).join(', ');
+                }
+
                 // Populate stock projections table
                 const stockBody = document.getElementById('stockProjectionsBody');
                 if (data.stocks.length === 0) {
-                    stockBody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No dividend stocks</td></tr>';
+                    stockBody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No dividend stocks</td></tr>';
                 } else {
                     stockBody.innerHTML = data.stocks.map(s => `
                         <tr>
@@ -390,6 +406,7 @@
                                 ${s.cagr ? (s.cagr >= 0 ? '+' : '') + s.cagr.toFixed(1) + '%' : '-'}
                             </td>
                             <td class="text-profit">${formatCurrency(s.projected_with_growth)}</td>
+                            <td><small class="text-muted" title="${formatPaymentMonths(s.payment_months)}">${formatFreq(s.frequency)}</small></td>
                         </tr>
                     `).join('');
                 }
@@ -397,7 +414,7 @@
                 // Populate bond projections table
                 const bondBody = document.getElementById('bondProjectionsBody');
                 if (data.bonds.length === 0) {
-                    bondBody.innerHTML = '<tr><td colspan="3" class="text-center text-muted">No bonds</td></tr>';
+                    bondBody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">No bonds</td></tr>';
                 } else {
                     bondBody.innerHTML = data.bonds.map(b => `
                         <tr>
@@ -407,26 +424,26 @@
                             </td>
                             <td>${b.coupon_rate ? b.coupon_rate.toFixed(2) + '%' : '-'}</td>
                             <td class="text-profit">${formatCurrency(b.annual_interest)}</td>
+                            <td><small class="text-muted">${formatPaymentMonths(b.payment_months)}</small></td>
                         </tr>
                     `).join('');
                 }
 
-                // Create projection chart
-                const projectionCtx = document.getElementById('projectionChart');
-                if (projectionCtx) {
-                    const nextYearMonths = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-                    const monthlyDivProjection = data.total_dividend / 12;
-                    const monthlyDivWithGrowth = data.total_dividend_with_growth / 12;
-                    const monthlyBondProjection = data.total_bond / 12;
+                // Make projection tables sortable
+                setupSortableTable('stockProjectionsTable');
+                setupSortableTable('bondProjectionsTable');
 
+                // Create projection chart with actual monthly data
+                const projectionCtx = document.getElementById('projectionChart');
+                if (projectionCtx && data.monthly) {
                     projectionChart = new Chart(projectionCtx, {
                         type: 'bar',
                         data: {
-                            labels: nextYearMonths,
+                            labels: data.monthly.months,
                             datasets: [
                                 {
                                     label: 'Projected Dividends',
-                                    data: nextYearMonths.map(() => monthlyDivProjection),
+                                    data: data.monthly.dividends,
                                     backgroundColor: 'rgba(63, 185, 80, 0.6)',
                                     borderColor: '#3fb950',
                                     borderWidth: 1,
@@ -434,7 +451,7 @@
                                 },
                                 {
                                     label: 'Projected Bond Interest',
-                                    data: nextYearMonths.map(() => monthlyBondProjection),
+                                    data: data.monthly.bonds,
                                     backgroundColor: 'rgba(56, 139, 253, 0.6)',
                                     borderColor: '#388bfd',
                                     borderWidth: 1,
@@ -442,7 +459,7 @@
                                 },
                                 {
                                     label: 'Growth Bonus (CAGR)',
-                                    data: nextYearMonths.map(() => (monthlyDivWithGrowth - monthlyDivProjection)),
+                                    data: data.monthly.growth_bonus,
                                     backgroundColor: 'rgba(163, 113, 247, 0.6)',
                                     borderColor: '#a371f7',
                                     borderWidth: 1,
@@ -516,22 +533,32 @@
         }
     });
 
-    // Sortable table functionality
-    document.querySelectorAll('.sortable-table').forEach(table => {
+    // Sortable table functionality - reusable function
+    function setupSortableTable(tableId) {
+        const table = document.getElementById(tableId);
+        if (!table) return;
+
         const headers = table.querySelectorAll('th[data-sort]');
         headers.forEach((header, index) => {
-            const icon = document.createElement('i');
-            icon.className = 'bi bi-chevron-expand ms-1 opacity-50';
-            icon.style.fontSize = '0.75em';
-            header.appendChild(icon);
+            // Add sort icon if not already present
+            if (!header.querySelector('i')) {
+                const icon = document.createElement('i');
+                icon.className = 'bi bi-chevron-expand ms-1 opacity-50';
+                icon.style.fontSize = '0.75em';
+                header.appendChild(icon);
+            }
 
-            header.addEventListener('click', () => {
-                const sortType = header.dataset.sort;
+            // Remove existing listeners by cloning
+            const newHeader = header.cloneNode(true);
+            header.parentNode.replaceChild(newHeader, header);
+
+            newHeader.addEventListener('click', () => {
+                const sortType = newHeader.dataset.sort;
                 const tbody = table.querySelector('tbody');
                 const rows = Array.from(tbody.querySelectorAll('tr'));
-                const isAsc = header.classList.contains('sort-asc');
+                const isAsc = newHeader.classList.contains('sort-asc');
 
-                headers.forEach(h => {
+                table.querySelectorAll('th[data-sort]').forEach(h => {
                     h.classList.remove('sort-asc', 'sort-desc');
                     const hIcon = h.querySelector('i');
                     if (hIcon) {
@@ -540,8 +567,8 @@
                     }
                 });
 
-                header.classList.add(isAsc ? 'sort-desc' : 'sort-asc');
-                const headerIcon = header.querySelector('i');
+                newHeader.classList.add(isAsc ? 'sort-desc' : 'sort-asc');
+                const headerIcon = newHeader.querySelector('i');
                 if (headerIcon) {
                     headerIcon.className = isAsc ? 'bi bi-chevron-down ms-1' : 'bi bi-chevron-up ms-1';
                     headerIcon.style.fontSize = '0.75em';
@@ -563,6 +590,11 @@
                 rows.forEach(row => tbody.appendChild(row));
             });
         });
+    }
+
+    // Initialize sortable tables on page load
+    document.querySelectorAll('.sortable-table').forEach(table => {
+        if (table.id) setupSortableTable(table.id);
     });
 </script>
 {% endblock %}
