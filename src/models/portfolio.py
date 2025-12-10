@@ -171,6 +171,28 @@ class Portfolio:
         """Get all option trades."""
         return [t for t in self.trades if t.is_option]
 
+    @property
+    def total_dividends(self) -> float:
+        """Total dividends received."""
+        return sum(d.amount for d in self.dividends)
+
+    def get_monthly_dividends(self) -> Dict[str, float]:
+        """Get dividends by month."""
+        monthly = defaultdict(float)
+        for div in self.dividends:
+            month_key = div.payment_date.strftime("%Y-%m")
+            monthly[month_key] += div.amount
+        return dict(monthly)
+
+    def get_dividends_by_symbol(self) -> Dict[str, Dict]:
+        """Get dividend summary by symbol."""
+        by_symbol = defaultdict(lambda: {'total': 0.0, 'count': 0, 'payments': []})
+        for div in self.dividends:
+            by_symbol[div.symbol]['total'] += div.amount
+            by_symbol[div.symbol]['count'] += 1
+            by_symbol[div.symbol]['payments'].append(div)
+        return dict(by_symbol)
+
     def get_monthly_realized_pnl(self) -> Dict[str, float]:
         """Get realized P&L by month for options."""
         monthly = defaultdict(float)
