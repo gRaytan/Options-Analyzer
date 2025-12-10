@@ -445,6 +445,11 @@
                 </a>
             </li>
             <li class="nav-item">
+                <a class="nav-link {% if request.endpoint == 'dividends' %}active{% endif %}" href="/dividends">
+                    <i class="bi bi-cash-coin"></i> Dividends
+                </a>
+            </li>
+            <li class="nav-item">
                 <a class="nav-link {% if request.endpoint == 'recommendations' %}active{% endif %}" href="/recommendations">
                     <i class="bi bi-lightbulb"></i> Recommendations
                 </a>

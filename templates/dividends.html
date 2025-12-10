@@ -1,0 +1,273 @@
+{% extends "base.html" %}
+
+{% block title %}Dividends - Options Analyzer{% endblock %}
+
+{% block content %}
+<!-- Page Header -->
+<div class="page-header">
+    <h4><i class="bi bi-cash-coin"></i> Dividend Income</h4>
+    <p class="subtitle">{{ portfolio.statement_period }}</p>
+</div>
+
+<!-- Summary Cards -->
+<div class="row g-4 mb-4">
+    <div class="col-lg-3 col-md-6">
+        <div class="card metric-card profit">
+            <div class="metric-value text-profit">
+                ${{ "{:,.2f}".format(chart_data.total_dividends) }}
+            </div>
+            <div class="metric-label">YTD Received</div>
+            <small class="text-muted">Dividends already paid</small>
+        </div>
+    </div>
+    <div class="col-lg-3 col-md-6">
+        <div class="card metric-card neutral">
+            <div class="metric-value">
+                ${{ "{:,.2f}".format(chart_data.avg_monthly) }}
+            </div>
+            <div class="metric-label">Avg Monthly</div>
+            <small class="text-muted">Based on {{ chart_data.months|length }} months</small>
+        </div>
+    </div>
+    <div class="col-lg-3 col-md-6">
+        <div class="card metric-card profit">
+            <div class="metric-value text-profit">
+                ${{ "{:,.2f}".format(chart_data.projected_annual) }}
+            </div>
+            <div class="metric-label">Projected Annual</div>
+            <small class="text-muted">Avg × 12 months</small>
+        </div>
+    </div>
+    <div class="col-lg-3 col-md-6">
+        <div class="card metric-card neutral">
+            <div class="metric-value">{{ dividend_stocks|length }}</div>
+            <div class="metric-label">Dividend Stocks</div>
+            <small class="text-muted">Unique symbols</small>
+        </div>
+    </div>
+</div>
+
+<!-- Charts Row -->
+<div class="row g-4 mb-4">
+    <div class="col-lg-6">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-bar-chart me-2"></i>Monthly Dividends Received
+            </div>
+            <div class="card-body">
+                <canvas id="monthlyDividendsChart" height="280"></canvas>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-6">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-graph-up-arrow me-2"></i>12-Month Projection
+            </div>
+            <div class="card-body">
+                <canvas id="projectionChart" height="280"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Dividend Stocks Table -->
+<div class="card">
+    <div class="card-header">
+        <i class="bi bi-table me-2"></i>Dividend-Paying Stocks
+        <span class="badge bg-secondary ms-2">{{ dividend_stocks|length }} stocks</span>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table mb-0 sortable-table" id="dividendStocksTable">
+                <thead>
+                    <tr>
+                        <th data-sort="text" style="cursor: pointer;">Symbol</th>
+                        <th data-sort="number" style="cursor: pointer;">Shares</th>
+                        <th data-sort="number" style="cursor: pointer;">Price</th>
+                        <th data-sort="number" style="cursor: pointer;">Market Value</th>
+                        <th data-sort="number" style="cursor: pointer;">YTD Dividends</th>
+                        <th data-sort="number" style="cursor: pointer;">Payments</th>
+                        <th data-sort="number" style="cursor: pointer;">Est. Annual</th>
+                        <th data-sort="number" style="cursor: pointer;">Yield</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for stock in dividend_stocks %}
+                    <tr>
+                        <td><strong>{{ stock.symbol }}</strong></td>
+                        <td>{{ stock.shares }}</td>
+                        <td>${{ "{:.2f}".format(stock.current_price) }}</td>
+                        <td>${{ "{:,.0f}".format(stock.market_value) }}</td>
+                        <td class="text-profit"><strong>${{ "{:,.2f}".format(stock.ytd_dividends) }}</strong></td>
+                        <td>{{ stock.payment_count }}</td>
+                        <td>${{ "{:,.2f}".format(stock.annual_dividend) }}</td>
+                        <td>
+                            {% if stock.dividend_yield > 0 %}
+                            <span class="badge bg-success">{{ "{:.1f}".format(stock.dividend_yield) }}%</span>
+                            {% else %}
+                            <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="8" class="text-center text-muted py-5">
+                            <i class="bi bi-inbox fs-1 d-block mb-3"></i>
+                            No dividend data available
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+    const months = {{ chart_data.months | tojson }};
+    const dividends = {{ chart_data.dividends | tojson }};
+    const projectionMonths = {{ chart_data.projection_months | tojson }};
+    const projectionValues = {{ chart_data.projection_values | tojson }};
+
+    // Chart.js dark theme defaults
+    Chart.defaults.color = '#8b949e';
+    Chart.defaults.borderColor = '#30363d';
+
+    // Monthly Dividends Chart
+    new Chart(document.getElementById('monthlyDividendsChart'), {
+        type: 'bar',
+        data: {
+            labels: months,
+            datasets: [{
+                label: 'Dividends ($)',
+                data: dividends,
+                backgroundColor: 'rgba(63, 185, 80, 0.8)',
+                borderColor: '#3fb950',
+                borderWidth: 2,
+                borderRadius: 6
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: '#21262d',
+                    titleColor: '#e6edf3',
+                    bodyColor: '#e6edf3',
+                    borderColor: '#30363d',
+                    borderWidth: 1,
+                    padding: 12,
+                    cornerRadius: 8,
+                    callbacks: {
+                        label: function(context) {
+                            return '$' + context.raw.toLocaleString(undefined, {minimumFractionDigits: 2});
+                        }
+                    }
+                }
+            },
+            scales: {
+                y: { beginAtZero: true, grid: { color: '#21262d' } },
+                x: { grid: { display: false } }
+            }
+        }
+    });
+
+    // Projection Chart
+    new Chart(document.getElementById('projectionChart'), {
+        type: 'line',
+        data: {
+            labels: projectionMonths,
+            datasets: [{
+                label: 'Projected Monthly ($)',
+                data: projectionValues,
+                backgroundColor: 'rgba(88, 166, 255, 0.2)',
+                borderColor: '#58a6ff',
+                borderWidth: 2,
+                fill: true,
+                tension: 0.1
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: '#21262d',
+                    titleColor: '#e6edf3',
+                    bodyColor: '#e6edf3',
+                    borderColor: '#30363d',
+                    borderWidth: 1,
+                    padding: 12,
+                    cornerRadius: 8,
+                    callbacks: {
+                        label: function(context) {
+                            return '$' + context.raw.toLocaleString(undefined, {minimumFractionDigits: 2});
+                        }
+                    }
+                }
+            },
+            scales: {
+                y: { beginAtZero: true, grid: { color: '#21262d' } },
+                x: { grid: { display: false } }
+            }
+        }
+    });
+
+    // Sortable table functionality
+    document.querySelectorAll('.sortable-table').forEach(table => {
+        const headers = table.querySelectorAll('th[data-sort]');
+        headers.forEach((header, index) => {
+            const icon = document.createElement('i');
+            icon.className = 'bi bi-chevron-expand ms-1 opacity-50';
+            icon.style.fontSize = '0.75em';
+            header.appendChild(icon);
+
+            header.addEventListener('click', () => {
+                const sortType = header.dataset.sort;
+                const tbody = table.querySelector('tbody');
+                const rows = Array.from(tbody.querySelectorAll('tr'));
+                const isAsc = header.classList.contains('sort-asc');
+
+                headers.forEach(h => {
+                    h.classList.remove('sort-asc', 'sort-desc');
+                    const hIcon = h.querySelector('i');
+                    if (hIcon) {
+                        hIcon.className = 'bi bi-chevron-expand ms-1 opacity-50';
+                        hIcon.style.fontSize = '0.75em';
+                    }
+                });
+
+                header.classList.add(isAsc ? 'sort-desc' : 'sort-asc');
+                const headerIcon = header.querySelector('i');
+                if (headerIcon) {
+                    headerIcon.className = isAsc ? 'bi bi-chevron-down ms-1' : 'bi bi-chevron-up ms-1';
+                    headerIcon.style.fontSize = '0.75em';
+                }
+
+                rows.sort((a, b) => {
+                    let aVal = a.cells[index].textContent.trim();
+                    let bVal = b.cells[index].textContent.trim();
+
+                    if (sortType === 'number') {
+                        aVal = parseFloat(aVal.replace(/[$,%]/g, '').replace(/,/g, '')) || 0;
+                        bVal = parseFloat(bVal.replace(/[$,%]/g, '').replace(/,/g, '')) || 0;
+                        return isAsc ? bVal - aVal : aVal - bVal;
+                    } else {
+                        return isAsc ? bVal.localeCompare(aVal) : aVal.localeCompare(bVal);
+                    }
+                });
+
+                rows.forEach(row => tbody.appendChild(row));
+            });
+        });
+    });
+</script>
+{% endblock %}
+

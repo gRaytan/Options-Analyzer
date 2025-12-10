@@ -166,6 +166,17 @@ class Portfolio:
             else:
                 self.statement_period = other.statement_period
 
+        # Merge dividends, deduplicating by (symbol, date, amount)
+        existing_dividends = {
+            (d.symbol, d.payment_date, d.amount): d
+            for d in self.dividends
+        }
+        for div in other.dividends:
+            key = (div.symbol, div.payment_date, div.amount)
+            if key not in existing_dividends:
+                self.dividends.append(div)
+                existing_dividends[key] = div
+
     @property
     def option_trades(self) -> List[Trade]:
         """Get all option trades."""

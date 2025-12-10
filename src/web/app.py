@@ -42,6 +42,7 @@ def create_app(config=None):
             combined.options = []
             combined.stocks = []
             combined.trades = []
+            combined.dividends = []
             combined.net_asset_value = 0
             combined.cash_balance = 0
             account_names = []
@@ -61,6 +62,17 @@ def create_app(config=None):
                     if key not in existing_trades:
                         combined.trades.append(trade)
                         existing_trades[key] = trade
+
+                # Combine all dividends (deduplicate by key)
+                existing_dividends = {
+                    (d.symbol, d.payment_date, d.amount): d
+                    for d in combined.dividends
+                }
+                for div in p.dividends:
+                    key = (div.symbol, div.payment_date, div.amount)
+                    if key not in existing_dividends:
+                        combined.dividends.append(div)
+                        existing_dividends[key] = div
 
                 # Sum up NAV and cash
                 if p.net_asset_value:
@@ -330,6 +342,94 @@ def create_app(config=None):
                              portfolio=portfolio,
                              chart_data=chart_data,
                              recent_trades=recent_trades,
+                             portfolios=app.portfolios,
+                             portfolio_filter=session.get('portfolio_filter', 'all'))
+
+    @app.route('/dividends')
+    def dividends():
+        """Dividends page with charts and projections."""
+        from datetime import datetime, timedelta
+        from collections import defaultdict
+
+        portfolio, _ = get_active_portfolio()
+
+        if not app.portfolios:
+            return redirect(url_for('upload'))
+
+        # Get monthly dividend data
+        monthly_dividends = portfolio.get_monthly_dividends()
+        months = sorted(monthly_dividends.keys())
+
+        # Get dividends by symbol
+        dividends_by_symbol = portfolio.get_dividends_by_symbol()
+
+        # Build stock info with dividend yield
+        dividend_stocks = []
+        for symbol, div_data in dividends_by_symbol.items():
+            # Find ALL stock positions for this symbol (may have multiple from different portfolios)
+            matching_stocks = [s for s in portfolio.stocks if s.symbol == symbol]
+            shares = sum(s.quantity for s in matching_stocks) if matching_stocks else 0
+            # Use the first stock's current price (should be same for all)
+            current_price = matching_stocks[0].current_price if matching_stocks else 0
+            market_value = shares * current_price if shares and current_price else 0
+
+            # Calculate annual dividend and yield
+            annual_dividend = div_data['total']  # YTD dividends
+            # Annualize based on months of data
+            if months:
+                months_of_data = len(months)
+                if months_of_data > 0:
+                    annual_dividend = (div_data['total'] / months_of_data) * 12
+
+            dividend_yield = (annual_dividend / market_value * 100) if market_value > 0 else 0
+
+            dividend_stocks.append({
+                'symbol': symbol,
+                'shares': shares,
+                'current_price': current_price,
+                'market_value': market_value,
+                'ytd_dividends': div_data['total'],
+                'payment_count': div_data['count'],
+                'annual_dividend': annual_dividend,
+                'dividend_yield': dividend_yield,
+            })
+
+        # Sort by YTD dividends descending
+        dividend_stocks.sort(key=lambda x: x['ytd_dividends'], reverse=True)
+
+        # Calculate projection for next 12 months
+        # Use average monthly dividend from available data
+        total_ytd = portfolio.total_dividends
+        if months:
+            avg_monthly = total_ytd / len(months)
+            projected_annual = avg_monthly * 12
+        else:
+            avg_monthly = 0
+            projected_annual = 0
+
+        # Monthly projection (next 12 months)
+        today = datetime.now()
+        projection_months = []
+        projection_values = []
+        for i in range(12):
+            future_date = today + timedelta(days=30 * (i + 1))
+            projection_months.append(future_date.strftime("%Y-%m"))
+            projection_values.append(avg_monthly)
+
+        chart_data = {
+            'months': months,
+            'dividends': [monthly_dividends.get(m, 0) for m in months],
+            'total_dividends': total_ytd,
+            'avg_monthly': avg_monthly,
+            'projected_annual': projected_annual,
+            'projection_months': projection_months,
+            'projection_values': projection_values,
+        }
+
+        return render_template('dividends.html',
+                             portfolio=portfolio,
+                             chart_data=chart_data,
+                             dividend_stocks=dividend_stocks,
                              portfolios=app.portfolios,
                              portfolio_filter=session.get('portfolio_filter', 'all'))
 
