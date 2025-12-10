@@ -455,6 +455,39 @@
                 </a>
             </li>
         </ul>
+
+        {% if portfolios %}
+        <!-- Portfolio Selector -->
+        <div class="px-3 mt-4 pt-3" style="border-top: 1px solid var(--border-color);">
+            <small class="text-muted d-block mb-2"><i class="bi bi-folder2-open me-1"></i> Portfolio Filter</small>
+            <div class="dropdown">
+                <button class="btn btn-outline-secondary btn-sm w-100 dropdown-toggle text-start" type="button" data-bs-toggle="dropdown">
+                    {% if portfolio_filter == 'all' %}
+                        <i class="bi bi-collection me-1"></i> All Combined
+                    {% else %}
+                        <i class="bi bi-folder me-1"></i> {{ portfolio_filter }}
+                    {% endif %}
+                </button>
+                <ul class="dropdown-menu dropdown-menu-dark w-100">
+                    <li>
+                        <a class="dropdown-item {% if portfolio_filter == 'all' %}active{% endif %}" href="/set_portfolio/all">
+                            <i class="bi bi-collection me-2"></i> All Combined
+                        </a>
+                    </li>
+                    <li><hr class="dropdown-divider"></li>
+                    {% for pid, p in portfolios.items() %}
+                    <li>
+                        <a class="dropdown-item {% if portfolio_filter == pid %}active{% endif %}" href="/set_portfolio/{{ pid }}">
+                            <i class="bi bi-folder me-2"></i> {{ pid }}
+                            <small class="text-muted d-block ms-4">{{ p.total_option_positions }} options</small>
+                        </a>
+                    </li>
+                    {% endfor %}
+                </ul>
+            </div>
+            <small class="text-muted mt-2 d-block">{{ portfolios|length }} portfolio(s) loaded</small>
+        </div>
+        {% endif %}
     </aside>
 
     <!-- Mobile Header -->

@@ -4,7 +4,38 @@
 
 {% block content %}
 <div class="row justify-content-center">
-    <div class="col-lg-5 col-md-8">
+    <div class="col-lg-6 col-md-8">
+        {% if portfolios %}
+        <!-- Loaded Portfolios Card -->
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-folder2-open me-2"></i>Loaded Portfolios</span>
+                <span class="badge bg-primary">{{ portfolios|length }}</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="list-group list-group-flush">
+                    {% for pid, p in portfolios.items() %}
+                    <div class="list-group-item bg-transparent d-flex justify-content-between align-items-center">
+                        <div>
+                            <i class="bi bi-folder me-2 text-primary"></i>
+                            <strong>{{ pid }}</strong>
+                            <small class="text-muted ms-2">{{ p.total_option_positions }} options • {{ p.trades|length }} trades</small>
+                        </div>
+                        <div>
+                            <a href="/set_portfolio/{{ pid }}" class="btn btn-sm btn-outline-primary me-1" title="View this portfolio">
+                                <i class="bi bi-eye"></i>
+                            </a>
+                            <a href="/remove_portfolio/{{ pid }}" class="btn btn-sm btn-outline-danger" title="Remove portfolio" onclick="return confirm('Remove portfolio {{ pid }}?')">
+                                <i class="bi bi-trash"></i>
+                            </a>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
         <!-- Upload Card -->
         <div class="card mb-4">
             <div class="card-header">
@@ -25,11 +56,11 @@
                             <div class="upload-filename d-none" id="fileName"></div>
                         </div>
                         <div class="form-text text-center mt-2">
-                            Supports multiple CSV, TXT, and PLAIN files (trades will be merged)
+                            Each file becomes a separate portfolio. Use the filter to view individually or combined.
                         </div>
                     </div>
                     <button type="submit" class="btn btn-primary w-100 btn-lg" id="submitBtn">
-                        <i class="bi bi-lightning-charge me-2"></i>Analyze Portfolio
+                        <i class="bi bi-plus-circle me-2"></i>Add Portfolio(s)
                     </button>
                 </form>
             </div>
