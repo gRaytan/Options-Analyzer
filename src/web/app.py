@@ -459,17 +459,18 @@ def create_app(config=None):
         # Sort by YTD dividends descending
         dividend_stocks.sort(key=lambda x: x['ytd_dividends'], reverse=True)
 
-        # Calculate average monthly dividend from available data
-        total_ytd = portfolio.total_dividends
-        if months:
-            avg_monthly = total_ytd / len(months)
-        else:
-            avg_monthly = 0
-
         # Get bond interest data
         monthly_bond_interest = portfolio.get_monthly_bond_interest()
         bond_interest_by_symbol = portfolio.get_bond_interest_by_symbol()
         total_bond_interest = portfolio.total_bond_interest
+
+        # Calculate average monthly income (dividends + bond interest)
+        total_ytd = portfolio.total_dividends
+        total_income = total_ytd + total_bond_interest
+        if months:
+            avg_monthly_income = total_income / len(months)
+        else:
+            avg_monthly_income = 0
 
         # Build bond info list
         bond_list = []
@@ -488,7 +489,7 @@ def create_app(config=None):
             'months_count': len(months),
             'dividends': [monthly_dividends.get(m, 0) for m in months],
             'total_dividends': total_ytd,
-            'avg_monthly': avg_monthly,
+            'avg_monthly_income': avg_monthly_income,
             'total_bond_interest': total_bond_interest,
             'bond_interest': [monthly_bond_interest.get(m, 0) for m in months],
         }

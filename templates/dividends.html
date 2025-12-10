@@ -9,40 +9,56 @@
     <p class="subtitle">{{ portfolio.statement_period }}</p>
 </div>
 
-<!-- Summary Cards -->
-<div class="row g-4 mb-4">
-    <div class="col-lg-3 col-md-6">
+<!-- Summary Cards - Row 1: Large Cards -->
+<div class="row g-4 mb-3">
+    <div class="col-md-6">
+        <div class="card metric-card profit" style="padding: 1.5rem;">
+            <div class="metric-value text-profit" style="font-size: 2.5rem;">
+                ${{ "{:,.2f}".format(chart_data.total_dividends + chart_data.total_bond_interest|default(0)) }}
+            </div>
+            <div class="metric-label" style="font-size: 1.1rem;">YTD Total Income</div>
+            <small class="text-muted">Dividends + Bond Interest</small>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card metric-card neutral" style="padding: 1.5rem;">
+            <div class="metric-value" style="font-size: 2.5rem;">
+                ${{ "{:,.2f}".format(chart_data.avg_monthly_income) }}
+            </div>
+            <div class="metric-label" style="font-size: 1.1rem;">Avg Monthly Income</div>
+            <small class="text-muted">Based on {{ chart_data.months_count }} months</small>
+        </div>
+    </div>
+</div>
+
+<!-- Summary Cards - Row 2: Detail Cards -->
+<div class="row g-3 mb-4">
+    <div class="col-6 col-lg-3">
         <div class="card metric-card profit">
             <div class="metric-value text-profit">
                 ${{ "{:,.2f}".format(chart_data.total_dividends) }}
             </div>
-            <div class="metric-label">YTD Dividends</div>
-            <small class="text-muted">Stock dividends received</small>
+            <div class="metric-label">Dividends</div>
         </div>
     </div>
-    <div class="col-lg-3 col-md-6">
+    <div class="col-6 col-lg-3">
         <div class="card metric-card profit">
             <div class="metric-value text-profit">
                 ${{ "{:,.2f}".format(chart_data.total_bond_interest|default(0)) }}
             </div>
-            <div class="metric-label">YTD Bond Interest</div>
-            <small class="text-muted">Coupon payments received</small>
+            <div class="metric-label">Bond Interest</div>
         </div>
     </div>
-    <div class="col-lg-3 col-md-6">
+    <div class="col-6 col-lg-3">
         <div class="card metric-card neutral">
-            <div class="metric-value">
-                ${{ "{:,.2f}".format(chart_data.avg_monthly) }}
-            </div>
-            <div class="metric-label">Avg Monthly Dividends</div>
-            <small class="text-muted">Based on {{ chart_data.months_count }} months</small>
+            <div class="metric-value">{{ dividend_stocks|length }}</div>
+            <div class="metric-label">Dividend Stocks</div>
         </div>
     </div>
-    <div class="col-lg-3 col-md-6">
+    <div class="col-6 col-lg-3">
         <div class="card metric-card neutral">
-            <div class="metric-value">{{ dividend_stocks|length }} / {{ bond_list|length }}</div>
-            <div class="metric-label">Stocks / Bonds</div>
-            <small class="text-muted">Currently held</small>
+            <div class="metric-value">{{ bond_list|length }}</div>
+            <div class="metric-label">Bonds</div>
         </div>
     </div>
 </div>
@@ -52,10 +68,10 @@
     <div class="col-12">
         <div class="card h-100">
             <div class="card-header">
-                <i class="bi bi-bar-chart me-2"></i>Monthly Dividends Received
+                <i class="bi bi-bar-chart me-2"></i>Monthly Income (Dividends + Bond Interest)
             </div>
             <div class="card-body">
-                <canvas id="monthlyDividendsChart" height="200"></canvas>
+                <canvas id="monthlyIncomeChart" height="200"></canvas>
             </div>
         </div>
     </div>
@@ -159,30 +175,45 @@
 <script>
     const months = {{ chart_data.months | tojson }};
     const dividends = {{ chart_data.dividends | tojson }};
+    const bondInterest = {{ chart_data.bond_interest | tojson }};
 
     // Chart.js dark theme defaults
     Chart.defaults.color = '#8b949e';
     Chart.defaults.borderColor = '#30363d';
 
-    // Monthly Dividends Chart
-    new Chart(document.getElementById('monthlyDividendsChart'), {
+    // Monthly Income Chart (stacked: dividends + bond interest)
+    new Chart(document.getElementById('monthlyIncomeChart'), {
         type: 'bar',
         data: {
             labels: months,
-            datasets: [{
-                label: 'Dividends ($)',
-                data: dividends,
-                backgroundColor: 'rgba(63, 185, 80, 0.8)',
-                borderColor: '#3fb950',
-                borderWidth: 2,
-                borderRadius: 6
-            }]
+            datasets: [
+                {
+                    label: 'Dividends',
+                    data: dividends,
+                    backgroundColor: 'rgba(63, 185, 80, 0.8)',
+                    borderColor: '#3fb950',
+                    borderWidth: 1,
+                    borderRadius: 4
+                },
+                {
+                    label: 'Bond Interest',
+                    data: bondInterest,
+                    backgroundColor: 'rgba(56, 139, 253, 0.8)',
+                    borderColor: '#388bfd',
+                    borderWidth: 1,
+                    borderRadius: 4
+                }
+            ]
         },
         options: {
             responsive: true,
             maintainAspectRatio: false,
             plugins: {
-                legend: { display: false },
+                legend: {
+                    display: true,
+                    position: 'top',
+                    labels: { usePointStyle: true, padding: 20 }
+                },
                 tooltip: {
                     backgroundColor: '#21262d',
                     titleColor: '#e6edf3',
@@ -193,14 +224,19 @@
                     cornerRadius: 8,
                     callbacks: {
                         label: function(context) {
-                            return '$' + context.raw.toLocaleString(undefined, {minimumFractionDigits: 2});
+                            return context.dataset.label + ': $' + context.raw.toLocaleString(undefined, {minimumFractionDigits: 2});
+                        },
+                        footer: function(tooltipItems) {
+                            let total = 0;
+                            tooltipItems.forEach(item => { total += item.raw; });
+                            return 'Total: $' + total.toLocaleString(undefined, {minimumFractionDigits: 2});
                         }
                     }
                 }
             },
             scales: {
-                y: { beginAtZero: true, grid: { color: '#21262d' } },
-                x: { grid: { display: false } }
+                y: { beginAtZero: true, stacked: true, grid: { color: '#21262d' } },
+                x: { stacked: true, grid: { display: false } }
             }
         }
     });
