@@ -151,10 +151,10 @@
                     <table class="table mb-0 sortable-table" id="dashboardRiskTable">
                         <thead>
                             <tr>
-                                <th data-sort="string" class="sortable-header">Position <i class="bi bi-chevron-expand text-muted"></i></th>
-                                <th data-sort="number" class="sortable-header">Delta <i class="bi bi-chevron-expand text-muted"></i></th>
-                                <th data-sort="number" class="sortable-header">DTE <i class="bi bi-chevron-expand text-muted"></i></th>
-                                <th data-sort="number" class="sortable-header">P&L <i class="bi bi-chevron-expand text-muted"></i></th>
+                                <th data-sort="string">Position</th>
+                                <th data-sort="number">Delta</th>
+                                <th data-sort="number">DTE</th>
+                                <th data-sort="number">P&L</th>
                                 <th>Risk Flags</th>
                             </tr>
                         </thead>
@@ -205,6 +205,11 @@ document.addEventListener('DOMContentLoaded', function() {
         const headers = table.querySelectorAll('th[data-sort]');
 
         headers.forEach((header, index) => {
+            // Add sort icon to header
+            const icon = document.createElement('i');
+            icon.className = 'bi bi-chevron-expand text-muted ms-1';
+            icon.style.fontSize = '0.7rem';
+            header.appendChild(icon);
             header.style.cursor = 'pointer';
             header.addEventListener('click', () => sortTable(table, index, header));
         });
@@ -214,19 +219,25 @@ document.addEventListener('DOMContentLoaded', function() {
         const tbody = table.querySelector('tbody');
         const rows = Array.from(tbody.querySelectorAll('tr'));
         const sortType = header.dataset.sort;
-        const icon = header.querySelector('i');
 
         const isAsc = header.classList.contains('sort-asc');
         const newDir = isAsc ? 'desc' : 'asc';
 
         table.querySelectorAll('th[data-sort]').forEach(th => {
-            th.classList.remove('sort-asc', 'sort-desc', 'active');
+            th.classList.remove('sort-asc', 'sort-desc');
             const thIcon = th.querySelector('i');
-            if (thIcon) thIcon.className = 'bi bi-chevron-expand text-muted';
+            if (thIcon) {
+                thIcon.className = 'bi bi-chevron-expand text-muted ms-1';
+                thIcon.style.fontSize = '0.7rem';
+            }
         });
 
-        header.classList.add('sort-' + newDir, 'active');
-        if (icon) icon.className = 'bi bi-chevron-' + (newDir === 'asc' ? 'up' : 'down');
+        header.classList.add('sort-' + newDir);
+        const icon = header.querySelector('i');
+        if (icon) {
+            icon.className = 'bi bi-chevron-' + (newDir === 'asc' ? 'up' : 'down') + ' ms-1';
+            icon.style.fontSize = '0.7rem';
+        }
 
         rows.sort((a, b) => {
             const aCell = a.cells[columnIndex];

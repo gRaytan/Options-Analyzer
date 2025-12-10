@@ -6,7 +6,7 @@
 <!-- Page Header -->
 <div class="page-header">
     <h4><i class="bi bi-lightbulb"></i> Trading Recommendations</h4>
-    <p class="subtitle">Actionable insights based on your portfolio analysis • Click column headers to sort</p>
+    <p class="subtitle">Actionable insights based on your portfolio analysis</p>
 </div>
 
 <!-- Profit Target Reached -->
@@ -21,12 +21,12 @@
             <table class="table mb-0 sortable-table" id="profitTable">
                 <thead>
                     <tr>
-                        <th data-sort="string" class="sortable-header">Position <i class="bi bi-chevron-expand text-muted"></i></th>
-                        <th data-sort="number" class="sortable-header">Entry <i class="bi bi-chevron-expand text-muted"></i></th>
-                        <th data-sort="number" class="sortable-header">Current <i class="bi bi-chevron-expand text-muted"></i></th>
-                        <th data-sort="number" class="sortable-header">Profit % <i class="bi bi-chevron-expand text-muted"></i></th>
-                        <th data-sort="number" class="sortable-header">P&L <i class="bi bi-chevron-expand text-muted"></i></th>
-                        <th data-sort="number" class="sortable-header">DTE <i class="bi bi-chevron-expand text-muted"></i></th>
+                        <th data-sort="string">Position</th>
+                        <th data-sort="number">Entry</th>
+                        <th data-sort="number">Current</th>
+                        <th data-sort="number">Profit %</th>
+                        <th data-sort="number">P&L</th>
+                        <th data-sort="number">DTE</th>
                         <th>Action</th>
                     </tr>
                 </thead>
@@ -67,10 +67,10 @@
             <table class="table mb-0 sortable-table" id="riskTable">
                 <thead>
                     <tr>
-                        <th data-sort="string" class="sortable-header">Position <i class="bi bi-chevron-expand text-muted"></i></th>
-                        <th data-sort="number" class="sortable-header">Delta <i class="bi bi-chevron-expand text-muted"></i></th>
-                        <th data-sort="number" class="sortable-header">Underlying <i class="bi bi-chevron-expand text-muted"></i></th>
-                        <th data-sort="number" class="sortable-header">P&L <i class="bi bi-chevron-expand text-muted"></i></th>
+                        <th data-sort="string">Position</th>
+                        <th data-sort="number">Delta</th>
+                        <th data-sort="number">Underlying</th>
+                        <th data-sort="number">P&L</th>
                         <th>Risk</th>
                         <th>Recommendation</th>
                     </tr>
@@ -131,11 +131,11 @@
             <table class="table mb-0 sortable-table" id="expiringTable">
                 <thead>
                     <tr>
-                        <th data-sort="string" class="sortable-header">Position <i class="bi bi-chevron-expand text-muted"></i></th>
-                        <th data-sort="date" class="sortable-header">Expiration <i class="bi bi-chevron-expand text-muted"></i></th>
-                        <th data-sort="number" class="sortable-header">DTE <i class="bi bi-chevron-expand text-muted"></i></th>
-                        <th data-sort="number" class="sortable-header">Delta <i class="bi bi-chevron-expand text-muted"></i></th>
-                        <th data-sort="number" class="sortable-header">P&L <i class="bi bi-chevron-expand text-muted"></i></th>
+                        <th data-sort="string">Position</th>
+                        <th data-sort="date">Expiration</th>
+                        <th data-sort="number">DTE</th>
+                        <th data-sort="number">Delta</th>
+                        <th data-sort="number">P&L</th>
                         <th>Recommendation</th>
                     </tr>
                 </thead>
@@ -189,6 +189,11 @@ document.addEventListener('DOMContentLoaded', function() {
         const headers = table.querySelectorAll('th[data-sort]');
 
         headers.forEach((header, index) => {
+            // Add sort icon to header
+            const icon = document.createElement('i');
+            icon.className = 'bi bi-chevron-expand text-muted ms-1';
+            icon.style.fontSize = '0.7rem';
+            header.appendChild(icon);
             header.style.cursor = 'pointer';
             header.addEventListener('click', () => sortTable(table, index, header));
         });
@@ -198,7 +203,6 @@ document.addEventListener('DOMContentLoaded', function() {
         const tbody = table.querySelector('tbody');
         const rows = Array.from(tbody.querySelectorAll('tr'));
         const sortType = header.dataset.sort;
-        const icon = header.querySelector('i');
 
         // Determine sort direction
         const isAsc = header.classList.contains('sort-asc');
@@ -206,17 +210,20 @@ document.addEventListener('DOMContentLoaded', function() {
 
         // Reset all headers in this table
         table.querySelectorAll('th[data-sort]').forEach(th => {
-            th.classList.remove('sort-asc', 'sort-desc', 'active');
+            th.classList.remove('sort-asc', 'sort-desc');
             const thIcon = th.querySelector('i');
             if (thIcon) {
-                thIcon.className = 'bi bi-chevron-expand text-muted';
+                thIcon.className = 'bi bi-chevron-expand text-muted ms-1';
+                thIcon.style.fontSize = '0.7rem';
             }
         });
 
         // Set current header state
-        header.classList.add('sort-' + newDir, 'active');
+        header.classList.add('sort-' + newDir);
+        const icon = header.querySelector('i');
         if (icon) {
-            icon.className = 'bi bi-chevron-' + (newDir === 'asc' ? 'up' : 'down');
+            icon.className = 'bi bi-chevron-' + (newDir === 'asc' ? 'up' : 'down') + ' ms-1';
+            icon.style.fontSize = '0.7rem';
         }
 
         // Sort rows
@@ -229,7 +236,7 @@ document.addEventListener('DOMContentLoaded', function() {
             let bVal = bCell.textContent.trim();
 
             if (sortType === 'number') {
-                // Extract numbers, handling $, %, commas
+                // Extract numbers, handling $, %, commas, 'd' suffix
                 aVal = parseFloat(aVal.replace(/[$,%d]/g, '').replace(/,/g, '')) || 0;
                 bVal = parseFloat(bVal.replace(/[$,%d]/g, '').replace(/,/g, '')) || 0;
             } else if (sortType === 'date') {

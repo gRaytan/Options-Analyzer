@@ -238,6 +238,8 @@
             gap: 0.35rem;
             transition: color 0.15s ease;
             white-space: nowrap;
+            cursor: pointer;
+            user-select: none;
         }
 
         .sortable-header:hover {
@@ -246,6 +248,14 @@
 
         .sortable-header.active {
             color: var(--text-primary);
+        }
+
+        th.sortable-header {
+            cursor: pointer;
+        }
+
+        th.sortable-header:hover {
+            background-color: rgba(255, 255, 255, 0.05);
         }
 
         .sortable-header i {
