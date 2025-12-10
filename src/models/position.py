@@ -38,6 +38,17 @@ class Dividend:
 
 
 @dataclass
+class BondInterest:
+    """Represents a bond coupon/interest payment."""
+    symbol: str
+    payment_date: date
+    amount: float
+    description: str = ""
+    currency: str = "USD"
+    bond_name: str = ""  # Full bond name like "Amazon.com Inc AMZN 4.95 12/05/44"
+
+
+@dataclass
 class Trade:
     """Represents a single trade."""
     symbol: str

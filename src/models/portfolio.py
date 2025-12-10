@@ -2,7 +2,7 @@
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 from collections import defaultdict
-from .position import OptionPosition, StockPosition, Trade, Dividend
+from .position import OptionPosition, StockPosition, Trade, Dividend, BondInterest
 
 
 @dataclass
@@ -21,6 +21,7 @@ class Portfolio:
     stocks: List[StockPosition] = field(default_factory=list)
     trades: List[Trade] = field(default_factory=list)
     dividends: List[Dividend] = field(default_factory=list)
+    bond_interest: List[BondInterest] = field(default_factory=list)
 
     # Account info
     account_id: str = ""
@@ -216,12 +217,12 @@ class Portfolio:
         return dict(sorted(monthly.items()))
 
     def get_monthly_premium_collected(self) -> Dict[str, float]:
-        """Get NET premium by month (opens - closes).
+        """Get NET premium by month (opens - closes), including fees.
 
         This calculates the true net cash flow from options trading:
-        - Opens (selling): we receive premium (positive)
-        - Closes (buying back): we pay premium (negative)
-        - Net = received - paid
+        - Opens (selling): we receive premium minus fees
+        - Closes (buying back): we pay premium plus fees
+        - Net = (received - open_fees) - (paid + close_fees)
 
         Can be negative if you paid more to close positions than you received
         from opening new ones (e.g., during a market downturn when closing losers).
@@ -231,12 +232,13 @@ class Portfolio:
 
         for trade in self.option_trades:
             month = trade.month_key
+            commission = abs(trade.commission)
             if trade.is_opening and trade.quantity < 0:
-                # Selling to open - we receive premium
-                monthly_opens[month] += abs(trade.proceeds)
+                # Selling to open - we receive premium minus fees
+                monthly_opens[month] += abs(trade.proceeds) - commission
             elif trade.is_closing and trade.quantity > 0:
-                # Buying to close - we pay premium
-                monthly_closes[month] += abs(trade.proceeds)
+                # Buying to close - we pay premium plus fees
+                monthly_closes[month] += abs(trade.proceeds) + commission
 
         # Calculate net for each month
         all_months = set(monthly_opens.keys()) | set(monthly_closes.keys())
