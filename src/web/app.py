@@ -204,7 +204,51 @@ def create_app(config=None):
         return render_template('upload.html',
                              portfolios=app.portfolios,
                              portfolio_filter=session.get('portfolio_filter', 'all'))
-    
+
+    @app.route('/refresh_prices')
+    def refresh_prices():
+        """Refresh stock prices for all portfolios."""
+        from src.data.price_fetcher import PriceFetcher
+
+        if not app.portfolios:
+            flash('No portfolios loaded', 'error')
+            return redirect(url_for('upload'))
+
+        try:
+            fetcher = PriceFetcher()
+            fetcher.clear_cache()  # Clear cache to force fresh prices
+
+            total_updated = 0
+            for portfolio_id, portfolio in app.portfolios.items():
+                # Reset underlying prices to force refresh
+                for option in portfolio.options:
+                    option.underlying_price = 0
+                for stock in portfolio.stocks:
+                    stock.current_price = 0
+
+                # Fetch fresh prices
+                update_portfolio_prices(portfolio, fetcher)
+
+                # Also update stock prices
+                stock_symbols = list(set(s.symbol for s in portfolio.stocks if s.symbol))
+                if stock_symbols:
+                    prices = fetcher.get_prices(stock_symbols)
+                    for stock in portfolio.stocks:
+                        if stock.symbol in prices and prices[stock.symbol]:
+                            stock.current_price = prices[stock.symbol]
+
+                # Recalculate Greeks with new prices
+                calculate_portfolio_greeks(portfolio)
+
+                total_updated += len(portfolio.options) + len(portfolio.stocks)
+
+            flash(f'Prices refreshed for {total_updated} positions', 'success')
+        except Exception as e:
+            flash(f'Error refreshing prices: {str(e)}', 'error')
+
+        # Redirect back to the referring page or index
+        return redirect(request.referrer or url_for('index'))
+
     @app.route('/positions')
     def positions():
         """Positions table page."""
