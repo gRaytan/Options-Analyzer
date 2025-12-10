@@ -5,7 +5,7 @@ from datetime import datetime, date
 from typing import List, Dict, Tuple, Optional
 from io import StringIO
 
-from src.models.position import OptionPosition, StockPosition, OptionType, Trade, TradeAction, Dividend
+from src.models.position import OptionPosition, StockPosition, OptionType, Trade, TradeAction, Dividend, BondInterest
 from src.models.portfolio import Portfolio
 
 
@@ -50,6 +50,9 @@ class IBActivityStatementParser:
 
         # Parse dividends
         portfolio.dividends = self._parse_dividends()
+
+        # Parse bond interest/coupons
+        portfolio.bond_interest = self._parse_bond_interest()
 
         return portfolio
     
@@ -355,6 +358,57 @@ class IBActivityStatementParser:
                 print(f"Warning: Could not parse dividend: {e}")
 
         return dividends
+
+    def _parse_bond_interest(self) -> List[BondInterest]:
+        """Parse bond coupon payments from Interest section."""
+        interest_payments = []
+        interest_data = self.sections.get("Interest", [])
+
+        for item in interest_data:
+            try:
+                description = item.get("Description", "")
+
+                # Only parse bond coupon payments
+                # Format: "Bond Coupon Payment (AMZN 4.95 12/05/44 - Amazon.com Inc AMZN 4.95 12/05/44)"
+                if not description.startswith("Bond Coupon Payment"):
+                    continue
+
+                # Parse date
+                date_str = item.get("Date", "")
+                if not date_str:
+                    continue
+                payment_date = datetime.strptime(date_str.strip(), "%Y-%m-%d").date()
+
+                # Parse amount
+                amount = self._parse_float(item.get("Amount", "0"))
+                if amount <= 0:
+                    continue
+
+                # Extract symbol and bond name from description
+                # Format: "Bond Coupon Payment (AMZN 4.95 12/05/44 - Amazon.com Inc AMZN 4.95 12/05/44)"
+                match = re.search(r'\(([A-Z]+)\s+[\d.]+\s+\d+/\d+/\d+\s+-\s+(.+)\)', description)
+                if match:
+                    symbol = match.group(1)
+                    bond_name = match.group(2).strip()
+                else:
+                    # Fallback: try to extract just the symbol
+                    symbol_match = re.search(r'\(([A-Z]+)', description)
+                    symbol = symbol_match.group(1) if symbol_match else "UNKNOWN"
+                    bond_name = description
+
+                bond_interest = BondInterest(
+                    symbol=symbol,
+                    payment_date=payment_date,
+                    amount=amount,
+                    description=description,
+                    currency=item.get("Currency", "USD"),
+                    bond_name=bond_name,
+                )
+                interest_payments.append(bond_interest)
+            except (ValueError, KeyError) as e:
+                print(f"Warning: Could not parse bond interest: {e}")
+
+        return interest_payments
 
     def _parse_trade_datetime(self, date_str: str) -> datetime:
         """Parse trade datetime like '2025-12-01, 10:35:16'."""

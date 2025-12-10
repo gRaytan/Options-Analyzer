@@ -178,6 +178,17 @@ class Portfolio:
                 self.dividends.append(div)
                 existing_dividends[key] = div
 
+        # Merge bond interest, deduplicating by (symbol, date, amount)
+        existing_bond_interest = {
+            (b.symbol, b.payment_date, b.amount): b
+            for b in self.bond_interest
+        }
+        for interest in other.bond_interest:
+            key = (interest.symbol, interest.payment_date, interest.amount)
+            if key not in existing_bond_interest:
+                self.bond_interest.append(interest)
+                existing_bond_interest[key] = interest
+
     @property
     def option_trades(self) -> List[Trade]:
         """Get all option trades."""
@@ -188,12 +199,25 @@ class Portfolio:
         """Total dividends received."""
         return sum(d.amount for d in self.dividends)
 
+    @property
+    def total_bond_interest(self) -> float:
+        """Total bond interest/coupons received."""
+        return sum(b.amount for b in self.bond_interest)
+
     def get_monthly_dividends(self) -> Dict[str, float]:
         """Get dividends by month."""
         monthly = defaultdict(float)
         for div in self.dividends:
             month_key = div.payment_date.strftime("%Y-%m")
             monthly[month_key] += div.amount
+        return dict(monthly)
+
+    def get_monthly_bond_interest(self) -> Dict[str, float]:
+        """Get bond interest/coupons by month."""
+        monthly = defaultdict(float)
+        for interest in self.bond_interest:
+            month_key = interest.payment_date.strftime("%Y-%m")
+            monthly[month_key] += interest.amount
         return dict(monthly)
 
     def get_dividends_by_symbol(self) -> Dict[str, Dict]:
@@ -203,6 +227,20 @@ class Portfolio:
             by_symbol[div.symbol]['total'] += div.amount
             by_symbol[div.symbol]['payment_dates'].add(div.payment_date)
             by_symbol[div.symbol]['payments'].append(div)
+        # Convert payment_dates set to count of unique dates
+        for symbol in by_symbol:
+            by_symbol[symbol]['count'] = len(by_symbol[symbol]['payment_dates'])
+        return dict(by_symbol)
+
+    def get_bond_interest_by_symbol(self) -> Dict[str, Dict]:
+        """Get bond interest summary by symbol."""
+        by_symbol = defaultdict(lambda: {'total': 0.0, 'count': 0, 'payment_dates': set(), 'payments': [], 'bond_name': ''})
+        for interest in self.bond_interest:
+            by_symbol[interest.symbol]['total'] += interest.amount
+            by_symbol[interest.symbol]['payment_dates'].add(interest.payment_date)
+            by_symbol[interest.symbol]['payments'].append(interest)
+            if interest.bond_name:
+                by_symbol[interest.symbol]['bond_name'] = interest.bond_name
         # Convert payment_dates set to count of unique dates
         for symbol in by_symbol:
             by_symbol[symbol]['count'] = len(by_symbol[symbol]['payment_dates'])

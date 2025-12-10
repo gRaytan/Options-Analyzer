@@ -11,28 +11,37 @@
 
 <!-- Summary Cards -->
 <div class="row g-4 mb-4">
-    <div class="col-lg-4 col-md-6">
+    <div class="col-lg-3 col-md-6">
         <div class="card metric-card profit">
             <div class="metric-value text-profit">
                 ${{ "{:,.2f}".format(chart_data.total_dividends) }}
             </div>
-            <div class="metric-label">YTD Received</div>
-            <small class="text-muted">Dividends already paid</small>
+            <div class="metric-label">YTD Dividends</div>
+            <small class="text-muted">Stock dividends received</small>
         </div>
     </div>
-    <div class="col-lg-4 col-md-6">
+    <div class="col-lg-3 col-md-6">
+        <div class="card metric-card profit">
+            <div class="metric-value text-profit">
+                ${{ "{:,.2f}".format(chart_data.total_bond_interest|default(0)) }}
+            </div>
+            <div class="metric-label">YTD Bond Interest</div>
+            <small class="text-muted">Coupon payments received</small>
+        </div>
+    </div>
+    <div class="col-lg-3 col-md-6">
         <div class="card metric-card neutral">
             <div class="metric-value">
                 ${{ "{:,.2f}".format(chart_data.avg_monthly) }}
             </div>
-            <div class="metric-label">Avg Monthly</div>
+            <div class="metric-label">Avg Monthly Dividends</div>
             <small class="text-muted">Based on {{ chart_data.months_count }} months</small>
         </div>
     </div>
-    <div class="col-lg-4 col-md-6">
+    <div class="col-lg-3 col-md-6">
         <div class="card metric-card neutral">
-            <div class="metric-value">{{ dividend_stocks|length }}</div>
-            <div class="metric-label">Dividend Stocks</div>
+            <div class="metric-value">{{ dividend_stocks|length }} / {{ bond_list|length }}</div>
+            <div class="metric-label">Stocks / Bonds</div>
             <small class="text-muted">Currently held</small>
         </div>
     </div>
@@ -52,45 +61,94 @@
     </div>
 </div>
 
-<!-- Dividend Stocks Table -->
-<div class="card">
-    <div class="card-header">
-        <i class="bi bi-table me-2"></i>Dividend-Paying Stocks
-        <span class="badge bg-secondary ms-2">{{ dividend_stocks|length }} stocks</span>
+<!-- Tables Row -->
+<div class="row g-4 mb-4">
+    <!-- Dividend Stocks Table -->
+    <div class="col-lg-7">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-graph-up-arrow me-2"></i>Dividend-Paying Stocks
+                <span class="badge bg-secondary ms-2">{{ dividend_stocks|length }} stocks</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                    <table class="table mb-0 sortable-table" id="dividendStocksTable">
+                        <thead style="position: sticky; top: 0; background: var(--bg-secondary); z-index: 10;">
+                            <tr>
+                                <th data-sort="text" style="cursor: pointer;">Symbol</th>
+                                <th data-sort="number" style="cursor: pointer;">Shares</th>
+                                <th data-sort="number" style="cursor: pointer;">Price</th>
+                                <th data-sort="number" style="cursor: pointer;">Market Value</th>
+                                <th data-sort="number" style="cursor: pointer;">YTD Dividends</th>
+                                <th data-sort="number" style="cursor: pointer;">Payments</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for stock in dividend_stocks %}
+                            <tr>
+                                <td><strong>{{ stock.symbol }}</strong></td>
+                                <td>{{ stock.shares }}</td>
+                                <td>${{ "{:.2f}".format(stock.current_price) }}</td>
+                                <td>${{ "{:,.0f}".format(stock.market_value) }}</td>
+                                <td class="text-profit"><strong>${{ "{:,.2f}".format(stock.ytd_dividends) }}</strong></td>
+                                <td>{{ stock.payment_count }}</td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="6" class="text-center text-muted py-5">
+                                    <i class="bi bi-inbox fs-1 d-block mb-3"></i>
+                                    No dividend data available
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
     </div>
-    <div class="card-body p-0">
-        <div class="table-responsive">
-            <table class="table mb-0 sortable-table" id="dividendStocksTable">
-                <thead>
-                    <tr>
-                        <th data-sort="text" style="cursor: pointer;">Symbol</th>
-                        <th data-sort="number" style="cursor: pointer;">Shares</th>
-                        <th data-sort="number" style="cursor: pointer;">Price</th>
-                        <th data-sort="number" style="cursor: pointer;">Market Value</th>
-                        <th data-sort="number" style="cursor: pointer;">YTD Dividends</th>
-                        <th data-sort="number" style="cursor: pointer;">Payments</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for stock in dividend_stocks %}
-                    <tr>
-                        <td><strong>{{ stock.symbol }}</strong></td>
-                        <td>{{ stock.shares }}</td>
-                        <td>${{ "{:.2f}".format(stock.current_price) }}</td>
-                        <td>${{ "{:,.0f}".format(stock.market_value) }}</td>
-                        <td class="text-profit"><strong>${{ "{:,.2f}".format(stock.ytd_dividends) }}</strong></td>
-                        <td>{{ stock.payment_count }}</td>
-                    </tr>
-                    {% else %}
-                    <tr>
-                        <td colspan="6" class="text-center text-muted py-5">
-                            <i class="bi bi-inbox fs-1 d-block mb-3"></i>
-                            No dividend data available
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+
+    <!-- Bond Interest Table -->
+    <div class="col-lg-5">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-bank me-2"></i>Bond Coupon Payments
+                <span class="badge bg-secondary ms-2">{{ bond_list|length }} bonds</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                    <table class="table mb-0 sortable-table" id="bondInterestTable">
+                        <thead style="position: sticky; top: 0; background: var(--bg-secondary); z-index: 10;">
+                            <tr>
+                                <th data-sort="text" style="cursor: pointer;">Bond</th>
+                                <th data-sort="number" style="cursor: pointer;">YTD Interest</th>
+                                <th data-sort="number" style="cursor: pointer;">Payments</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for bond in bond_list %}
+                            <tr>
+                                <td>
+                                    <strong>{{ bond.symbol }}</strong>
+                                    {% if bond.bond_name %}
+                                    <br><small class="text-muted">{{ bond.bond_name }}</small>
+                                    {% endif %}
+                                </td>
+                                <td class="text-profit"><strong>${{ "{:,.2f}".format(bond.ytd_interest) }}</strong></td>
+                                <td>{{ bond.payment_count }}</td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="3" class="text-center text-muted py-5">
+                                    <i class="bi bi-inbox fs-1 d-block mb-3"></i>
+                                    No bond interest data available
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </div>
     </div>
 </div>

@@ -43,6 +43,7 @@ def create_app(config=None):
             combined.stocks = []
             combined.trades = []
             combined.dividends = []
+            combined.bond_interest = []
             combined.net_asset_value = 0
             combined.cash_balance = 0
             account_names = []
@@ -73,6 +74,17 @@ def create_app(config=None):
                     if key not in existing_dividends:
                         combined.dividends.append(div)
                         existing_dividends[key] = div
+
+                # Combine all bond interest (deduplicate by key)
+                existing_bond_interest = {
+                    (b.symbol, b.payment_date, b.amount): b
+                    for b in combined.bond_interest
+                }
+                for interest in getattr(p, 'bond_interest', []):
+                    key = (interest.symbol, interest.payment_date, interest.amount)
+                    if key not in existing_bond_interest:
+                        combined.bond_interest.append(interest)
+                        existing_bond_interest[key] = interest
 
                 # Sum up NAV and cash
                 if p.net_asset_value:
@@ -454,18 +466,38 @@ def create_app(config=None):
         else:
             avg_monthly = 0
 
+        # Get bond interest data
+        monthly_bond_interest = portfolio.get_monthly_bond_interest()
+        bond_interest_by_symbol = portfolio.get_bond_interest_by_symbol()
+        total_bond_interest = portfolio.total_bond_interest
+
+        # Build bond info list
+        bond_list = []
+        for symbol, interest_data in bond_interest_by_symbol.items():
+            bond_list.append({
+                'symbol': symbol,
+                'bond_name': interest_data['bond_name'],
+                'ytd_interest': interest_data['total'],
+                'payment_count': interest_data['count'],
+            })
+        # Sort by YTD interest descending
+        bond_list.sort(key=lambda x: x['ytd_interest'], reverse=True)
+
         chart_data = {
             'months': months,
             'months_count': len(months),
             'dividends': [monthly_dividends.get(m, 0) for m in months],
             'total_dividends': total_ytd,
             'avg_monthly': avg_monthly,
+            'total_bond_interest': total_bond_interest,
+            'bond_interest': [monthly_bond_interest.get(m, 0) for m in months],
         }
 
         return render_template('dividends.html',
                              portfolio=portfolio,
                              chart_data=chart_data,
                              dividend_stocks=dividend_stocks,
+                             bond_list=bond_list,
                              portfolios=app.portfolios,
                              portfolio_filter=session.get('portfolio_filter', 'all'))
 
