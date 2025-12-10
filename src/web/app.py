@@ -406,7 +406,6 @@ def create_app(config=None):
         """Dividends page with charts and projections."""
         from datetime import datetime, timedelta
         from collections import defaultdict
-        from src.analysis.income_projection import calculate_income_projection
 
         portfolio, _ = get_active_portfolio()
 
@@ -495,20 +494,70 @@ def create_app(config=None):
             'bond_interest': [monthly_bond_interest.get(m, 0) for m in months],
         }
 
-        # Calculate income projections for next year
+        return render_template('dividends.html',
+                             portfolio=portfolio,
+                             chart_data=chart_data,
+                             dividend_stocks=dividend_stocks,
+                             bond_list=bond_list,
+                             portfolios=app.portfolios,
+                             portfolio_filter=session.get('portfolio_filter', 'all'))
+
+    @app.route('/api/income-projection')
+    def api_income_projection():
+        """API endpoint for income projection data (fetched async)."""
+        from src.analysis.income_projection import calculate_income_projection
+
+        portfolio, _ = get_active_portfolio()
+        if portfolio is None:
+            return jsonify({'error': 'No portfolio loaded'}), 404
+
+        # Get monthly dividend data for months count
+        monthly_dividends = portfolio.get_monthly_dividends()
+        months = sorted(monthly_dividends.keys())
+
+        # Get dividends by symbol
+        dividends_by_symbol = portfolio.get_dividends_by_symbol()
+
+        # Build dividend stocks list
+        dividend_stocks = []
+        for symbol, div_data in dividends_by_symbol.items():
+            matching_stocks = [s for s in portfolio.stocks if s.symbol == symbol]
+            shares = sum(s.quantity for s in matching_stocks) if matching_stocks else 0
+            if shares <= 0:
+                continue
+            current_price = matching_stocks[0].current_price if matching_stocks else 0
+            dividend_stocks.append({
+                'symbol': symbol,
+                'shares': shares,
+                'current_price': current_price,
+                'ytd_dividends': div_data['total'],
+            })
+
+        # Build bond list
+        bond_interest_by_symbol = portfolio.get_bond_interest_by_symbol()
+        bond_list = []
+        for symbol, interest_data in bond_interest_by_symbol.items():
+            bond_list.append({
+                'symbol': symbol,
+                'bond_name': interest_data['bond_name'],
+                'ytd_interest': interest_data['total'],
+                'payment_count': interest_data['count'],
+            })
+
+        # Calculate projection
         projection = calculate_income_projection(
             dividend_stocks=dividend_stocks,
             bond_list=bond_list,
             months_of_data=len(months) if months else 12
         )
 
-        projection_data = {
+        return jsonify({
             'total_dividend': projection.total_dividend_projection,
             'total_dividend_with_growth': projection.total_dividend_with_growth,
             'total_bond': projection.total_bond_projection,
             'total_income': projection.total_income_projection,
             'total_income_with_growth': projection.total_income_with_growth,
-            'avg_cagr': projection.avg_dividend_cagr * 100,  # As percentage
+            'avg_cagr': projection.avg_dividend_cagr * 100,
             'stocks': [
                 {
                     'symbol': p.symbol,
@@ -530,16 +579,7 @@ def create_app(config=None):
                 }
                 for p in projection.bond_projections
             ],
-        }
-
-        return render_template('dividends.html',
-                             portfolio=portfolio,
-                             chart_data=chart_data,
-                             dividend_stocks=dividend_stocks,
-                             bond_list=bond_list,
-                             projection=projection_data,
-                             portfolios=app.portfolios,
-                             portfolio_filter=session.get('portfolio_filter', 'all'))
+        })
 
     @app.route('/api/portfolio')
     def api_portfolio():
