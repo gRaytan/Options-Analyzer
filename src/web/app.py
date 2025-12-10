@@ -364,11 +364,17 @@ def create_app(config=None):
         dividends_by_symbol = portfolio.get_dividends_by_symbol()
 
         # Build stock info with dividend yield
+        # Only include stocks that are currently held (shares > 0)
         dividend_stocks = []
         for symbol, div_data in dividends_by_symbol.items():
             # Find ALL stock positions for this symbol (may have multiple from different portfolios)
             matching_stocks = [s for s in portfolio.stocks if s.symbol == symbol]
             shares = sum(s.quantity for s in matching_stocks) if matching_stocks else 0
+
+            # Skip stocks that are no longer held
+            if shares <= 0:
+                continue
+
             # Use the first stock's current price (should be same for all)
             current_price = matching_stocks[0].current_price if matching_stocks else 0
             market_value = shares * current_price if shares and current_price else 0
@@ -397,33 +403,19 @@ def create_app(config=None):
         # Sort by YTD dividends descending
         dividend_stocks.sort(key=lambda x: x['ytd_dividends'], reverse=True)
 
-        # Calculate projection for next 12 months
-        # Use average monthly dividend from available data
+        # Calculate average monthly dividend from available data
         total_ytd = portfolio.total_dividends
         if months:
             avg_monthly = total_ytd / len(months)
-            projected_annual = avg_monthly * 12
         else:
             avg_monthly = 0
-            projected_annual = 0
-
-        # Monthly projection (next 12 months)
-        today = datetime.now()
-        projection_months = []
-        projection_values = []
-        for i in range(12):
-            future_date = today + timedelta(days=30 * (i + 1))
-            projection_months.append(future_date.strftime("%Y-%m"))
-            projection_values.append(avg_monthly)
 
         chart_data = {
             'months': months,
+            'months_count': len(months),
             'dividends': [monthly_dividends.get(m, 0) for m in months],
             'total_dividends': total_ytd,
             'avg_monthly': avg_monthly,
-            'projected_annual': projected_annual,
-            'projection_months': projection_months,
-            'projection_values': projection_values,
         }
 
         return render_template('dividends.html',

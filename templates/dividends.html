@@ -11,7 +11,7 @@
 
 <!-- Summary Cards -->
 <div class="row g-4 mb-4">
-    <div class="col-lg-3 col-md-6">
+    <div class="col-lg-4 col-md-6">
         <div class="card metric-card profit">
             <div class="metric-value text-profit">
                 ${{ "{:,.2f}".format(chart_data.total_dividends) }}
@@ -20,52 +20,33 @@
             <small class="text-muted">Dividends already paid</small>
         </div>
     </div>
-    <div class="col-lg-3 col-md-6">
+    <div class="col-lg-4 col-md-6">
         <div class="card metric-card neutral">
             <div class="metric-value">
                 ${{ "{:,.2f}".format(chart_data.avg_monthly) }}
             </div>
             <div class="metric-label">Avg Monthly</div>
-            <small class="text-muted">Based on {{ chart_data.months|length }} months</small>
+            <small class="text-muted">Based on {{ chart_data.months_count }} months</small>
         </div>
     </div>
-    <div class="col-lg-3 col-md-6">
-        <div class="card metric-card profit">
-            <div class="metric-value text-profit">
-                ${{ "{:,.2f}".format(chart_data.projected_annual) }}
-            </div>
-            <div class="metric-label">Projected Annual</div>
-            <small class="text-muted">Avg × 12 months</small>
-        </div>
-    </div>
-    <div class="col-lg-3 col-md-6">
+    <div class="col-lg-4 col-md-6">
         <div class="card metric-card neutral">
             <div class="metric-value">{{ dividend_stocks|length }}</div>
             <div class="metric-label">Dividend Stocks</div>
-            <small class="text-muted">Unique symbols</small>
+            <small class="text-muted">Currently held</small>
         </div>
     </div>
 </div>
 
 <!-- Charts Row -->
 <div class="row g-4 mb-4">
-    <div class="col-lg-6">
+    <div class="col-12">
         <div class="card h-100">
             <div class="card-header">
                 <i class="bi bi-bar-chart me-2"></i>Monthly Dividends Received
             </div>
             <div class="card-body">
-                <canvas id="monthlyDividendsChart" height="280"></canvas>
-            </div>
-        </div>
-    </div>
-    <div class="col-lg-6">
-        <div class="card h-100">
-            <div class="card-header">
-                <i class="bi bi-graph-up-arrow me-2"></i>12-Month Projection
-            </div>
-            <div class="card-body">
-                <canvas id="projectionChart" height="280"></canvas>
+                <canvas id="monthlyDividendsChart" height="200"></canvas>
             </div>
         </div>
     </div>
@@ -88,8 +69,6 @@
                         <th data-sort="number" style="cursor: pointer;">Market Value</th>
                         <th data-sort="number" style="cursor: pointer;">YTD Dividends</th>
                         <th data-sort="number" style="cursor: pointer;">Payments</th>
-                        <th data-sort="number" style="cursor: pointer;">Est. Annual</th>
-                        <th data-sort="number" style="cursor: pointer;">Yield</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -101,18 +80,10 @@
                         <td>${{ "{:,.0f}".format(stock.market_value) }}</td>
                         <td class="text-profit"><strong>${{ "{:,.2f}".format(stock.ytd_dividends) }}</strong></td>
                         <td>{{ stock.payment_count }}</td>
-                        <td>${{ "{:,.2f}".format(stock.annual_dividend) }}</td>
-                        <td>
-                            {% if stock.dividend_yield > 0 %}
-                            <span class="badge bg-success">{{ "{:.1f}".format(stock.dividend_yield) }}%</span>
-                            {% else %}
-                            <span class="text-muted">-</span>
-                            {% endif %}
-                        </td>
                     </tr>
                     {% else %}
                     <tr>
-                        <td colspan="8" class="text-center text-muted py-5">
+                        <td colspan="6" class="text-center text-muted py-5">
                             <i class="bi bi-inbox fs-1 d-block mb-3"></i>
                             No dividend data available
                         </td>
@@ -130,8 +101,6 @@
 <script>
     const months = {{ chart_data.months | tojson }};
     const dividends = {{ chart_data.dividends | tojson }};
-    const projectionMonths = {{ chart_data.projection_months | tojson }};
-    const projectionValues = {{ chart_data.projection_values | tojson }};
 
     // Chart.js dark theme defaults
     Chart.defaults.color = '#8b949e';
@@ -149,48 +118,6 @@
                 borderColor: '#3fb950',
                 borderWidth: 2,
                 borderRadius: 6
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: { display: false },
-                tooltip: {
-                    backgroundColor: '#21262d',
-                    titleColor: '#e6edf3',
-                    bodyColor: '#e6edf3',
-                    borderColor: '#30363d',
-                    borderWidth: 1,
-                    padding: 12,
-                    cornerRadius: 8,
-                    callbacks: {
-                        label: function(context) {
-                            return '$' + context.raw.toLocaleString(undefined, {minimumFractionDigits: 2});
-                        }
-                    }
-                }
-            },
-            scales: {
-                y: { beginAtZero: true, grid: { color: '#21262d' } },
-                x: { grid: { display: false } }
-            }
-        }
-    });
-
-    // Projection Chart
-    new Chart(document.getElementById('projectionChart'), {
-        type: 'line',
-        data: {
-            labels: projectionMonths,
-            datasets: [{
-                label: 'Projected Monthly ($)',
-                data: projectionValues,
-                backgroundColor: 'rgba(88, 166, 255, 0.2)',
-                borderColor: '#58a6ff',
-                borderWidth: 2,
-                fill: true,
-                tension: 0.1
             }]
         },
         options: {

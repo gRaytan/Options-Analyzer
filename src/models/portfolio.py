@@ -197,11 +197,14 @@ class Portfolio:
 
     def get_dividends_by_symbol(self) -> Dict[str, Dict]:
         """Get dividend summary by symbol."""
-        by_symbol = defaultdict(lambda: {'total': 0.0, 'count': 0, 'payments': []})
+        by_symbol = defaultdict(lambda: {'total': 0.0, 'count': 0, 'payment_dates': set(), 'payments': []})
         for div in self.dividends:
             by_symbol[div.symbol]['total'] += div.amount
-            by_symbol[div.symbol]['count'] += 1
+            by_symbol[div.symbol]['payment_dates'].add(div.payment_date)
             by_symbol[div.symbol]['payments'].append(div)
+        # Convert payment_dates set to count of unique dates
+        for symbol in by_symbol:
+            by_symbol[symbol]['count'] = len(by_symbol[symbol]['payment_dates'])
         return dict(by_symbol)
 
     def get_monthly_realized_pnl(self) -> Dict[str, float]:
