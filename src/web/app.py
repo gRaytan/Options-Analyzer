@@ -402,78 +402,74 @@ def create_app(config=None):
 
     @app.route('/margin')
     def margin():
-        """Margin information page."""
+        """Margin information page - always shows per-portfolio data."""
         portfolio, risk_analysis = get_active_portfolio()
         if not app.portfolios:
             return redirect(url_for('upload'))
 
-        # Get individual portfolio margin data if viewing combined
+        # Always build per-portfolio margin data with recommendations
         portfolio_margins = []
-        if session.get('portfolio_filter', 'all') == 'all':
-            for name, p in app.portfolios.items():
-                portfolio_margins.append({
-                    'name': name,
-                    'net_liquidation_value': p.net_liquidation_value or p.net_asset_value,
-                    'excess_liquidity': p.excess_liquidity,
-                    'buying_power': p.buying_power,
-                    'maintenance_margin': p.maintenance_margin,
-                    'initial_margin': p.initial_margin,
-                    'available_funds': p.available_funds,
-                    'margin_utilization': p.margin_utilization,
-                    'total_margin_requirement': p.total_margin_requirement,
+        for name, p in app.portfolios.items():
+            utilization = p.margin_utilization
+
+            # Build recommendations for this portfolio
+            recommendations = []
+            if utilization > 80:
+                recommendations.append({
+                    'severity': 'high',
+                    'title': 'High Margin Utilization',
+                    'message': f'Margin utilization is at {utilization:.1f}%. Consider reducing positions.',
+                    'icon': 'exclamation-triangle-fill'
+                })
+            elif utilization > 60:
+                recommendations.append({
+                    'severity': 'medium',
+                    'title': 'Elevated Margin Usage',
+                    'message': f'Margin utilization is at {utilization:.1f}%. Monitor closely.',
+                    'icon': 'exclamation-circle-fill'
+                })
+            else:
+                recommendations.append({
+                    'severity': 'low',
+                    'title': 'Healthy Margin Level',
+                    'message': f'Margin utilization is at {utilization:.1f}%. Room for additional positions.',
+                    'icon': 'check-circle-fill'
                 })
 
-        # Calculate margin recommendations
-        margin_recommendations = []
-
-        # Check margin utilization
-        utilization = portfolio.margin_utilization if portfolio else 0
-        if utilization > 80:
-            margin_recommendations.append({
-                'severity': 'high',
-                'title': 'High Margin Utilization',
-                'message': f'Margin utilization is at {utilization:.1f}%. Consider reducing positions to lower risk.',
-                'icon': 'exclamation-triangle-fill'
-            })
-        elif utilization > 60:
-            margin_recommendations.append({
-                'severity': 'medium',
-                'title': 'Elevated Margin Usage',
-                'message': f'Margin utilization is at {utilization:.1f}%. Monitor closely.',
-                'icon': 'exclamation-circle-fill'
-            })
-        else:
-            margin_recommendations.append({
-                'severity': 'low',
-                'title': 'Healthy Margin Level',
-                'message': f'Margin utilization is at {utilization:.1f}%. You have room for additional positions.',
-                'icon': 'check-circle-fill'
-            })
-
-        # Check for high-margin positions
-        if portfolio:
-            high_margin_options = sorted(
-                [opt for opt in portfolio.options if opt.margin_requirement > 0],
+            # Get high-margin positions for this portfolio
+            high_margin_opts = sorted(
+                [opt for opt in p.options if opt.margin_requirement > 0],
                 key=lambda x: x.margin_requirement,
                 reverse=True
             )[:5]
 
-            if high_margin_options and high_margin_options[0].margin_requirement > 10000:
-                margin_recommendations.append({
+            if high_margin_opts and high_margin_opts[0].margin_requirement > 10000:
+                recommendations.append({
                     'severity': 'medium',
                     'title': 'Large Margin Positions',
-                    'message': f'You have {len([o for o in portfolio.options if o.margin_requirement > 10000])} positions requiring >$10k margin each.',
+                    'message': f'{len([o for o in p.options if o.margin_requirement > 10000])} positions requiring >$10k margin each.',
                     'icon': 'info-circle-fill'
                 })
-        else:
-            high_margin_options = []
+
+            portfolio_margins.append({
+                'name': name,
+                'net_liquidation_value': p.net_liquidation_value or p.net_asset_value,
+                'excess_liquidity': p.excess_liquidity,
+                'buying_power': p.buying_power,
+                'maintenance_margin': p.maintenance_margin,
+                'initial_margin': p.initial_margin,
+                'available_funds': p.available_funds,
+                'sma': p.sma,
+                'margin_utilization': utilization,
+                'total_margin_requirement': p.total_margin_requirement,
+                'recommendations': recommendations,
+                'high_margin_options': high_margin_opts,
+            })
 
         return render_template('margin.html',
                              portfolio=portfolio,
                              risk_analysis=risk_analysis,
                              portfolio_margins=portfolio_margins,
-                             margin_recommendations=margin_recommendations,
-                             high_margin_options=high_margin_options,
                              portfolios=app.portfolios,
                              portfolio_filter=session.get('portfolio_filter', 'all'))
 
