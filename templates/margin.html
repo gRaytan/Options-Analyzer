@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+
+{% block title %}Margin - Options Analyzer{% endblock %}
+
+{% block content %}
+<!-- Page Header -->
+<div class="page-header">
+    <h4><i class="bi bi-bank"></i> Margin Overview</h4>
+    <p class="subtitle">Account margin status and recommendations</p>
+</div>
+
+<!-- Margin Summary Cards -->
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card metric-card neutral">
+            <div class="metric-value">${{ "{:,.0f}".format(portfolio.net_liquidation_value or portfolio.net_asset_value) }}</div>
+            <div class="metric-label">Net Liquidation Value</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card metric-card {{ 'profit' if portfolio.excess_liquidity > 50000 else 'neutral' if portfolio.excess_liquidity > 10000 else 'loss' }}">
+            <div class="metric-value">${{ "{:,.0f}".format(portfolio.excess_liquidity or portfolio.margin_available) }}</div>
+            <div class="metric-label">Excess Liquidity</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card metric-card neutral">
+            <div class="metric-value">${{ "{:,.0f}".format(portfolio.maintenance_margin or portfolio.total_margin_requirement) }}</div>
+            <div class="metric-label">Maintenance Margin</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card metric-card {{ 'profit' if portfolio.margin_utilization < 50 else 'neutral' if portfolio.margin_utilization < 80 else 'loss' }}">
+            <div class="metric-value">{{ "{:.1f}%".format(portfolio.margin_utilization) }}</div>
+            <div class="metric-label">Margin Utilization</div>
+        </div>
+    </div>
+</div>
+
+<!-- Additional Margin Metrics -->
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card metric-card neutral">
+            <div class="metric-value">${{ "{:,.0f}".format(portfolio.buying_power) }}</div>
+            <div class="metric-label">Buying Power</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card metric-card neutral">
+            <div class="metric-value">${{ "{:,.0f}".format(portfolio.initial_margin) }}</div>
+            <div class="metric-label">Initial Margin</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card metric-card neutral">
+            <div class="metric-value">${{ "{:,.0f}".format(portfolio.available_funds) }}</div>
+            <div class="metric-label">Available Funds</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card metric-card neutral">
+            <div class="metric-value">${{ "{:,.0f}".format(portfolio.sma) }}</div>
+            <div class="metric-label">SMA</div>
+        </div>
+    </div>
+</div>
+
+<!-- Recommendations -->
+<div class="row g-3 mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-lightbulb me-2"></i>Margin Recommendations</h5>
+            </div>
+            <div class="card-body">
+                {% for rec in margin_recommendations %}
+                <div class="alert alert-{{ 'danger' if rec.severity == 'high' else 'warning' if rec.severity == 'medium' else 'success' }} d-flex align-items-center" role="alert">
+                    <i class="bi bi-{{ rec.icon }} me-3 fs-4"></i>
+                    <div>
+                        <strong>{{ rec.title }}</strong><br>
+                        {{ rec.message }}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Per-Portfolio Breakdown (if viewing combined) -->
+{% if portfolio_margins %}
+<div class="row g-3 mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-folder2-open me-2"></i>Margin by Portfolio</h5>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table mb-0">
+                        <thead>
+                            <tr>
+                                <th>Portfolio</th>
+                                <th class="text-end">Net Liq Value</th>
+                                <th class="text-end">Excess Liquidity</th>
+                                <th class="text-end">Maint. Margin</th>
+                                <th class="text-end">Buying Power</th>
+                                <th class="text-end">Utilization</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for pm in portfolio_margins %}
+                            <tr>
+                                <td><strong>{{ pm.name }}</strong></td>
+                                <td class="text-end">${{ "{:,.0f}".format(pm.net_liquidation_value) }}</td>
+                                <td class="text-end {{ 'text-profit' if pm.excess_liquidity > 10000 else 'text-loss' if pm.excess_liquidity < 5000 else '' }}">
+                                    ${{ "{:,.0f}".format(pm.excess_liquidity) }}
+                                </td>
+                                <td class="text-end">${{ "{:,.0f}".format(pm.maintenance_margin or pm.total_margin_requirement) }}</td>
+                                <td class="text-end">${{ "{:,.0f}".format(pm.buying_power) }}</td>
+                                <td class="text-end {{ 'text-profit' if pm.margin_utilization < 50 else 'text-loss' if pm.margin_utilization > 80 else '' }}">
+                                    {{ "{:.1f}%".format(pm.margin_utilization) }}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- High Margin Positions -->
+{% if high_margin_options %}
+<div class="row g-3 mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-exclamation-diamond me-2"></i>Top Margin-Consuming Positions</h5>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table mb-0">
+                        <thead>
+                            <tr>
+                                <th>Type</th>
+                                <th>Underlying</th>
+                                <th>Strike</th>
+                                <th>Expiration</th>
+                                <th class="text-end">Qty</th>
+                                <th class="text-end">Margin Req.</th>
+                                <th class="text-end">% of Total</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for opt in high_margin_options %}
+                            <tr>
+                                <td>
+                                    <span class="badge {{ 'badge-call' if opt.is_call else 'badge-put' }}">
+                                        {{ 'CALL' if opt.is_call else 'PUT' }}
+                                    </span>
+                                </td>
+                                <td><strong>{{ opt.underlying }}</strong></td>
+                                <td>{{ opt.strike }}</td>
+                                <td>{{ opt.expiration.strftime('%b %d, %Y') if opt.expiration else 'N/A' }}</td>
+                                <td class="text-end">{{ opt.quantity }}</td>
+                                <td class="text-end"><strong>${{ "{:,.0f}".format(opt.margin_requirement) }}</strong></td>
+                                <td class="text-end">
+                                    {% if portfolio.total_margin_requirement > 0 %}
+                                    {{ "{:.1f}%".format((opt.margin_requirement / portfolio.total_margin_requirement) * 100) }}
+                                    {% else %}
+                                    -
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
