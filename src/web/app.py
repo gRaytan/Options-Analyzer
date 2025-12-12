@@ -316,7 +316,53 @@ def create_app(config=None):
                              sort_dir=sort_dir,
                              portfolios=app.portfolios,
                              portfolio_filter=session.get('portfolio_filter', 'all'))
-    
+
+    @app.route('/stocks')
+    def stocks():
+        """Stocks holdings table page."""
+        portfolio, _ = get_active_portfolio()
+        if not app.portfolios:
+            return redirect(url_for('upload'))
+
+        # Get sort parameters
+        sort_by = request.args.get('sort', 'symbol')
+        sort_dir = request.args.get('dir', 'asc')
+
+        stock_list = portfolio.stocks if portfolio else []
+
+        # Sort configuration: column -> (key_func, default_reverse)
+        sort_config = {
+            'symbol': (lambda x: x.symbol.lower(), False),
+            'quantity': (lambda x: x.quantity, False),
+            'cost_price': (lambda x: x.cost_price, False),
+            'current_price': (lambda x: x.current_price, False),
+            'market_value': (lambda x: x.market_value, True),
+            'cost_basis': (lambda x: x.cost_basis, True),
+            'pnl': (lambda x: x.unrealized_pnl, True),
+            'pnl_pct': (lambda x: x.unrealized_pnl_pct, True),
+        }
+
+        if sort_by in sort_config:
+            key_func, _ = sort_config[sort_by]
+            reverse = (sort_dir == 'desc')
+            stock_list = sorted(stock_list, key=key_func, reverse=reverse)
+
+        # Calculate totals
+        total_market_value = sum(s.market_value for s in stock_list)
+        total_cost_basis = sum(s.cost_basis for s in stock_list)
+        total_unrealized_pnl = sum(s.unrealized_pnl for s in stock_list)
+
+        return render_template('stocks.html',
+                             stocks=stock_list,
+                             portfolio=portfolio,
+                             sort_by=sort_by,
+                             sort_dir=sort_dir,
+                             total_market_value=total_market_value,
+                             total_cost_basis=total_cost_basis,
+                             total_unrealized_pnl=total_unrealized_pnl,
+                             portfolios=app.portfolios,
+                             portfolio_filter=session.get('portfolio_filter', 'all'))
+
     @app.route('/recommendations')
     def recommendations():
         """Recommendations page."""

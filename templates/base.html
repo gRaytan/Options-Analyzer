@@ -500,6 +500,20 @@
                 </a>
             </li>
 
+            <!-- Stocks Section -->
+            <li class="nav-item mt-3">
+                <div class="nav-section-header px-3 py-2">
+                    <small class="text-muted text-uppercase fw-bold" style="font-size: 0.7rem; letter-spacing: 1px;">
+                        <i class="bi bi-briefcase me-1"></i> Stocks
+                    </small>
+                </div>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link nav-link-sub {% if request.endpoint == 'stocks' %}active{% endif %}" href="/stocks">
+                    <i class="bi bi-table"></i> Holdings
+                </a>
+            </li>
+
             <!-- Options Section -->
             <li class="nav-item mt-3">
                 <div class="nav-section-header px-3 py-2">
