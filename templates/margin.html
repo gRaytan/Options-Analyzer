@@ -6,7 +6,15 @@
 <!-- Page Header -->
 <div class="page-header">
     <h4><i class="bi bi-bank"></i> Margin Overview</h4>
-    <p class="subtitle">Account margin status and recommendations per portfolio</p>
+    <p class="subtitle">Estimated margin requirements per portfolio</p>
+</div>
+
+<!-- Info Alert -->
+<div class="alert alert-info mb-4">
+    <i class="bi bi-info-circle me-2"></i>
+    <strong>Note:</strong> Margin requirements shown are estimates based on standard Reg-T calculations.
+    Actual margin (Excess Liquidity, Buying Power, SMA) is only available in real-time through TWS/IBKR Portal
+    and is not included in Activity Statement exports.
 </div>
 
 <!-- Per-Portfolio Sections -->
@@ -16,62 +24,62 @@
         <i class="bi bi-folder2 me-2"></i>
         <strong>{{ pm.name }}</strong>
         <span class="badge {{ 'bg-success' if pm.margin_utilization < 50 else 'bg-warning text-dark' if pm.margin_utilization < 80 else 'bg-danger' }} ms-auto">
-            {{ "{:.1f}%".format(pm.margin_utilization) }} Utilization
+            {{ "{:.1f}%".format(pm.margin_utilization) }} Est. Utilization
         </span>
     </div>
     <div class="card-body">
-        <!-- Margin Metrics -->
+        <!-- Key Margin Metrics -->
         <div class="row g-3 mb-3">
             <div class="col-md-3">
                 <div class="card metric-card neutral">
                     <div class="metric-value">${{ "{:,.0f}".format(pm.net_liquidation_value) }}</div>
-                    <div class="metric-label">Net Liquidation Value</div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card metric-card {{ 'profit' if pm.excess_liquidity > 50000 else 'neutral' if pm.excess_liquidity > 10000 else 'loss' }}">
-                    <div class="metric-value">${{ "{:,.0f}".format(pm.excess_liquidity) }}</div>
-                    <div class="metric-label">Excess Liquidity</div>
+                    <div class="metric-label">Net Asset Value</div>
                 </div>
             </div>
             <div class="col-md-3">
                 <div class="card metric-card neutral">
-                    <div class="metric-value">${{ "{:,.0f}".format(pm.maintenance_margin or pm.total_margin_requirement) }}</div>
-                    <div class="metric-label">Maintenance Margin</div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card metric-card neutral">
-                    <div class="metric-value">${{ "{:,.0f}".format(pm.buying_power) }}</div>
-                    <div class="metric-label">Buying Power</div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Additional Metrics Row -->
-        <div class="row g-3 mb-3">
-            <div class="col-md-3">
-                <div class="card metric-card neutral">
-                    <div class="metric-value">${{ "{:,.0f}".format(pm.initial_margin) }}</div>
-                    <div class="metric-label">Initial Margin</div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card metric-card neutral">
-                    <div class="metric-value">${{ "{:,.0f}".format(pm.available_funds) }}</div>
-                    <div class="metric-label">Available Funds</div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card metric-card neutral">
-                    <div class="metric-value">${{ "{:,.0f}".format(pm.sma) }}</div>
-                    <div class="metric-label">SMA</div>
+                    <div class="metric-value">${{ "{:,.0f}".format(pm.cash_balance) }}</div>
+                    <div class="metric-label">Cash Balance</div>
                 </div>
             </div>
             <div class="col-md-3">
                 <div class="card metric-card neutral">
                     <div class="metric-value">${{ "{:,.0f}".format(pm.total_margin_requirement) }}</div>
-                    <div class="metric-label">Total Margin Req.</div>
+                    <div class="metric-label">Est. Margin Requirement</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card metric-card {{ 'profit' if pm.margin_available > 50000 else 'neutral' if pm.margin_available > 10000 else 'loss' }}">
+                    <div class="metric-value">${{ "{:,.0f}".format(pm.margin_available) }}</div>
+                    <div class="metric-label">Est. Available Margin</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Position Summary -->
+        <div class="row g-3 mb-3">
+            <div class="col-md-3">
+                <div class="card metric-card neutral">
+                    <div class="metric-value">{{ pm.short_options_count }}</div>
+                    <div class="metric-label">Short Options</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card metric-card neutral">
+                    <div class="metric-value">${{ "{:,.0f}".format(pm.options_market_value) }}</div>
+                    <div class="metric-label">Options Market Value</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card metric-card neutral">
+                    <div class="metric-value">${{ "{:,.0f}".format(pm.stocks_market_value) }}</div>
+                    <div class="metric-label">Stocks Market Value</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card metric-card {{ 'profit' if pm.margin_utilization < 50 else 'neutral' if pm.margin_utilization < 80 else 'loss' }}">
+                    <div class="metric-value">{{ "{:.1f}%".format(pm.margin_utilization) }}</div>
+                    <div class="metric-label">Est. Margin Utilization</div>
                 </div>
             </div>
         </div>
@@ -99,7 +107,7 @@
                         <th>Strike</th>
                         <th>Expiration</th>
                         <th class="text-end">Qty</th>
-                        <th class="text-end">Margin Req.</th>
+                        <th class="text-end">Est. Margin</th>
                         <th class="text-end">% of Total</th>
                     </tr>
                 </thead>
