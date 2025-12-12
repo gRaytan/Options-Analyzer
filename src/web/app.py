@@ -412,24 +412,66 @@ def create_app(config=None):
         for name, p in app.portfolios.items():
             utilization = p.margin_utilization
 
-            # Build recommendations for this portfolio
+            # Build recommendations to increase margin for this portfolio
             recommendations = []
 
-            # Check for negative cash (margin loan)
+            # 1. Check for negative cash (margin loan) - paying this down increases margin
             if p.cash_balance < 0:
                 recommendations.append({
-                    'severity': 'medium',
-                    'title': 'Margin Loan Active',
-                    'message': f'You have a margin loan of ${abs(p.cash_balance):,.0f}. Interest is accruing on this balance.',
+                    'severity': 'high',
+                    'title': 'Pay Down Margin Loan',
+                    'message': f'Deposit ${abs(p.cash_balance):,.0f} to eliminate margin loan and stop interest charges. This directly increases available margin.',
                     'icon': 'cash-stack'
                 })
-            else:
+
+            # 2. Close profitable short options to free up margin
+            profitable_shorts = [o for o in p.short_options if o.unrealized_pnl > 0]
+            if profitable_shorts:
+                total_profit = sum(o.unrealized_pnl for o in profitable_shorts)
+                recommendations.append({
+                    'severity': 'medium',
+                    'title': 'Close Profitable Short Options',
+                    'message': f'You have {len(profitable_shorts)} profitable short options with ${total_profit:,.0f} in unrealized gains. Closing these frees up margin.',
+                    'icon': 'graph-up-arrow'
+                })
+
+            # 3. Roll short options to reduce notional exposure
+            high_strike_puts = [o for o in p.short_options if o.is_put and o.strike > 100]
+            if high_strike_puts:
                 recommendations.append({
                     'severity': 'low',
-                    'title': 'No Margin Loan',
-                    'message': f'Cash balance is positive (${p.cash_balance:,.0f}). No margin interest being charged.',
-                    'icon': 'check-circle-fill'
+                    'title': 'Roll Down High-Strike Puts',
+                    'message': f'Consider rolling {len(high_strike_puts)} high-strike puts to lower strikes to reduce margin requirements.',
+                    'icon': 'arrow-down-circle'
                 })
+
+            # 4. Convert naked options to spreads
+            naked_shorts = len(p.short_options)
+            if naked_shorts > 5:
+                recommendations.append({
+                    'severity': 'low',
+                    'title': 'Convert to Spreads',
+                    'message': f'You have {naked_shorts} short options. Converting naked positions to spreads (buying protective options) significantly reduces margin.',
+                    'icon': 'layers'
+                })
+
+            # 5. Sell covered calls on stock positions
+            if p.stocks and len(p.stocks) > 0:
+                stock_value = p.stocks_market_value
+                recommendations.append({
+                    'severity': 'low',
+                    'title': 'Sell Covered Calls',
+                    'message': f'You have ${stock_value:,.0f} in stocks. Selling covered calls generates premium and doesn\'t require additional margin.',
+                    'icon': 'telephone-outbound'
+                })
+
+            # 6. Deposit additional funds
+            recommendations.append({
+                'severity': 'low',
+                'title': 'Deposit Funds',
+                'message': 'Depositing additional cash directly increases your available margin and buying power.',
+                'icon': 'plus-circle'
+            })
 
             portfolio_margins.append({
                 'name': name,

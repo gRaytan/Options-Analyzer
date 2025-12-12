@@ -6,15 +6,7 @@
 <!-- Page Header -->
 <div class="page-header">
     <h4><i class="bi bi-bank"></i> Margin Overview</h4>
-    <p class="subtitle">Estimated margin requirements per portfolio</p>
-</div>
-
-<!-- Info Alert -->
-<div class="alert alert-info mb-4">
-    <i class="bi bi-info-circle me-2"></i>
-    <strong>Note:</strong> Margin requirements shown are estimates based on standard Reg-T calculations.
-    Actual margin (Excess Liquidity, Buying Power, SMA) is only available in real-time through TWS/IBKR Portal
-    and is not included in Activity Statement exports.
+    <p class="subtitle">Portfolio margin status and recommendations</p>
 </div>
 
 <!-- Per-Portfolio Sections -->
@@ -23,9 +15,6 @@
     <div class="card-header d-flex align-items-center" style="border-left: 4px solid {{ 'var(--accent-red)' if pm.cash_balance < 0 else 'var(--accent-green)' }};">
         <i class="bi bi-folder2 me-2"></i>
         <strong>{{ pm.name }}</strong>
-        <span class="badge {{ 'bg-danger' if pm.cash_balance < 0 else 'bg-success' }} ms-auto">
-            {{ "Margin Loan Active" if pm.cash_balance < 0 else "No Margin Loan" }}
-        </span>
     </div>
     <div class="card-body">
         <!-- Key Margin Metrics -->
@@ -56,40 +45,16 @@
             </div>
         </div>
 
-        <!-- Position Summary -->
-        <div class="row g-3 mb-3">
-            <div class="col-md-4">
-                <div class="card metric-card neutral">
-                    <div class="metric-value">{{ pm.short_options_count }}</div>
-                    <div class="metric-label">Short Options</div>
-                </div>
-            </div>
-            <div class="col-md-4">
-                <div class="card metric-card neutral">
-                    <div class="metric-value">{{ pm.long_options_count }}</div>
-                    <div class="metric-label">Long Options</div>
-                </div>
-            </div>
-            <div class="col-md-4">
-                <div class="card metric-card neutral">
-                    <div class="metric-value">{{ pm.stock_positions_count }}</div>
-                    <div class="metric-label">Stock Positions</div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Recommendations for this portfolio -->
-        {% if pm.recommendations %}
-        <h6 class="mb-2"><i class="bi bi-lightbulb me-1"></i> Status</h6>
+        <!-- Recommendations to increase margin -->
+        <h6 class="mb-2"><i class="bi bi-lightbulb me-1"></i> Recommendations to Increase Available Margin</h6>
         {% for rec in pm.recommendations %}
-        <div class="alert alert-{{ 'danger' if rec.severity == 'high' else 'warning' if rec.severity == 'medium' else 'info' }} d-flex align-items-center py-2" role="alert">
-            <i class="bi bi-{{ rec.icon }} me-2"></i>
+        <div class="alert alert-{{ 'danger' if rec.severity == 'high' else 'warning' if rec.severity == 'medium' else 'info' }} d-flex align-items-start py-2" role="alert">
+            <i class="bi bi-{{ rec.icon }} me-2 mt-1"></i>
             <div>
                 <strong>{{ rec.title }}:</strong> {{ rec.message }}
             </div>
         </div>
         {% endfor %}
-        {% endif %}
     </div>
 </div>
 {% endfor %}
