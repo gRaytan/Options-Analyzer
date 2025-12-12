@@ -11,14 +11,17 @@
 
 <!-- Profit Target Reached -->
 <div class="card mb-4">
-    <div class="card-header d-flex align-items-center" style="border-left: 4px solid var(--accent-green);">
+    <div class="card-header d-flex align-items-center" style="border-left: 4px solid var(--accent-green); cursor: pointer;"
+         data-bs-toggle="collapse" data-bs-target="#profitCollapse" aria-expanded="false" aria-controls="profitCollapse">
+        <i class="bi bi-chevron-right me-2 collapse-icon"></i>
         <i class="bi bi-check-circle-fill me-2 text-profit"></i>
         <span>Consider Closing - Profit Target Reached (50%+)</span>
         <span class="badge bg-success ms-auto">{{ risk_analysis.summary.profit_targets_reached }} positions</span>
     </div>
-    <div class="card-body p-0">
-        <div class="table-responsive">
-            <table class="table mb-0 sortable-table" id="profitTable">
+    <div class="collapse" id="profitCollapse">
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table mb-0 sortable-table" id="profitTable">
                 <thead>
                     <tr>
                         <th data-sort="string">Position</th>
@@ -52,19 +55,23 @@
                 </tbody>
             </table>
         </div>
+        </div>
     </div>
 </div>
 
 <!-- High Risk - Immediate Action -->
 <div class="card mb-4">
-    <div class="card-header d-flex align-items-center" style="border-left: 4px solid var(--accent-red);">
+    <div class="card-header d-flex align-items-center" style="border-left: 4px solid var(--accent-red); cursor: pointer;"
+         data-bs-toggle="collapse" data-bs-target="#riskCollapse" aria-expanded="false" aria-controls="riskCollapse">
+        <i class="bi bi-chevron-right me-2 collapse-icon"></i>
         <i class="bi bi-exclamation-triangle-fill me-2 text-loss"></i>
         <span>High Risk - Consider Immediate Action</span>
         <span class="badge bg-danger ms-auto">{{ risk_analysis.high_risk_positions|length }} positions</span>
     </div>
-    <div class="card-body p-0">
-        <div class="table-responsive">
-            <table class="table mb-0 sortable-table" id="riskTable">
+    <div class="collapse" id="riskCollapse">
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table mb-0 sortable-table" id="riskTable">
                 <thead>
                     <tr>
                         <th data-sort="string">Position</th>
@@ -116,19 +123,23 @@
                 </tbody>
             </table>
         </div>
+        </div>
     </div>
 </div>
 
 <!-- Expiring Soon -->
 <div class="card mb-4">
-    <div class="card-header d-flex align-items-center" style="border-left: 4px solid var(--accent-yellow);">
+    <div class="card-header d-flex align-items-center" style="border-left: 4px solid var(--accent-yellow); cursor: pointer;"
+         data-bs-toggle="collapse" data-bs-target="#expiringCollapse" aria-expanded="false" aria-controls="expiringCollapse">
+        <i class="bi bi-chevron-right me-2 collapse-icon"></i>
         <i class="bi bi-clock-fill me-2 text-warning"></i>
         <span>Expiring Within 7 Days</span>
         <span class="badge bg-warning text-dark ms-auto">{{ portfolio.get_options_expiring_soon(7)|length }} positions</span>
     </div>
-    <div class="card-body p-0">
-        <div class="table-responsive">
-            <table class="table mb-0 sortable-table" id="expiringTable">
+    <div class="collapse" id="expiringCollapse">
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table mb-0 sortable-table" id="expiringTable">
                 <thead>
                     <tr>
                         <th data-sort="string">Position</th>
@@ -177,8 +188,20 @@
                 </tbody>
             </table>
         </div>
+        </div>
     </div>
 </div>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+    .collapse-icon {
+        transition: transform 0.2s ease-in-out;
+    }
+    [aria-expanded="true"] .collapse-icon {
+        transform: rotate(90deg);
+    }
+</style>
 {% endblock %}
 
 {% block extra_js %}
