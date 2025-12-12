@@ -54,6 +54,9 @@ class IBActivityStatementParser:
         # Parse bond interest/coupons
         portfolio.bond_interest = self._parse_bond_interest()
 
+        # Parse margin/cash report data
+        self._parse_cash_report(portfolio)
+
         return portfolio
     
     def _extract_sections(self, content: str) -> None:
@@ -111,7 +114,43 @@ class IBActivityStatementParser:
                 portfolio.net_asset_value = self._parse_float(item.get("Current Total", "0"))
             elif asset_class == "Cash ":  # Note: IB has trailing space
                 portfolio.cash_balance = self._parse_float(item.get("Current Total", "0"))
-    
+
+    def _parse_cash_report(self, portfolio: Portfolio) -> None:
+        """Parse Cash Report section for margin data."""
+        cash_report = self.sections.get("Cash Report", [])
+
+        # Map IBKR field names to portfolio attributes
+        field_mapping = {
+            "Excess Liquidity": "excess_liquidity",
+            "Buying Power": "buying_power",
+            "Maintenance Margin Requirement": "maintenance_margin",
+            "Maintenance Margin": "maintenance_margin",
+            "Initial Margin Requirement": "initial_margin",
+            "Initial Margin": "initial_margin",
+            "SMA": "sma",
+            "Special Memorandum Account": "sma",
+            "Available Funds": "available_funds",
+            "Gross Position Value": "gross_position_value",
+            "Net Liquidation Value": "net_liquidation_value",
+            "Net Liquidation": "net_liquidation_value",
+        }
+
+        for item in cash_report:
+            # Cash Report uses different column names depending on format
+            field_name = item.get("Currency Summary", "") or item.get("Field Name", "")
+            # Try to get value from different possible column names
+            value = (item.get("Total", "") or item.get("Current Total", "") or
+                     item.get("Field Value", "") or item.get("Base Currency Summary", ""))
+
+            if field_name in field_mapping:
+                attr_name = field_mapping[field_name]
+                parsed_value = self._parse_float(value)
+                # Only set if we got a valid value and it's larger than current
+                # (in case of multiple currencies, we want the base currency total)
+                current_value = getattr(portfolio, attr_name, 0.0)
+                if parsed_value != 0 and (current_value == 0 or "Total" in str(item)):
+                    setattr(portfolio, attr_name, parsed_value)
+
     def _parse_stock_positions(self) -> List[StockPosition]:
         """Parse stock positions from Open Positions section."""
         positions = []

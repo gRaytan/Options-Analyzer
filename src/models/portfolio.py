@@ -32,6 +32,16 @@ class Portfolio:
     # NAV data
     net_asset_value: float = 0.0
     cash_balance: float = 0.0
+
+    # Margin data (from Cash Report section)
+    excess_liquidity: float = 0.0
+    buying_power: float = 0.0
+    maintenance_margin: float = 0.0
+    initial_margin: float = 0.0
+    sma: float = 0.0  # Special Memorandum Account
+    available_funds: float = 0.0
+    gross_position_value: float = 0.0
+    net_liquidation_value: float = 0.0
     
     @property
     def total_positions(self) -> int:
@@ -72,7 +82,24 @@ class Portfolio:
     @property
     def total_margin_requirement(self) -> float:
         return sum(opt.margin_requirement for opt in self.options)
-    
+
+    @property
+    def margin_utilization(self) -> float:
+        """Calculate margin utilization as percentage."""
+        if self.net_liquidation_value > 0:
+            return (self.maintenance_margin / self.net_liquidation_value) * 100
+        elif self.net_asset_value > 0:
+            return (self.total_margin_requirement / self.net_asset_value) * 100
+        return 0.0
+
+    @property
+    def margin_available(self) -> float:
+        """Available margin (excess liquidity or calculated)."""
+        if self.excess_liquidity > 0:
+            return self.excess_liquidity
+        # Fallback: estimate as NAV - margin requirement
+        return max(0, self.net_asset_value - self.total_margin_requirement)
+
     @property
     def portfolio_greeks(self) -> PortfolioGreeks:
         """Calculate aggregated portfolio Greeks."""
