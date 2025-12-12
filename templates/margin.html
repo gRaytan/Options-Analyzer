@@ -20,11 +20,11 @@
 <!-- Per-Portfolio Sections -->
 {% for pm in portfolio_margins %}
 <div class="card mb-4">
-    <div class="card-header d-flex align-items-center" style="border-left: 4px solid {{ 'var(--accent-green)' if pm.margin_utilization < 50 else 'var(--accent-yellow)' if pm.margin_utilization < 80 else 'var(--accent-red)' }};">
+    <div class="card-header d-flex align-items-center" style="border-left: 4px solid {{ 'var(--accent-red)' if pm.cash_balance < 0 else 'var(--accent-green)' }};">
         <i class="bi bi-folder2 me-2"></i>
         <strong>{{ pm.name }}</strong>
-        <span class="badge {{ 'bg-success' if pm.margin_utilization < 50 else 'bg-warning text-dark' if pm.margin_utilization < 80 else 'bg-danger' }} ms-auto">
-            {{ "{:.1f}%".format(pm.margin_utilization) }} Est. Utilization
+        <span class="badge {{ 'bg-danger' if pm.cash_balance < 0 else 'bg-success' }} ms-auto">
+            {{ "Margin Loan Active" if pm.cash_balance < 0 else "No Margin Loan" }}
         </span>
     </div>
     <div class="card-body">
@@ -37,37 +37,9 @@
                 </div>
             </div>
             <div class="col-md-3">
-                <div class="card metric-card neutral">
+                <div class="card metric-card {{ 'loss' if pm.cash_balance < 0 else 'neutral' }}">
                     <div class="metric-value">${{ "{:,.0f}".format(pm.cash_balance) }}</div>
                     <div class="metric-label">Cash Balance</div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card metric-card neutral">
-                    <div class="metric-value">${{ "{:,.0f}".format(pm.total_margin_requirement) }}</div>
-                    <div class="metric-label">Est. Margin Requirement</div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card metric-card {{ 'profit' if pm.margin_available > 50000 else 'neutral' if pm.margin_available > 10000 else 'loss' }}">
-                    <div class="metric-value">${{ "{:,.0f}".format(pm.margin_available) }}</div>
-                    <div class="metric-label">Est. Available Margin</div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Position Summary -->
-        <div class="row g-3 mb-3">
-            <div class="col-md-3">
-                <div class="card metric-card neutral">
-                    <div class="metric-value">{{ pm.short_options_count }}</div>
-                    <div class="metric-label">Short Options</div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card metric-card neutral">
-                    <div class="metric-value">${{ "{:,.0f}".format(pm.options_market_value) }}</div>
-                    <div class="metric-label">Options Market Value</div>
                 </div>
             </div>
             <div class="col-md-3">
@@ -77,65 +49,46 @@
                 </div>
             </div>
             <div class="col-md-3">
-                <div class="card metric-card {{ 'profit' if pm.margin_utilization < 50 else 'neutral' if pm.margin_utilization < 80 else 'loss' }}">
-                    <div class="metric-value">{{ "{:.1f}%".format(pm.margin_utilization) }}</div>
-                    <div class="metric-label">Est. Margin Utilization</div>
+                <div class="card metric-card {{ 'loss' if pm.options_market_value < 0 else 'neutral' }}">
+                    <div class="metric-value">${{ "{:,.0f}".format(pm.options_market_value) }}</div>
+                    <div class="metric-label">Options Market Value</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Position Summary -->
+        <div class="row g-3 mb-3">
+            <div class="col-md-4">
+                <div class="card metric-card neutral">
+                    <div class="metric-value">{{ pm.short_options_count }}</div>
+                    <div class="metric-label">Short Options</div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card metric-card neutral">
+                    <div class="metric-value">{{ pm.long_options_count }}</div>
+                    <div class="metric-label">Long Options</div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card metric-card neutral">
+                    <div class="metric-value">{{ pm.stock_positions_count }}</div>
+                    <div class="metric-label">Stock Positions</div>
                 </div>
             </div>
         </div>
 
         <!-- Recommendations for this portfolio -->
-        <h6 class="mb-2"><i class="bi bi-lightbulb me-1"></i> Recommendations</h6>
+        {% if pm.recommendations %}
+        <h6 class="mb-2"><i class="bi bi-lightbulb me-1"></i> Status</h6>
         {% for rec in pm.recommendations %}
-        <div class="alert alert-{{ 'danger' if rec.severity == 'high' else 'warning' if rec.severity == 'medium' else 'success' }} d-flex align-items-center py-2" role="alert">
+        <div class="alert alert-{{ 'danger' if rec.severity == 'high' else 'warning' if rec.severity == 'medium' else 'info' }} d-flex align-items-center py-2" role="alert">
             <i class="bi bi-{{ rec.icon }} me-2"></i>
             <div>
                 <strong>{{ rec.title }}:</strong> {{ rec.message }}
             </div>
         </div>
         {% endfor %}
-
-        <!-- High Margin Positions for this portfolio -->
-        {% if pm.high_margin_options %}
-        <h6 class="mb-2 mt-3"><i class="bi bi-exclamation-diamond me-1"></i> Top Margin-Consuming Positions</h6>
-        <div class="table-responsive">
-            <table class="table table-sm mb-0">
-                <thead>
-                    <tr>
-                        <th>Type</th>
-                        <th>Underlying</th>
-                        <th>Strike</th>
-                        <th>Expiration</th>
-                        <th class="text-end">Qty</th>
-                        <th class="text-end">Est. Margin</th>
-                        <th class="text-end">% of Total</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for opt in pm.high_margin_options %}
-                    <tr>
-                        <td>
-                            <span class="badge {{ 'badge-call' if opt.is_call else 'badge-put' }}">
-                                {{ 'C' if opt.is_call else 'P' }}
-                            </span>
-                        </td>
-                        <td><strong>{{ opt.underlying }}</strong></td>
-                        <td>{{ opt.strike }}</td>
-                        <td>{{ opt.expiration.strftime('%b %d') if opt.expiration else 'N/A' }}</td>
-                        <td class="text-end">{{ opt.quantity }}</td>
-                        <td class="text-end"><strong>${{ "{:,.0f}".format(opt.margin_requirement) }}</strong></td>
-                        <td class="text-end">
-                            {% if pm.total_margin_requirement > 0 %}
-                            {{ "{:.1f}%".format((opt.margin_requirement / pm.total_margin_requirement) * 100) }}
-                            {% else %}
-                            -
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
         {% endif %}
     </div>
 </div>

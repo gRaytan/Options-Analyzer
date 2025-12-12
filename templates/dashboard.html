@@ -11,13 +11,13 @@
 
 <!-- Key Metrics -->
 <div class="row g-4 mb-4">
-    <div class="col-lg-3 col-md-6">
+    <div class="col-lg-4 col-md-6">
         <div class="card metric-card neutral">
             <div class="metric-value">${{ "{:,.0f}".format(portfolio.net_asset_value) }}</div>
             <div class="metric-label">Net Asset Value</div>
         </div>
     </div>
-    <div class="col-lg-3 col-md-6">
+    <div class="col-lg-4 col-md-6">
         <div class="card metric-card {{ 'profit' if portfolio.total_unrealized_pnl >= 0 else 'loss' }}">
             <div class="metric-value {{ 'text-profit' if portfolio.total_unrealized_pnl >= 0 else 'text-loss' }}">
                 ${{ "{:,.0f}".format(portfolio.total_unrealized_pnl) }}
@@ -25,19 +25,10 @@
             <div class="metric-label">Unrealized P&L</div>
         </div>
     </div>
-    <div class="col-lg-3 col-md-6">
+    <div class="col-lg-4 col-md-6">
         <div class="card metric-card neutral">
-            <div class="metric-value">${{ "{:,.0f}".format(portfolio.total_margin_requirement) }}</div>
-            <div class="metric-label">Margin Requirement</div>
-        </div>
-    </div>
-    <div class="col-lg-3 col-md-6">
-        {% set margin_util = risk_analysis.margin_utilization * 100 %}
-        <div class="card metric-card {{ 'loss' if margin_util > 80 else 'warning' if margin_util > 60 else 'profit' }}">
-            <div class="metric-value {{ 'text-loss' if margin_util > 80 else 'text-warning' if margin_util > 60 else 'text-profit' }}">
-                {{ "{:.1f}".format(margin_util) }}%
-            </div>
-            <div class="metric-label">Margin Utilization</div>
+            <div class="metric-value">${{ "{:,.0f}".format(portfolio.cash_balance) }}</div>
+            <div class="metric-label">Cash Balance</div>
         </div>
     </div>
 </div>
@@ -114,7 +105,7 @@
     <div class="col-lg-4">
         <div class="card h-100">
             <div class="card-header">
-                <i class="bi bi-pie-chart me-2"></i>Position Breakdown
+                <i class="bi bi-pie-chart me-2"></i>Options Breakdown
             </div>
             <div class="card-body p-0">
                 <div class="list-group list-group-flush">
@@ -141,7 +132,7 @@
     <div class="col-lg-8">
         <div class="card h-100">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <span><i class="bi bi-exclamation-triangle me-2"></i>High Risk Positions</span>
+                <span><i class="bi bi-exclamation-triangle me-2"></i>High Risk Options</span>
                 <a href="/positions?risk=high" class="btn btn-sm btn-outline-danger">
                     <i class="bi bi-arrow-right"></i> View All
                 </a>

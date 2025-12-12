@@ -414,56 +414,34 @@ def create_app(config=None):
 
             # Build recommendations for this portfolio
             recommendations = []
-            if utilization > 80:
-                recommendations.append({
-                    'severity': 'high',
-                    'title': 'High Margin Utilization',
-                    'message': f'Margin utilization is at {utilization:.1f}%. Consider reducing positions.',
-                    'icon': 'exclamation-triangle-fill'
-                })
-            elif utilization > 60:
+
+            # Check for negative cash (margin loan)
+            if p.cash_balance < 0:
                 recommendations.append({
                     'severity': 'medium',
-                    'title': 'Elevated Margin Usage',
-                    'message': f'Margin utilization is at {utilization:.1f}%. Monitor closely.',
-                    'icon': 'exclamation-circle-fill'
+                    'title': 'Margin Loan Active',
+                    'message': f'You have a margin loan of ${abs(p.cash_balance):,.0f}. Interest is accruing on this balance.',
+                    'icon': 'cash-stack'
                 })
             else:
                 recommendations.append({
                     'severity': 'low',
-                    'title': 'Healthy Margin Level',
-                    'message': f'Margin utilization is at {utilization:.1f}%. Room for additional positions.',
+                    'title': 'No Margin Loan',
+                    'message': f'Cash balance is positive (${p.cash_balance:,.0f}). No margin interest being charged.',
                     'icon': 'check-circle-fill'
-                })
-
-            # Get high-margin positions for this portfolio
-            high_margin_opts = sorted(
-                [opt for opt in p.options if opt.margin_requirement > 0],
-                key=lambda x: x.margin_requirement,
-                reverse=True
-            )[:5]
-
-            if high_margin_opts and high_margin_opts[0].margin_requirement > 10000:
-                recommendations.append({
-                    'severity': 'medium',
-                    'title': 'Large Margin Positions',
-                    'message': f'{len([o for o in p.options if o.margin_requirement > 10000])} positions requiring >$10k margin each.',
-                    'icon': 'info-circle-fill'
                 })
 
             portfolio_margins.append({
                 'name': name,
-                'net_liquidation_value': p.net_liquidation_value or p.net_asset_value,
-                'excess_liquidity': p.excess_liquidity,
-                'buying_power': p.buying_power,
-                'maintenance_margin': p.maintenance_margin,
-                'initial_margin': p.initial_margin,
-                'available_funds': p.available_funds,
-                'sma': p.sma,
+                'net_liquidation_value': p.net_asset_value,
+                'cash_balance': p.cash_balance,
                 'margin_utilization': utilization,
-                'total_margin_requirement': p.total_margin_requirement,
+                'short_options_count': len(p.short_options),
+                'long_options_count': len([o for o in p.options if o.quantity > 0]),
+                'stock_positions_count': len(p.stocks),
+                'options_market_value': p.options_market_value,
+                'stocks_market_value': p.stocks_market_value,
                 'recommendations': recommendations,
-                'high_margin_options': high_margin_opts,
             })
 
         return render_template('margin.html',
