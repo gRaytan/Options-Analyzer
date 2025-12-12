@@ -330,6 +330,43 @@ def create_app(config=None):
 
         stock_list = portfolio.stocks if portfolio else []
 
+        # Aggregate stocks by symbol
+        aggregated = {}
+        for stock in stock_list:
+            symbol = stock.symbol
+            if symbol in aggregated:
+                agg = aggregated[symbol]
+                # Combine quantities and cost basis, recalculate weighted avg cost
+                new_qty = agg['quantity'] + stock.quantity
+                new_cost_basis = agg['cost_basis'] + stock.cost_basis
+                new_market_value = agg['market_value'] + stock.market_value
+                agg['quantity'] = new_qty
+                agg['cost_basis'] = new_cost_basis
+                agg['market_value'] = new_market_value
+                agg['cost_price'] = new_cost_basis / new_qty if new_qty else 0
+                agg['current_price'] = stock.current_price  # Same for all
+                agg['unrealized_pnl'] = new_market_value - new_cost_basis
+                agg['unrealized_pnl_pct'] = ((new_market_value - new_cost_basis) / new_cost_basis * 100) if new_cost_basis else 0
+            else:
+                aggregated[symbol] = {
+                    'symbol': symbol,
+                    'quantity': stock.quantity,
+                    'cost_price': stock.cost_price,
+                    'current_price': stock.current_price,
+                    'cost_basis': stock.cost_basis,
+                    'market_value': stock.market_value,
+                    'unrealized_pnl': stock.unrealized_pnl,
+                    'unrealized_pnl_pct': stock.unrealized_pnl_pct,
+                }
+
+        # Convert to list of dict-like objects for template
+        class AggregatedStock:
+            def __init__(self, data):
+                for k, v in data.items():
+                    setattr(self, k, v)
+
+        stock_list = [AggregatedStock(data) for data in aggregated.values()]
+
         # Sort configuration: column -> (key_func, default_reverse)
         sort_config = {
             'symbol': (lambda x: x.symbol.lower(), False),
