@@ -184,35 +184,36 @@ def create_app(config=None):
                         portfolio_id = f"{original_id}_{counter}"
                         counter += 1
 
-                    # Fetch missing prices
-                    update_portfolio_prices(portfolio)
-
-                    # Calculate Greeks
-                    calculate_portfolio_greeks(portfolio)
-
-                    # Calculate Margin
-                    calculate_portfolio_margin(portfolio, margin_type="reg_t")
-
-                    # Analyze Risk
-                    config = storage.get_config()
-                    risk_analysis = analyze_portfolio_risk(portfolio, config)
-
-                    # Store in app context
+                    # Store in app context immediately (don't wait for prices)
                     app.portfolios[portfolio_id] = portfolio
-                    app.risk_analyses[portfolio_id] = risk_analysis
                     files_processed += 1
 
                 if files_processed == 0:
                     flash('No valid files found', 'error')
                     return redirect(request.url)
 
-                # Pre-fetch dividend data in background thread
+                # Fetch prices and calculate Greeks/Risk in background thread
                 import threading
-                def prefetch_dividend_data():
-                    """Pre-fetch dividend data for all stocks to warm the cache."""
+                def background_data_fetch():
+                    """Fetch prices and dividend data in background."""
                     from src.analysis.income_projection import get_forward_dividend_rate
                     import time
 
+                    # First, fetch prices for all portfolios
+                    for pid, p in app.portfolios.items():
+                        try:
+                            update_portfolio_prices(p)
+                            calculate_portfolio_greeks(p)
+                            calculate_portfolio_margin(p, margin_type="reg_t")
+
+                            # Analyze Risk
+                            config = storage.get_config()
+                            risk_analysis = analyze_portfolio_risk(p, config)
+                            app.risk_analyses[pid] = risk_analysis
+                        except Exception as e:
+                            print(f"Background fetch error for {pid}: {e}")
+
+                    # Then pre-fetch dividend data
                     all_symbols = set()
                     for p in app.portfolios.values():
                         for stock in p.stocks:
@@ -225,10 +226,10 @@ def create_app(config=None):
                         except Exception:
                             pass
 
-                thread = threading.Thread(target=prefetch_dividend_data, daemon=True)
+                thread = threading.Thread(target=background_data_fetch, daemon=True)
                 thread.start()
 
-                flash(f'Loaded {files_processed} portfolio(s)', 'success')
+                flash(f'Loaded {files_processed} portfolio(s). Prices updating in background...', 'success')
                 return redirect(url_for('index'))
 
             except Exception as e:
