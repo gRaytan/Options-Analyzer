@@ -1,8 +1,56 @@
 """Income projection calculations for dividends and bond interest."""
-import yfinance as yf
-from typing import Dict, List, Optional
+import time
+import threading
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 import re
+
+# Global cache for dividend data
+_dividend_cache: Dict[str, Dict[str, Any]] = {}
+_dividend_cache_lock = threading.Lock()
+_last_yf_request = 0
+_yf_request_lock = threading.Lock()
+
+DIVIDEND_CACHE_EXPIRY = 3600  # 1 hour
+MIN_YF_INTERVAL = 0.5  # 500ms between requests
+
+
+def _rate_limit_yf():
+    """Rate limit yfinance requests."""
+    global _last_yf_request
+    with _yf_request_lock:
+        now = time.time()
+        elapsed = now - _last_yf_request
+        if elapsed < MIN_YF_INTERVAL:
+            time.sleep(MIN_YF_INTERVAL - elapsed)
+        _last_yf_request = time.time()
+
+
+def _get_yf_ticker(symbol: str):
+    """Get yfinance ticker with rate limiting."""
+    import yfinance as yf
+    _rate_limit_yf()
+    return yf.Ticker(symbol)
+
+
+def _get_cached_dividend_data(symbol: str, key: str) -> Optional[Any]:
+    """Get cached dividend data if not expired."""
+    with _dividend_cache_lock:
+        if symbol in _dividend_cache:
+            entry = _dividend_cache[symbol]
+            if datetime.now() - entry.get('timestamp', datetime.min) < timedelta(seconds=DIVIDEND_CACHE_EXPIRY):
+                return entry.get(key)
+    return None
+
+
+def _set_cached_dividend_data(symbol: str, key: str, value: Any):
+    """Set cached dividend data."""
+    with _dividend_cache_lock:
+        if symbol not in _dividend_cache:
+            _dividend_cache[symbol] = {'timestamp': datetime.now()}
+        _dividend_cache[symbol][key] = value
+        _dividend_cache[symbol]['timestamp'] = datetime.now()
 
 
 @dataclass
@@ -52,15 +100,21 @@ def get_dividend_schedule(symbol: str) -> tuple[str, List[int]]:
         'monthly', 'quarterly', 'semi-annual', 'annual', 'unknown'
         and payment_months is a list of months (1-12) when dividends are typically paid.
     """
+    # Check cache first
+    cached = _get_cached_dividend_data(symbol, 'schedule')
+    if cached is not None:
+        return cached
+
     try:
-        ticker = yf.Ticker(symbol)
+        ticker = _get_yf_ticker(symbol)
         divs = ticker.dividends
 
         if len(divs) < 2:
-            return ('unknown', [3, 6, 9, 12])  # Default to quarterly
+            result = ('unknown', [3, 6, 9, 12])
+            _set_cached_dividend_data(symbol, 'schedule', result)
+            return result
 
         # Get dividends from last 2 years
-        from datetime import datetime, timedelta
         two_years_ago = datetime.now() - timedelta(days=730)
         recent_divs = divs[divs.index >= two_years_ago.strftime('%Y-%m-%d')]
 
@@ -77,9 +131,8 @@ def get_dividend_schedule(symbol: str) -> tuple[str, List[int]]:
             payment_months = list(range(1, 13))
         elif payments_per_year >= 3:
             frequency = 'quarterly'
-            # Use actual payment months if we have them
             if len(payment_months) < 4:
-                payment_months = [3, 6, 9, 12]  # Default quarterly
+                payment_months = [3, 6, 9, 12]
         elif payments_per_year >= 1.5:
             frequency = 'semi-annual'
             if len(payment_months) < 2:
@@ -92,18 +145,30 @@ def get_dividend_schedule(symbol: str) -> tuple[str, List[int]]:
             frequency = 'unknown'
             payment_months = [3, 6, 9, 12]
 
-        return (frequency, payment_months)
-    except Exception:
-        return ('quarterly', [3, 6, 9, 12])  # Default to quarterly
+        result = (frequency, payment_months)
+        _set_cached_dividend_data(symbol, 'schedule', result)
+        return result
+    except Exception as e:
+        if '429' in str(e):
+            time.sleep(2)  # Rate limited, wait
+        result = ('quarterly', [3, 6, 9, 12])
+        _set_cached_dividend_data(symbol, 'schedule', result)
+        return result
 
 
 def calculate_dividend_cagr(symbol: str, years: int = 5) -> Optional[float]:
     """Calculate dividend CAGR for a stock over specified years."""
+    # Check cache first
+    cached = _get_cached_dividend_data(symbol, 'cagr')
+    if cached is not None:
+        return cached
+
     try:
-        ticker = yf.Ticker(symbol)
+        ticker = _get_yf_ticker(symbol)
         divs = ticker.dividends
 
-        if len(divs) < 4:  # Need at least a couple years of data
+        if len(divs) < 4:
+            _set_cached_dividend_data(symbol, 'cagr', None)
             return None
 
         # Get annual dividends - try 'YE' first (newer pandas), fall back to 'Y'
@@ -113,12 +178,14 @@ def calculate_dividend_cagr(symbol: str, years: int = 5) -> Optional[float]:
             annual = divs.resample('Y').sum()
 
         if len(annual) < 2:
+            _set_cached_dividend_data(symbol, 'cagr', None)
             return None
 
         # Get last N+1 years for N-year CAGR
         recent = annual.tail(min(years + 1, len(annual)))
 
         if len(recent) < 2:
+            _set_cached_dividend_data(symbol, 'cagr', None)
             return None
 
         start_val = recent.iloc[0]
@@ -126,32 +193,48 @@ def calculate_dividend_cagr(symbol: str, years: int = 5) -> Optional[float]:
         n_years = len(recent) - 1
 
         if start_val <= 0 or end_val <= 0:
+            _set_cached_dividend_data(symbol, 'cagr', None)
             return None
 
         cagr = (end_val / start_val) ** (1 / n_years) - 1
+        _set_cached_dividend_data(symbol, 'cagr', cagr)
         return cagr
-    except Exception:
+    except Exception as e:
+        if '429' in str(e):
+            time.sleep(2)
+        _set_cached_dividend_data(symbol, 'cagr', None)
         return None
 
 
 def get_forward_dividend_rate(symbol: str) -> Optional[float]:
     """Get forward annual dividend rate from yfinance."""
+    # Check cache first
+    cached = _get_cached_dividend_data(symbol, 'forward_rate')
+    if cached is not None:
+        return cached if cached > 0 else None
+
     try:
-        ticker = yf.Ticker(symbol)
+        ticker = _get_yf_ticker(symbol)
         info = ticker.info
-        
+
         # Try forward dividend rate first
         rate = info.get('dividendRate')
         if rate and rate > 0:
+            _set_cached_dividend_data(symbol, 'forward_rate', rate)
             return rate
-        
+
         # Fall back to trailing
         rate = info.get('trailingAnnualDividendRate')
         if rate and rate > 0:
+            _set_cached_dividend_data(symbol, 'forward_rate', rate)
             return rate
-        
+
+        _set_cached_dividend_data(symbol, 'forward_rate', 0)
         return None
-    except Exception:
+    except Exception as e:
+        if '429' in str(e):
+            time.sleep(2)
+        _set_cached_dividend_data(symbol, 'forward_rate', 0)
         return None
 
 

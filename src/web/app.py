@@ -206,6 +206,28 @@ def create_app(config=None):
                     flash('No valid files found', 'error')
                     return redirect(request.url)
 
+                # Pre-fetch dividend data in background thread
+                import threading
+                def prefetch_dividend_data():
+                    """Pre-fetch dividend data for all stocks to warm the cache."""
+                    from src.analysis.income_projection import get_forward_dividend_rate
+                    import time
+
+                    all_symbols = set()
+                    for p in app.portfolios.values():
+                        for stock in p.stocks:
+                            all_symbols.add(stock.symbol)
+
+                    for symbol in all_symbols:
+                        try:
+                            get_forward_dividend_rate(symbol)
+                            time.sleep(0.5)  # Rate limit
+                        except Exception:
+                            pass
+
+                thread = threading.Thread(target=prefetch_dividend_data, daemon=True)
+                thread.start()
+
                 flash(f'Loaded {files_processed} portfolio(s)', 'success')
                 return redirect(url_for('index'))
 
@@ -400,9 +422,9 @@ def create_app(config=None):
                              portfolios=app.portfolios,
                              portfolio_filter=session.get('portfolio_filter', 'all'))
 
-    @app.route('/margin')
-    def margin():
-        """Margin information page - always shows per-portfolio data."""
+    @app.route('/balance')
+    def balance():
+        """Balance information page - always shows per-portfolio data."""
         portfolio, risk_analysis = get_active_portfolio()
         if not app.portfolios:
             return redirect(url_for('upload'))
@@ -486,7 +508,7 @@ def create_app(config=None):
                 'recommendations': recommendations,
             })
 
-        return render_template('margin.html',
+        return render_template('balance.html',
                              portfolio=portfolio,
                              risk_analysis=risk_analysis,
                              portfolio_margins=portfolio_margins,
