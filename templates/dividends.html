@@ -26,7 +26,7 @@
                 ${{ "{:,.2f}".format(chart_data.avg_monthly_income) }}
             </div>
             <div class="metric-label" style="font-size: 1.1rem;">Avg Monthly Income</div>
-            <small class="text-muted">Based on {{ chart_data.months_count }} months</small>
+            <small class="text-muted">Based on {{ [chart_data.months_count, 12] | min }} months</small>
         </div>
     </div>
 </div>
