@@ -122,13 +122,28 @@ def create_app(config=None):
         if not app.portfolios:
             return render_template('upload.html')
 
-        # Calculate YTD revenue (realized P&L + dividends + bond interest + unrealized P&L - net deposits)
+        # Calculate YTD revenue (realized P&L + dividends + bond interest + unrealized P&L - deposits)
         ytd_realized_pnl = portfolio.total_realized_pnl
         ytd_dividends = portfolio.total_dividends
         ytd_bond_interest = portfolio.total_bond_interest
         ytd_unrealized_pnl = portfolio.total_unrealized_pnl
         net_deposits = portfolio.net_deposits  # Deposits minus withdrawals
         ytd_revenue = ytd_realized_pnl + ytd_dividends + ytd_bond_interest + ytd_unrealized_pnl - net_deposits
+
+        # Debug: print YTD revenue breakdown
+        print(f"YTD Revenue Breakdown:")
+        print(f"  Realized P&L: ${ytd_realized_pnl:,.2f}")
+        print(f"  Dividends: ${ytd_dividends:,.2f}")
+        print(f"  Bond Interest: ${ytd_bond_interest:,.2f}")
+        print(f"  Unrealized P&L: ${ytd_unrealized_pnl:,.2f}")
+        print(f"    - Options Unrealized: ${portfolio.options_unrealized_pnl:,.2f}")
+        print(f"    - Stocks Unrealized: ${portfolio.stocks_unrealized_pnl:,.2f}")
+        # Check for stocks with 0 price
+        zero_price_stocks = [s for s in portfolio.stocks if s.current_price == 0]
+        if zero_price_stocks:
+            print(f"    WARNING: {len(zero_price_stocks)} stocks have price=0: {[s.symbol for s in zero_price_stocks[:5]]}")
+        print(f"  Net Deposits: ${net_deposits:,.2f}")
+        print(f"  TOTAL YTD Revenue: ${ytd_revenue:,.2f}")
 
         # Calculate YTD return percentage (based on NAV minus net deposits)
         # This gives the actual return on the original investment
@@ -270,16 +285,10 @@ def create_app(config=None):
 
             total_updated = 0
             for portfolio_id, portfolio in app.portfolios.items():
-                # Reset underlying prices to force refresh
-                for option in portfolio.options:
-                    option.underlying_price = 0
-                for stock in portfolio.stocks:
-                    stock.current_price = 0
-
-                # Fetch fresh prices
+                # Fetch fresh prices (don't reset to 0 - keep statement prices as fallback)
                 update_portfolio_prices(portfolio, fetcher)
 
-                # Also update stock prices
+                # Also update stock prices (only if we get valid prices)
                 stock_symbols = list(set(s.symbol for s in portfolio.stocks if s.symbol))
                 if stock_symbols:
                     prices = fetcher.get_prices(stock_symbols)
