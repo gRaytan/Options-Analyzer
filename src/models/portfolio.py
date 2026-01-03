@@ -158,12 +158,9 @@ class Portfolio:
         - Trades are combined and deduplicated
         - Account info uses the first non-empty value
         """
-        # For positions, use the other portfolio's positions (latest upload)
-        # This assumes the latest file has the current positions
-        if other.options:
-            self.options = other.options
-        if other.stocks:
-            self.stocks = other.stocks
+        # Combine positions from both portfolios
+        self.options.extend(other.options)
+        self.stocks.extend(other.stocks)
 
         # Merge trades, deduplicating by (symbol, date, quantity, price)
         existing_trades = {
@@ -182,11 +179,9 @@ class Portfolio:
         if not self.account_name and other.account_name:
             self.account_name = other.account_name
 
-        # Update NAV from latest
-        if other.net_asset_value:
-            self.net_asset_value = other.net_asset_value
-        if other.cash_balance:
-            self.cash_balance = other.cash_balance
+        # Sum NAV and cash balance from both portfolios
+        self.net_asset_value += other.net_asset_value
+        self.cash_balance += other.cash_balance
 
         # Combine statement periods
         if other.statement_period:
@@ -216,6 +211,17 @@ class Portfolio:
             if key not in existing_bond_interest:
                 self.bond_interest.append(interest)
                 existing_bond_interest[key] = interest
+
+        # Merge cash transactions (deposits/withdrawals), deduplicating by (date, amount, description)
+        existing_cash_transactions = {
+            (t.transaction_date, t.amount, t.description): t
+            for t in self.cash_transactions
+        }
+        for transaction in other.cash_transactions:
+            key = (transaction.transaction_date, transaction.amount, transaction.description)
+            if key not in existing_cash_transactions:
+                self.cash_transactions.append(transaction)
+                existing_cash_transactions[key] = transaction
 
     @property
     def option_trades(self) -> List[Trade]:
