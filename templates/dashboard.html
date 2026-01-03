@@ -11,13 +11,22 @@
 
 <!-- Key Metrics -->
 <div class="row g-4 mb-4">
-    <div class="col-lg-4 col-md-6">
+    <div class="col-lg-3 col-md-6">
         <div class="card metric-card neutral">
             <div class="metric-value">${{ "{:,.0f}".format(portfolio.net_asset_value) }}</div>
             <div class="metric-label">Net Asset Value</div>
         </div>
     </div>
-    <div class="col-lg-4 col-md-6">
+    <div class="col-lg-3 col-md-6">
+        <div class="card metric-card {{ 'profit' if ytd_revenue >= 0 else 'loss' }}">
+            <div class="metric-value {{ 'text-profit' if ytd_revenue >= 0 else 'text-loss' }}">
+                ${{ "{:,.0f}".format(ytd_revenue) }}
+                <small style="font-size: 0.5em;">({{ "{:+.1f}".format(ytd_return_pct) }}%)</small>
+            </div>
+            <div class="metric-label">YTD Revenue</div>
+        </div>
+    </div>
+    <div class="col-lg-3 col-md-6">
         <div class="card metric-card {{ 'profit' if portfolio.total_unrealized_pnl >= 0 else 'loss' }}">
             <div class="metric-value {{ 'text-profit' if portfolio.total_unrealized_pnl >= 0 else 'text-loss' }}">
                 ${{ "{:,.0f}".format(portfolio.total_unrealized_pnl) }}
@@ -25,7 +34,7 @@
             <div class="metric-label">Unrealized P&L</div>
         </div>
     </div>
-    <div class="col-lg-4 col-md-6">
+    <div class="col-lg-3 col-md-6">
         <div class="card metric-card neutral">
             <div class="metric-value">${{ "{:,.0f}".format(portfolio.cash_balance) }}</div>
             <div class="metric-label">Cash Balance</div>

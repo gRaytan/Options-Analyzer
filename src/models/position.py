@@ -49,6 +49,23 @@ class BondInterest:
 
 
 @dataclass
+class CashTransaction:
+    """Represents a deposit or withdrawal."""
+    transaction_date: date
+    amount: float  # Positive for deposits, negative for withdrawals
+    description: str = ""
+    currency: str = "USD"
+
+    @property
+    def is_deposit(self) -> bool:
+        return self.amount > 0
+
+    @property
+    def is_withdrawal(self) -> bool:
+        return self.amount < 0
+
+
+@dataclass
 class Trade:
     """Represents a single trade."""
     symbol: str

@@ -5,7 +5,7 @@ from datetime import datetime, date
 from typing import List, Dict, Tuple, Optional
 from io import StringIO
 
-from src.models.position import OptionPosition, StockPosition, OptionType, Trade, TradeAction, Dividend, BondInterest
+from src.models.position import OptionPosition, StockPosition, OptionType, Trade, TradeAction, Dividend, BondInterest, CashTransaction
 from src.models.portfolio import Portfolio
 
 
@@ -53,6 +53,9 @@ class IBActivityStatementParser:
 
         # Parse bond interest/coupons
         portfolio.bond_interest = self._parse_bond_interest()
+
+        # Parse deposits and withdrawals
+        portfolio.cash_transactions = self._parse_deposits_withdrawals()
 
         # Parse margin/cash report data
         self._parse_cash_report(portfolio)
@@ -448,6 +451,43 @@ class IBActivityStatementParser:
                 print(f"Warning: Could not parse bond interest: {e}")
 
         return interest_payments
+
+    def _parse_deposits_withdrawals(self) -> List[CashTransaction]:
+        """Parse deposits and withdrawals from Deposits & Withdrawals section."""
+        transactions = []
+        deposits_data = self.sections.get("Deposits & Withdrawals", [])
+
+        for item in deposits_data:
+            try:
+                # Skip header/total rows
+                if item.get("Header", "") == "Header":
+                    continue
+
+                # Parse date
+                date_str = item.get("Settle Date", "") or item.get("Date", "")
+                if not date_str:
+                    continue
+                transaction_date = datetime.strptime(date_str.strip(), "%Y-%m-%d").date()
+
+                # Parse amount
+                amount = self._parse_float(item.get("Amount", "0"))
+                if amount == 0:
+                    continue
+
+                description = item.get("Description", "")
+                currency = item.get("Currency", "USD")
+
+                transaction = CashTransaction(
+                    transaction_date=transaction_date,
+                    amount=amount,
+                    description=description,
+                    currency=currency,
+                )
+                transactions.append(transaction)
+            except (ValueError, KeyError) as e:
+                print(f"Warning: Could not parse deposit/withdrawal: {e}")
+
+        return transactions
 
     def _parse_trade_datetime(self, date_str: str) -> datetime:
         """Parse trade datetime like '2025-12-01, 10:35:16'."""

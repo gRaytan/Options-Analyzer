@@ -122,9 +122,24 @@ def create_app(config=None):
         if not app.portfolios:
             return render_template('upload.html')
 
+        # Calculate YTD revenue (realized P&L + dividends + bond interest + unrealized P&L - net deposits)
+        ytd_realized_pnl = portfolio.total_realized_pnl
+        ytd_dividends = portfolio.total_dividends
+        ytd_bond_interest = portfolio.total_bond_interest
+        ytd_unrealized_pnl = portfolio.total_unrealized_pnl
+        net_deposits = portfolio.net_deposits  # Deposits minus withdrawals
+        ytd_revenue = ytd_realized_pnl + ytd_dividends + ytd_bond_interest + ytd_unrealized_pnl - net_deposits
+
+        # Calculate YTD return percentage (based on NAV minus net deposits)
+        # This gives the actual return on the original investment
+        adjusted_nav = portfolio.net_asset_value - net_deposits
+        ytd_return_pct = (ytd_revenue / adjusted_nav * 100) if adjusted_nav > 0 else 0
+
         return render_template('dashboard.html',
                              portfolio=portfolio,
                              risk_analysis=risk_analysis,
+                             ytd_revenue=ytd_revenue,
+                             ytd_return_pct=ytd_return_pct,
                              portfolios=app.portfolios,
                              portfolio_filter=session.get('portfolio_filter', 'all'))
 

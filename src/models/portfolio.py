@@ -2,7 +2,7 @@
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 from collections import defaultdict
-from .position import OptionPosition, StockPosition, Trade, Dividend, BondInterest
+from .position import OptionPosition, StockPosition, Trade, Dividend, BondInterest, CashTransaction
 
 
 @dataclass
@@ -22,6 +22,7 @@ class Portfolio:
     trades: List[Trade] = field(default_factory=list)
     dividends: List[Dividend] = field(default_factory=list)
     bond_interest: List[BondInterest] = field(default_factory=list)
+    cash_transactions: List[CashTransaction] = field(default_factory=list)
 
     # Account info
     account_id: str = ""
@@ -230,6 +231,21 @@ class Portfolio:
     def total_bond_interest(self) -> float:
         """Total bond interest/coupons received."""
         return sum(b.amount for b in self.bond_interest)
+
+    @property
+    def total_deposits(self) -> float:
+        """Total deposits (positive amounts)."""
+        return sum(t.amount for t in self.cash_transactions if t.amount > 0)
+
+    @property
+    def total_withdrawals(self) -> float:
+        """Total withdrawals (negative amounts, returned as positive)."""
+        return abs(sum(t.amount for t in self.cash_transactions if t.amount < 0))
+
+    @property
+    def net_deposits(self) -> float:
+        """Net deposits (deposits - withdrawals). Positive means more deposited than withdrawn."""
+        return sum(t.amount for t in self.cash_transactions)
 
     def get_monthly_dividends(self) -> Dict[str, float]:
         """Get dividends by month."""
