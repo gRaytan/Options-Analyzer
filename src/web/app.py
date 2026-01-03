@@ -44,6 +44,7 @@ def create_app(config=None):
             combined.trades = []
             combined.dividends = []
             combined.bond_interest = []
+            combined.cash_transactions = []
             combined.net_asset_value = 0
             combined.cash_balance = 0
             account_names = []
@@ -85,6 +86,17 @@ def create_app(config=None):
                     if key not in existing_bond_interest:
                         combined.bond_interest.append(interest)
                         existing_bond_interest[key] = interest
+
+                # Combine all cash transactions (deposits/withdrawals) - deduplicate by key
+                existing_cash_transactions = {
+                    (t.transaction_date, t.amount, t.description): t
+                    for t in combined.cash_transactions
+                }
+                for transaction in getattr(p, 'cash_transactions', []):
+                    key = (transaction.transaction_date, transaction.amount, transaction.description)
+                    if key not in existing_cash_transactions:
+                        combined.cash_transactions.append(transaction)
+                        existing_cash_transactions[key] = transaction
 
                 # Sum up NAV and cash
                 if p.net_asset_value:
@@ -142,8 +154,13 @@ def create_app(config=None):
         zero_price_stocks = [s for s in portfolio.stocks if s.current_price == 0]
         if zero_price_stocks:
             print(f"    WARNING: {len(zero_price_stocks)} stocks have price=0: {[s.symbol for s in zero_price_stocks[:5]]}")
+        # Check for options with 0 price
+        zero_price_options = [o for o in portfolio.options if o.current_price == 0]
+        if zero_price_options:
+            print(f"    WARNING: {len(zero_price_options)} options have price=0: {[o.symbol for o in zero_price_options[:5]]}")
         print(f"  Net Deposits: ${net_deposits:,.2f}")
         print(f"  TOTAL YTD Revenue: ${ytd_revenue:,.2f}")
+        print(f"  Number of stocks: {len(portfolio.stocks)}, options: {len(portfolio.options)}")
 
         # Calculate YTD return percentage (based on NAV minus net deposits)
         # This gives the actual return on the original investment

@@ -457,6 +457,12 @@ class IBActivityStatementParser:
         transactions = []
         deposits_data = self.sections.get("Deposits & Withdrawals", [])
 
+        print(f"DEBUG: Deposits & Withdrawals section has {len(deposits_data)} items")
+        if deposits_data:
+            print(f"DEBUG: First item keys: {list(deposits_data[0].keys()) if deposits_data else 'N/A'}")
+            for i, item in enumerate(deposits_data[:3]):
+                print(f"DEBUG: Item {i}: {item}")
+
         for item in deposits_data:
             try:
                 # Skip header/total rows
