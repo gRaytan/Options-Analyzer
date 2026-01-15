@@ -705,12 +705,15 @@ def create_app(config=None):
         total_bond_interest = portfolio.total_bond_interest
 
         # Calculate average monthly income (dividends + bond interest)
-        # Use last 12 months only for the average
+        # Only count months from the current year for YTD average
+        current_year = str(datetime.now().year)
         total_ytd = portfolio.total_dividends
         total_income = total_ytd + total_bond_interest
-        if months:
-            # Cap at 12 months for average calculation
-            months_for_avg = min(len(months), 12)
+        all_income_months = set(monthly_dividends.keys()) | set(monthly_bond_interest.keys())
+        # Filter to current year only
+        ytd_months = {m for m in all_income_months if m.startswith(current_year)}
+        if ytd_months:
+            months_for_avg = len(ytd_months)
             avg_monthly_income = total_income / months_for_avg
         else:
             avg_monthly_income = 0
