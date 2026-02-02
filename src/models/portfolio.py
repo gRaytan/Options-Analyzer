@@ -241,13 +241,13 @@ class Portfolio:
 
     @property
     def total_dividends(self) -> float:
-        """Total dividends received."""
-        return sum(d.amount for d in self.dividends)
+        """Total dividends received (filtered by statement period)."""
+        return sum(d.amount for d in self.dividends if self._is_within_period(d.payment_date))
 
     @property
     def total_bond_interest(self) -> float:
-        """Total bond interest/coupons received."""
-        return sum(b.amount for b in self.bond_interest)
+        """Total bond interest/coupons received (filtered by statement period)."""
+        return sum(b.amount for b in self.bond_interest if self._is_within_period(b.payment_date))
 
     @property
     def total_deposits(self) -> float:

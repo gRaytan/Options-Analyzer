@@ -47,9 +47,24 @@ def create_app(config=None):
             combined.cash_transactions = []
             combined.net_asset_value = 0
             combined.cash_balance = 0
+            combined.period_start = None
+            combined.period_end = None
+            combined.statement_period = ""
             account_names = []
 
             for pid, p in app.portfolios.items():
+                # Merge period ranges - expand to cover all portfolios
+                if p.period_start:
+                    if combined.period_start is None or p.period_start < combined.period_start:
+                        combined.period_start = p.period_start
+                if p.period_end:
+                    if combined.period_end is None or p.period_end > combined.period_end:
+                        combined.period_end = p.period_end
+                if p.statement_period:
+                    if combined.statement_period:
+                        combined.statement_period += " + " + p.statement_period
+                    else:
+                        combined.statement_period = p.statement_period
                 # Combine all options positions
                 combined.options.extend(p.options)
                 # Combine all stock positions

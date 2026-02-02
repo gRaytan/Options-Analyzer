@@ -66,27 +66,34 @@ class IBActivityStatementParser:
         """Extract all sections from the CSV content."""
         self.sections = {}
         reader = csv.reader(StringIO(content))
-        
+
         current_section = None
         current_headers = []
-        
+
         for row in reader:
             if len(row) < 2:
                 continue
-                
+
             section_name = row[0]
             row_type = row[1]
-            
+
             if section_name not in self.sections:
                 self.sections[section_name] = []
-            
+
             if row_type == "Header":
                 current_section = section_name
                 current_headers = row[2:]  # Skip section name and "Header"
-            elif row_type == "Data" and current_headers:
-                data = dict(zip(current_headers, row[2:]))
-                data['_section'] = section_name
-                self.sections[section_name].append(data)
+            elif row_type == "Data":
+                # Handle sections without Header rows (e.g., Statement section)
+                # Format: SectionName,Data,FieldName,FieldValue
+                if len(row) >= 4 and section_name == "Statement":
+                    data = {"Field Name": row[2], "Field Value": row[3]}
+                    data['_section'] = section_name
+                    self.sections[section_name].append(data)
+                elif current_headers:
+                    data = dict(zip(current_headers, row[2:]))
+                    data['_section'] = section_name
+                    self.sections[section_name].append(data)
     
     def _parse_account_info(self, portfolio: Portfolio) -> None:
         """Parse account information section."""
