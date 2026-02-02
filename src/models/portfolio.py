@@ -1,6 +1,7 @@
 """Portfolio model for aggregating positions."""
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
+from datetime import date
 from collections import defaultdict
 from .position import OptionPosition, StockPosition, Trade, Dividend, BondInterest, CashTransaction
 
@@ -29,6 +30,8 @@ class Portfolio:
     account_name: str = ""
     base_currency: str = "USD"
     statement_period: str = ""
+    period_start: Optional[date] = None
+    period_end: Optional[date] = None
 
     # NAV data
     net_asset_value: float = 0.0
@@ -190,6 +193,14 @@ class Portfolio:
             else:
                 self.statement_period = other.statement_period
 
+        # Expand period range to cover both portfolios
+        if other.period_start is not None:
+            if self.period_start is None or other.period_start < self.period_start:
+                self.period_start = other.period_start
+        if other.period_end is not None:
+            if self.period_end is None or other.period_end > self.period_end:
+                self.period_end = other.period_end
+
         # Merge dividends, deduplicating by (symbol, date, amount)
         existing_dividends = {
             (d.symbol, d.payment_date, d.amount): d
@@ -253,43 +264,53 @@ class Portfolio:
         """Net deposits (deposits - withdrawals). Positive means more deposited than withdrawn."""
         return sum(t.amount for t in self.cash_transactions)
 
+    def _is_within_period(self, payment_date: date) -> bool:
+        """Check if a date falls within the statement period."""
+        if self.period_start is None or self.period_end is None:
+            return True  # No period filter if dates not set
+        return self.period_start <= payment_date <= self.period_end
+
     def get_monthly_dividends(self) -> Dict[str, float]:
-        """Get dividends by month."""
+        """Get dividends by month (filtered by statement period)."""
         monthly = defaultdict(float)
         for div in self.dividends:
-            month_key = div.payment_date.strftime("%Y-%m")
-            monthly[month_key] += div.amount
+            if self._is_within_period(div.payment_date):
+                month_key = div.payment_date.strftime("%Y-%m")
+                monthly[month_key] += div.amount
         return dict(monthly)
 
     def get_monthly_bond_interest(self) -> Dict[str, float]:
-        """Get bond interest/coupons by month."""
+        """Get bond interest/coupons by month (filtered by statement period)."""
         monthly = defaultdict(float)
         for interest in self.bond_interest:
-            month_key = interest.payment_date.strftime("%Y-%m")
-            monthly[month_key] += interest.amount
+            if self._is_within_period(interest.payment_date):
+                month_key = interest.payment_date.strftime("%Y-%m")
+                monthly[month_key] += interest.amount
         return dict(monthly)
 
     def get_dividends_by_symbol(self) -> Dict[str, Dict]:
-        """Get dividend summary by symbol."""
+        """Get dividend summary by symbol (filtered by statement period)."""
         by_symbol = defaultdict(lambda: {'total': 0.0, 'count': 0, 'payment_dates': set(), 'payments': []})
         for div in self.dividends:
-            by_symbol[div.symbol]['total'] += div.amount
-            by_symbol[div.symbol]['payment_dates'].add(div.payment_date)
-            by_symbol[div.symbol]['payments'].append(div)
+            if self._is_within_period(div.payment_date):
+                by_symbol[div.symbol]['total'] += div.amount
+                by_symbol[div.symbol]['payment_dates'].add(div.payment_date)
+                by_symbol[div.symbol]['payments'].append(div)
         # Convert payment_dates set to count of unique dates
         for symbol in by_symbol:
             by_symbol[symbol]['count'] = len(by_symbol[symbol]['payment_dates'])
         return dict(by_symbol)
 
     def get_bond_interest_by_symbol(self) -> Dict[str, Dict]:
-        """Get bond interest summary by symbol."""
+        """Get bond interest summary by symbol (filtered by statement period)."""
         by_symbol = defaultdict(lambda: {'total': 0.0, 'count': 0, 'payment_dates': set(), 'payments': [], 'bond_name': ''})
         for interest in self.bond_interest:
-            by_symbol[interest.symbol]['total'] += interest.amount
-            by_symbol[interest.symbol]['payment_dates'].add(interest.payment_date)
-            by_symbol[interest.symbol]['payments'].append(interest)
-            if interest.bond_name:
-                by_symbol[interest.symbol]['bond_name'] = interest.bond_name
+            if self._is_within_period(interest.payment_date):
+                by_symbol[interest.symbol]['total'] += interest.amount
+                by_symbol[interest.symbol]['payment_dates'].add(interest.payment_date)
+                by_symbol[interest.symbol]['payments'].append(interest)
+                if interest.bond_name:
+                    by_symbol[interest.symbol]['bond_name'] = interest.bond_name
         # Convert payment_dates set to count of unique dates
         for symbol in by_symbol:
             by_symbol[symbol]['count'] = len(by_symbol[symbol]['payment_dates'])

@@ -861,6 +861,39 @@ def create_app(config=None):
             calculate_portfolio_greeks(portfolio)
 
         return jsonify({'status': 'success', 'message': 'Prices refreshed'})
-    
+
+    @app.route('/api/debug/dividends')
+    def debug_dividends():
+        """Debug endpoint to inspect raw dividend data."""
+        portfolio, _ = get_active_portfolio()
+        if portfolio is None:
+            return jsonify({'error': 'No portfolio loaded'}), 404
+
+        dividends = []
+        filtered_dividends = []
+        for div in portfolio.dividends:
+            div_info = {
+                'symbol': div.symbol,
+                'payment_date': div.payment_date.isoformat(),
+                'amount': div.amount,
+                'description': div.description[:50] if div.description else '',
+                'in_period': portfolio._is_within_period(div.payment_date),
+            }
+            dividends.append(div_info)
+            if div_info['in_period']:
+                filtered_dividends.append(div_info)
+
+        # Sort by date
+        dividends.sort(key=lambda x: x['payment_date'])
+
+        return jsonify({
+            'statement_period': portfolio.statement_period,
+            'period_start': portfolio.period_start.isoformat() if portfolio.period_start else None,
+            'period_end': portfolio.period_end.isoformat() if portfolio.period_end else None,
+            'total_dividends': len(dividends),
+            'filtered_dividends': len(filtered_dividends),
+            'dividends': dividends
+        })
+
     return app
 

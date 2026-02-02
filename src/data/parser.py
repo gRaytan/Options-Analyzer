@@ -106,7 +106,28 @@ class IBActivityStatementParser:
         statement_info = self.sections.get("Statement", [])
         for item in statement_info:
             if item.get("Field Name") == "Period":
-                portfolio.statement_period = item.get("Field Value", "")
+                period_str = item.get("Field Value", "")
+                portfolio.statement_period = period_str
+                # Parse start and end dates from period string
+                # Format: "January 1, 2026 - January 31, 2026"
+                portfolio.period_start, portfolio.period_end = self._parse_period_dates(period_str)
+
+    def _parse_period_dates(self, period_str: str) -> Tuple[Optional[date], Optional[date]]:
+        """Parse statement period string into start and end dates."""
+        if not period_str or " - " not in period_str:
+            return None, None
+
+        try:
+            parts = period_str.split(" - ")
+            if len(parts) != 2:
+                return None, None
+
+            # Parse dates like "January 1, 2026"
+            start_date = datetime.strptime(parts[0].strip(), "%B %d, %Y").date()
+            end_date = datetime.strptime(parts[1].strip(), "%B %d, %Y").date()
+            return start_date, end_date
+        except ValueError:
+            return None, None
     
     def _parse_nav(self, portfolio: Portfolio) -> None:
         """Parse Net Asset Value section."""
