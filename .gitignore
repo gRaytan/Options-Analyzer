@@ -66,3 +66,6 @@ logs/
 *.tmp
 *.bak
 
+
+# Auto-trading runtime data (journal, halt file)
+data/trading/

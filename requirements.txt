@@ -4,7 +4,7 @@ Werkzeug==3.0.1
 
 # Data Processing
 pandas==2.1.4
-numpy==1.26.2
+numpy==1.26.4
 
 # Options Calculations
 py-vollib==1.0.1
@@ -26,4 +26,9 @@ pylint==3.0.3
 
 # Utilities
 python-dotenv==1.0.0
+
+# Auto-trading (docs/AUTO_TRADING_SPEC.md)
+ib_async==2.1.0
+pydantic==2.9.2
+exchange_calendars==4.13.2
 
