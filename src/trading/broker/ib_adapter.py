@@ -1,8 +1,16 @@
 """Interactive Brokers adapter (plan T06+, spec §4.3).
 
-This is the only module that imports ``ib_async``. T06 implements the
-connection: connect to IB Gateway / TWS, verify the account, and reconnect
-with backoff. Data and order methods arrive in T07–T09 and T22.
+This is the only module that imports ``ib_async``. Implemented so far:
+
+* T06: connect to IB Gateway / TWS, verify the account, reconnect with backoff.
+* T07: account values (net liquidation, excess liquidity, margin, Cushion).
+
+Remaining data and order methods arrive in T08–T09, T18 and T22.
+
+**Account value freshness:** IB pushes account values roughly every
+3 minutes, not in real time. Snapshots carry the time of IB's last update,
+and :meth:`IBAdapter.account_age_seconds` lets callers judge staleness
+against :data:`ACCOUNT_STALE_AFTER_S`.
 
 Safety rules enforced here, independent of the rest of the engine:
 
@@ -23,13 +31,35 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Awaitable, Callable, List, Optional
 
-from src.trading.broker.base import EVENT_CONNECTION, BrokerAdapter, BrokerError
-from src.trading.domain import utcnow
+from src.trading.broker.base import (
+    EVENT_ACCOUNT,
+    EVENT_CONNECTION,
+    BrokerAdapter,
+    BrokerDisconnected,
+    BrokerError,
+)
+from src.trading.domain import AccountSnapshot, utcnow
 
 log = logging.getLogger(__name__)
 
 PAPER_PORTS = {4002, 7497}  # IB Gateway paper, TWS paper
 LIVE_PORTS = {4001, 7496}  # IB Gateway live, TWS live
+
+# Account tag -> AccountSnapshot field. These are IB's "current" values.
+ACCOUNT_TAGS = {
+    "NetLiquidation": "net_liquidation",
+    "ExcessLiquidity": "excess_liquidity",
+    "MaintMarginReq": "maint_margin",
+    "InitMarginReq": "init_margin",
+    "AvailableFunds": "available_funds",
+    "TotalCashValue": "cash",
+}
+# IB refreshes account values about every 180 s; allow some slack.
+ACCOUNT_STALE_AFTER_S = 240.0
+
+
+class AccountDataUnavailable(BrokerError):
+    """IB hasn't sent (all) account values yet."""
 
 
 class AccountMismatch(BrokerError):
@@ -110,7 +140,9 @@ class IBAdapter(BrokerAdapter):
         self._clock = clock
         self._closing = False
         self._reconnect_task: Optional[asyncio.Task] = None
+        self._account_updated_at: Optional[datetime] = None
         self.ib.disconnectedEvent += self._on_disconnected
+        self.ib.accountValueEvent += self._on_account_value
 
     # -- connection -------------------------------------------------------------
 
@@ -216,10 +248,71 @@ class IBAdapter(BrokerAdapter):
         if self._reconnect_task is not None:
             await self._reconnect_task
 
-    # -- not yet implemented (later plan tasks) ---------------------------------
+    # -- account (T07) -----------------------------------------------------------
 
-    async def account_snapshot(self):
-        raise NotImplementedError("plan T07")
+    def _account_values(self) -> dict:
+        """Latest numeric value per tag, preferring the BASE-currency row."""
+        # Multi-currency accounts report each tag per currency plus "BASE".
+        # Prefer BASE, then USD, then anything else.
+        values: dict = {}
+        ranks: dict = {}
+        for av in self.ib.accountValues(self.account_id):
+            if (
+                av.account != self.account_id
+                or av.tag not in ACCOUNT_TAGS
+                or av.modelCode
+            ):
+                continue
+            rank = {"BASE": 0, "USD": 1}.get(av.currency, 2)
+            if rank >= ranks.get(av.tag, 3):
+                continue
+            try:
+                values[av.tag] = float(av.value)
+            except (TypeError, ValueError):
+                continue
+            ranks[av.tag] = rank
+        return values
+
+    def _build_snapshot(self) -> AccountSnapshot:
+        values = self._account_values()
+        missing = [tag for tag in ACCOUNT_TAGS if tag not in values]
+        if missing:
+            raise AccountDataUnavailable(
+                f"IB has not sent account values yet: missing {', '.join(missing)}"
+            )
+        fields = {ACCOUNT_TAGS[tag]: values[tag] for tag in ACCOUNT_TAGS}
+        return AccountSnapshot(
+            account_id=self.account_id,
+            ts=self._account_updated_at or self._clock(),
+            **fields,
+        )
+
+    async def account_snapshot(self) -> AccountSnapshot:
+        if not self.is_connected:
+            raise BrokerDisconnected("not connected to IB")
+        return self._build_snapshot()
+
+    def account_age_seconds(self, now: Optional[datetime] = None) -> Optional[float]:
+        """Seconds since IB last updated an account value (None if never)."""
+        if self._account_updated_at is None:
+            return None
+        return ((now or self._clock()) - self._account_updated_at).total_seconds()
+
+    def account_is_stale(self, now: Optional[datetime] = None) -> bool:
+        age = self.account_age_seconds(now)
+        return age is None or age > ACCOUNT_STALE_AFTER_S
+
+    def _on_account_value(self, value) -> None:
+        if value.account != self.account_id or value.tag not in ACCOUNT_TAGS:
+            return
+        self._account_updated_at = self._clock()
+        try:
+            snapshot = self._build_snapshot()
+        except AccountDataUnavailable:
+            return  # first batch still arriving
+        self._publish(EVENT_ACCOUNT, snapshot)
+
+    # -- not yet implemented (later plan tasks) ---------------------------------
 
     async def positions(self):
         raise NotImplementedError("plan T08")

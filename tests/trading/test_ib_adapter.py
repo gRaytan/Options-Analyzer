@@ -25,6 +25,10 @@ class FakeIB:
         self.connected = False
         self.connect_calls = []
         self.disconnectedEvent = Event("disconnectedEvent")
+        self.accountValueEvent = Event("accountValueEvent")
+
+    def accountValues(self, account=""):
+        return []
 
     async def connectAsync(self, host, port, clientId, timeout, readonly, account):
         self.connect_calls.append(
@@ -210,3 +214,127 @@ def test_paper_account_detection():
 def test_account_required():
     with pytest.raises(ValueError):
         IBAdapter("", ib_factory=FakeIB)
+
+
+# -- T07: account values -------------------------------------------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from ib_async.objects import AccountValue  # noqa: E402
+
+from src.trading.broker.base import BrokerDisconnected  # noqa: E402
+from src.trading.broker.ib_adapter import (  # noqa: E402
+    ACCOUNT_STALE_AFTER_S,
+    AccountDataUnavailable,
+)
+
+FULL = {
+    "NetLiquidation": "1000000",
+    "ExcessLiquidity": "450000",
+    "MaintMarginReq": "300000",
+    "InitMarginReq": "380000",
+    "AvailableFunds": "420000",
+    "TotalCashValue": "-5000",
+}
+
+
+class AccountIB(FakeIB):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.values = []
+        self.accountValueEvent = Event("accountValueEvent")
+
+    def accountValues(self, account=""):
+        return [v for v in self.values if not account or v.account == account]
+
+    def push(self, tag, value, currency="USD", account="DU123", model=""):
+        av = AccountValue(account, tag, value, currency, model)
+        self.values.append(av)
+        self.accountValueEvent.emit(av)
+
+
+class Clock:
+    def __init__(self):
+        self.now = datetime(2026, 11, 23, 15, 0, tzinfo=timezone.utc)
+
+    def __call__(self):
+        return self.now
+
+
+def connected_account_adapter():
+    ib, clock = AccountIB(), Clock()
+    adapter = IBAdapter("DU123", ib_factory=lambda: ib, sleep=no_sleep, clock=clock)
+    asyncio.run(adapter.connect())
+    return adapter, ib, clock
+
+
+def test_account_snapshot_from_ib_values():
+    adapter, ib, _ = connected_account_adapter()
+    for tag, value in FULL.items():
+        ib.push(tag, value)
+    snap = asyncio.run(adapter.account_snapshot())
+    assert snap.net_liquidation == 1_000_000
+    assert snap.excess_liquidity == 450_000
+    assert snap.cash == -5000
+    assert snap.cushion == pytest.approx(0.45)
+
+
+def test_account_snapshot_incomplete_raises():
+    adapter, ib, _ = connected_account_adapter()
+    ib.push("NetLiquidation", "1000000")
+    with pytest.raises(AccountDataUnavailable, match="ExcessLiquidity"):
+        asyncio.run(adapter.account_snapshot())
+
+
+def test_account_snapshot_requires_connection():
+    ib = AccountIB()
+    adapter = IBAdapter("DU123", ib_factory=lambda: ib, sleep=no_sleep)
+    with pytest.raises(BrokerDisconnected):
+        asyncio.run(adapter.account_snapshot())
+
+
+def test_ignores_other_accounts_models_and_bad_values_and_prefers_base():
+    adapter, ib, _ = connected_account_adapter()
+    for tag, value in FULL.items():
+        ib.push(tag, value)
+    ib.push("ExcessLiquidity", "1", account="DU999")
+    ib.push("ExcessLiquidity", "2", model="MODEL1")
+    ib.push("ExcessLiquidity", "n/a", currency="EUR")
+    ib.push("NetLiquidation", "990000", currency="BASE")
+    ib.push("NetLiquidation", "5", currency="EUR")
+    snap = asyncio.run(adapter.account_snapshot())
+    assert snap.excess_liquidity == 450_000
+    assert snap.net_liquidation == 990_000
+
+
+def test_account_events_published_once_complete():
+    adapter, ib, _ = connected_account_adapter()
+    events = []
+    adapter.subscribe("account", events.append)
+    tags = list(FULL.items())
+    for tag, value in tags[:-1]:
+        ib.push(tag, value)
+    assert events == []
+    ib.push(*tags[-1])
+    assert len(events) == 1 and events[0].excess_liquidity == 450_000
+
+
+def test_account_staleness():
+    adapter, ib, clock = connected_account_adapter()
+    assert adapter.account_is_stale()
+    for tag, value in FULL.items():
+        ib.push(tag, value)
+    assert asyncio.run(adapter.account_snapshot()).ts == clock.now
+    clock.now += timedelta(seconds=ACCOUNT_STALE_AFTER_S - 1)
+    assert not adapter.account_is_stale()
+    clock.now += timedelta(seconds=2)
+    assert adapter.account_is_stale()
+    assert adapter.account_age_seconds() == pytest.approx(ACCOUNT_STALE_AFTER_S + 1)
+
+
+def test_usd_preferred_over_other_currencies_without_base():
+    adapter, ib, _ = connected_account_adapter()
+    for tag, value in FULL.items():
+        ib.push(tag, value)
+    ib.push("ExcessLiquidity", "123", currency="EUR")
+    assert asyncio.run(adapter.account_snapshot()).excess_liquidity == 450_000
