@@ -48,7 +48,7 @@ These come directly from the account owner. Where they conflict with defaults el
 **Definition used for R1:** "margin" = IB **Excess Liquidity** (`ExcessLiquidity`
 account tag = equity with loan value − maintenance margin). That's the cushion
 IB uses before it starts liquidating positions. The floor is **$100,000**; see
-open question 8 to confirm this interpretation.
+open question 8 (confirmed by the owner).
 
 ---
 
@@ -593,12 +593,68 @@ Stage 1 (paper) can start after M1–M5.
 5. **Hosting:** run on a home machine or a cloud VM? IB Gateway needs a stable host and 2FA handling.
 6. **Notifications:** which channel (email, Telegram, Pushover, SMS)?
 7. **Approval UX in Stage 3:** web UI only, or approve from a phone notification?
-8. **R1 definition:** this spec reads "margin ≥ $100k" as **Excess Liquidity ≥ $100k**. Alternatives: Available Funds ≥ $100k (stricter; uses initial margin), or a margin requirement cap (MaintMarginReq ≤ NAV − $100k). Confirm.
-9. **R5 scope:** may margin restoration close positions the bot didn't open (manual and legacy positions)? This spec says **yes**, because the floor protects the whole account.
+8. ~~R1 definition~~ **Resolved:** the floor is **Excess Liquidity ≥ $100k**.
+9. ~~R5 scope~~ **Resolved:** margin restoration **may close any position**, including manual and legacy ones.
 
 ---
 
-## 15. Risk Disclosure
+## 15. Deployment: How the Bot Runs
+
+The bot is a long-running program on an **always-on machine**. It does not
+run inside a chat session; those are temporary.
+
+```
+ Always-on host (home mini-PC or small cloud VM, US-East)
+ ┌──────────────────────────────────────────────────────────┐
+ │ docker compose                                           │
+ │  ┌──────────────┐   API (localhost)   ┌────────────────┐ │
+ │  │ IB Gateway   │◀───────────────────▶│ trading-engine │ │
+ │  │ + IBC        │                     │ python -m      │ │
+ │  │ (auto login, │                     │ src.trading.run│ │
+ │  │  daily       │                     └───────┬────────┘ │
+ │  │  restart)    │                             │ SQLite   │
+ │  └──────────────┘                     ┌───────▼────────┐ │
+ │                                       │ web-ui (Flask) │─┼──▶ phone / browser
+ │                                       └────────────────┘ │    (VPN / Tailscale only)
+ └──────────────────────────────────────────────────────────┘
+```
+
+| Item | Choice |
+|---|---|
+| Host | Option A: home mini-PC or always-on desktop (free; depends on home power/internet). Option B: small cloud VM (2 vCPU / 4 GB, about $10–20/mo) in US-East, close to IB's servers. Recommended: **B**, because a home outage during a margin breach is the scenario R1 exists for. |
+| Packaging | `docker-compose.yml` with three services: `ib-gateway` (community image with IBC), `trading-engine`, `web-ui`. `restart: unless-stopped` on all three. |
+| Secrets | IB username/password in a Docker secret or `.env` on the host only; never in git. |
+| Access | The web UI is **not exposed to the internet**. Reach it through Tailscale/WireGuard. Alerts go out via the notifier (push/email). |
+| Login / 2FA | IBC handles daily restarts. IB requires a full re-login with 2FA about once a week; the bot alerts you to approve it on IB Key. While logged out it can't trade or monitor margin, so this alert is high priority. |
+| Health | A watchdog pings the engine every minute. If the engine is down during market hours, it alerts you (a dead bot can't enforce the $100k floor). Optionally also set an IB-side margin alert in TWS as an independent backup. |
+| Updates | Deploy only outside market hours. The engine reconciles on startup (§7.4) before doing anything. |
+| Backups | Nightly copy of `journal.db` and config. |
+
+## 16. Role of an LLM
+
+**The bot does not need an LLM, and no LLM is in the trading path.** Every
+decision (scan, entry, exit, margin restoration) is a deterministic rule
+in this spec, for these reasons:
+
+- **Predictable:** the same inputs always give the same decision, and they can be backtested.
+- **Auditable:** every order traces to a rule and its numbers (§9.2).
+- **Reliable:** no dependence on an external API being up, fast, or consistent during a margin breach.
+- **Free to run:** no per-decision cost.
+
+Optional LLM uses later, all **advisory and outside the order path** (an
+LLM can never create, approve or send an order):
+
+| Use | How |
+|---|---|
+| Daily / weekly report in plain language | Reads the journal, explains what the bot did and why, and highlights anomalies. |
+| News and event check | Before an entry, summarizes headlines for the underlying. It can only **veto** (skip) a trade, never add one. |
+| Config assistant | "Raise the covered-call delta cap to 0.25" → proposes a config diff that a human applies. |
+| Post-mortems | Explains a losing trade or a halt from the journal data. |
+
+If any of these are added, they run as a separate service that reads the
+journal. Turning them off changes no trading behavior.
+
+## 17. Risk Disclosure
 
 Selling options, especially naked calls, can lose more than the premium
 collected, and naked call losses are theoretically unlimited. Gaps
