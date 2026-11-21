@@ -18,7 +18,7 @@ Companion to [AUTO_TRADING_SPEC.md](AUTO_TRADING_SPEC.md). Work is split into
 T01 → T02 → T03 → T05 → T06 → T07 → T08 → T12          (read-only live dashboard)
                      └→ T04 → T13                        (journal + reconcile)
 T07 → T15 → T16 → T20                                    (margin floor alerts)
-T09 → T17 → T18 → T19 → T21 → T22 → T26 → T28            (paper trading closes)
+T09 → T17 → T18 → T19 → T21 → T22 → T23 → T26 → T28a → T28b → T28c → T28   (paper: closes + rolls)
 T10 → T29 → T30 → T31 → T33                              (paper trading entries)
                                     → Stage 1 (paper) can start
 ```
@@ -54,10 +54,10 @@ T10 → T29 → T30 → T31 → T33                              (paper trading 
 |---|---|---|---|
 | **T14** | Calendars | NYSE hours, holidays and early closes (`exchange_calendars`); earnings and ex-dividend dates (source chosen in this PR). | Tests for holidays, early closes, DST |
 | **T15** | Kill switch + halts | `HALT` file, UI button, CLI; halt reasons persisted; restart does not clear a halt (§6.4). | Tests for each trigger and for persistence across restart |
-| **T16** | Margin floor monitor (alert-only) | 60s loop with normal / warning / breach / emergency states and hysteresis (§6.5). **Alerts only; no closing yet.** | State-machine tests over EL time series |
+| **T16** | Margin floor monitor (alert-only) | 60s loop on EL **and** Cushion with normal / warning / breach / emergency states and hysteresis (§6.5). **Alerts only; no closing yet.** | State-machine tests over EL time series |
 | **T17** | Risk gate: sanity checks | §6.3: quote freshness, price within bid/ask, no position flip, no duplicates, contract match. | One test per check, plus boundary cases |
-| **T18** | Risk gate: hard limits | §6.1 limits, including post-trade EL ≥ $125k via `whatIfOrder`; risk-reducing intents skip allocation limits. | Property tests: no approved opening breaches any limit |
-| **T19** | Stress test | §6.2 scenarios repriced with py-vollib; EL ≥ $100k at −8%. | Known-portfolio fixtures with hand-checked numbers |
+| **T18** | Risk gate: hard limits | §6.1 limits, including post-trade EL ≥ $125k and Cushion ≥ 40% via `whatIfOrder`, and short-put notional ≤ 50% NLV; risk-reducing intents skip allocation limits. | Property tests: no approved opening breaches any limit |
+| **T19** | Stress test | §6.2 scenarios repriced with py-vollib, **stocks and options together**; EL ≥ $100k at −20% with IV +50%. | Known-portfolio fixtures with hand-checked numbers |
 | **T20** | Notifier | Pluggable channels (email + one push service); alert levels; rate limiting. | Breach state from T16 sends an alert in a paper test |
 
 ## Phase D: Orders and position management (M3, R2, R5)
@@ -71,6 +71,9 @@ T10 → T29 → T30 → T31 → T33                              (paper trading 
 | **T25** | Position manager | Hold-to-expiry default, fee-aware early close, never buy back ≤ $0.05, pin-risk sweep, stops (§5.2–5.8) → `TradeIntent`s. | Table-driven tests: position state → expected intent or none |
 | **T26** | Margin restoration | Close selection ranked by margin freed ÷ cost, flagged positions first, fewest orders, re-check after each fill (§6.5). Wired to T16. | Simulated breach on FakeAdapter restores EL ≥ $110k with the fewest closes |
 | **T27** | Approval queue | Pending Approvals page + approve from notification; 10-minute expiry. | Approve and reject flows tested; expired intents are never sent |
+| **T28a** | Assignment Guard: triggers | Detect every §5.11 roll trigger (extrinsic, delta, pin, ex-div, expiration day) on each cycle; alert-only first. | Table-driven tests for each trigger and its boundaries |
+| **T28b** | Roll builder + roll chains | Generate roll candidates (same/better strike, net credit ≥ $0.05, ≤ 90 DTE, no added contracts), pick the best, send as one combo through the risk gate; link chains in the journal; max 4 rolls / 3× loss → close. | FakeAdapter: tested put and call are rolled; no-credit case closes; chain P&L correct |
+| **T28c** | Assignment handling | Detect an assignment from position changes; sell assigned shares or rebuy called-away shares at the next open per config. | FakeAdapter assignment scenarios for both puts and calls |
 | **T28** | Mode gating | `paper` / `shadow` / `approve` / `auto` per §11, with per-strategy open/manage switches; live account requires an explicit, separate flag. | Test matrix: every mode × intent type → sent / queued / logged-only |
 
 ## Phase E: Opportunities and entries (M4, R3, R4)
@@ -81,9 +84,9 @@ T10 → T29 → T30 → T31 → T33                              (paper trading 
 | **T30** | Scanner | Candidate generation for covered calls + puts, hard filters, score formula (§5.9). | Ranked output for a recorded chain fixture matches hand calculation |
 | **T31** | Tracker | Store scan history; timing score; 21 DTE fallback (§5.10). | Replay test: fires at the top-quartile moment, not the first acceptable one |
 | **T32** | Opportunities page | UI listing best candidates per underlying with score breakdown and trend state. | Renders from journal data |
-| **T33** | Entry strategies: CSP + covered calls | Turn tracker signals into opening intents, coverage limit, cash ledger (§5.2–5.3). | Paper: opens one CSP and one covered call through the full pipeline |
+| **T33** | Entry strategies: short puts + covered calls | Turn tracker signals into opening intents; coverage limit; short-put notional tracking (§5.2–5.3). | Paper: opens one short put and one covered call through the full pipeline |
 | **T34** | Spreads + condors | §5.4–5.5 entries and exits via combo orders. | Paper round trip for each |
-| **T35** | Naked options module | §5.6 rules, allowlist, extra stress, 3× stop. Disabled by default. | Tests; it cannot be enabled outside `auto` mode with explicit config |
+| **T35** | Naked calls module | §5.6 rules, allowlist, extra stress, 3× stop. Disabled by default. | Tests; it cannot be enabled outside `auto` mode with explicit config |
 
 ## Phase F: Backtest and operations
 
@@ -93,6 +96,7 @@ T10 → T29 → T30 → T31 → T33                              (paper trading 
 | **T37** | Backtester | Replays history through the strategies, risk gate and FakeAdapter; report on win rate, P&L, max drawdown, fees, and floor breaches. | Report generated for the playbook strategy |
 | **T38** | Scheduler | All §8 jobs wired on the market calendar. | Dry-run day on paper with correct job timing |
 | **T39** | Watchdog + backups | Engine heartbeat, alert when down in market hours, nightly journal backup (§15). | Killing the engine triggers an alert |
+| **T41** | Tail hedge | Monthly far-OTM SPY put purchase sized at 5–10% of premium collected (playbook Rule 7); counts toward the stress test. | Backtest shows the hedge's effect in 2020 / 2022 |
 | **T40** | Metrics | Fees % of premium, win rate, P&L by strategy, slippage on the Charts page (§9.4). | Charts render from the journal |
 
 ---
@@ -103,6 +107,6 @@ T10 → T29 → T30 → T31 → T33                              (paper trading 
 |---|---|
 | T12 | See live positions and Excess Liquidity from IB in the dashboard (read-only) |
 | T20 | Get alerted when EL approaches or breaks $100k |
-| T28 | Run Stage 1 **paper**: automatic margin restoration and closes |
-| T33 | Run Stage 1 **paper**: full covered-call + put-selling loop |
+| T28 | Run Stage 1 **paper**: automatic margin restoration, closes, and **rolls instead of assignment** |
+| T33 | Run Stage 1 **paper**: full covered-call + short-put loop |
 | T37 | Validate the strategy on history before any live money (Stage 0 sign-off) |

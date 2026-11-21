@@ -3,11 +3,11 @@
 
 | | |
 |---|---|
-| **Status** | Draft v0.2 (user requirements R1–R6 incorporated) |
+| **Status** | Draft v0.3 (user requirements R1–R9 incorporated) |
 | **Date** | 2026-11-21 |
 | **Broker** | Interactive Brokers (TWS / IB Gateway API) |
 | **Scope** | Manage existing positions **and** open new ones |
-| **Strategies** | Cash-secured puts, covered calls (the wheel), credit spreads / iron condors, naked short options |
+| **Strategies** | Covered calls and margin-backed short puts (core), credit spreads / iron condors, naked calls. **No assignments: roll instead** (R7) |
 | **Autonomy** | Staged rollout: paper → shadow → approve-each → auto-manage → auto-open |
 
 ---
@@ -44,18 +44,29 @@ These come directly from the account owner. Where they conflict with defaults el
 | **R4** | **Track** options to find the right moment to sell. | §5.10 (Opportunity Tracker for entries; Decay Tracker for open positions) |
 | **R5** | When margin requirements are not met, or the bot judges a position should be closed, **close it automatically**. | §6.5 (margin restoration), §5.7 (close decisions), §11 (closing is automatic from Stage 4; margin-restoration closes are automatic from Stage 3) |
 | **R6** | **Connect to the Interactive Brokers account through its API.** | §4.3 (connection spec), M1 in §13 |
+| **R7** | **No assignments.** Roll when needed instead of being assigned. | §5.11 (assignment avoidance), §5.2–5.3 |
+| **R8** | **No cash in the account; everything is invested.** Puts are backed by margin (the stock portfolio), not by cash. | §5.2 (margin-backed short puts), §6.1 (put notional cap), §6.2 (stress test includes the stock holdings) |
+| **R9** | **Manage the risk and always stay far from the margin limit.** | §6.1 (Cushion ≥ 40% for new trades), §6.2 (−20% stress), §6.5 (Cushion floor in addition to the $100k floor) |
 
 **Definition used for R1:** "margin" = IB **Excess Liquidity** (`ExcessLiquidity`
 account tag = equity with loan value − maintenance margin). That's the cushion
 IB uses before it starts liquidating positions. The floor is **$100,000**; see
 open question 8 (confirmed by the owner).
 
+**Definition used for R9 ("far from margin"):** besides the $100k floor,
+the bot also watches IB **Cushion** (Excess Liquidity ÷ Net Liquidation).
+New trades require Cushion ≥ 40% after the trade, and restoration starts below
+30%. Whichever of the two floors ($100k or 30% Cushion) is stricter for the
+current account size wins. Because the account is fully invested (R8), a
+market drop hits twice: the stocks lose value **and** the short puts lose money,
+and both shrink Excess Liquidity at the same time. The R9 limits are sized for that.
+
 ---
 
 ## 2. Goals and Non-Goals
 
 ### Goals
-- G1: Close or roll positions automatically when they hit the configured triggers (profit target, delta, DTE, assignment risk).
+- G1: Close or roll positions automatically when they hit the configured triggers (profit target, delta, DTE, assignment risk). No short option is ever left to be assigned (R7).
 - G2: Open new positions that match the strategy rules, without ever breaching the portfolio risk limits.
 - G3: Make every action explainable: each order links to the signal, inputs, and risk checks that produced it.
 - G4: Fail safe. On any unknown state (disconnect, stale data, reconcile mismatch) stop opening and keep only protective actions.
@@ -74,7 +85,7 @@ open question 8 (confirmed by the owner).
 
 | Requirement | Why |
 |---|---|
-| IB margin account, options **Level 4** (naked) permissions | Required for naked short options. Levels 2–3 cover CSPs, covered calls, and spreads. |
+| IB margin account, options **Level 4** (naked) permissions | Required: with no cash (R8), every short put is a naked put backed by margin. |
 | Portfolio Margin (recommended) | Naked option margin under Reg-T is far higher. `MarginCalculator` already supports both. |
 | OPRA + US equity real-time market data subscriptions | yfinance (`src/data/price_fetcher.py`) is delayed and rate-limited, so it is not safe for order pricing. |
 | IB Gateway running headless with auto-restart (e.g. IBC) | IB forces a daily restart; the bot must survive it. |
@@ -192,18 +203,17 @@ Applied before any strategy-specific rule:
 | Time of day | 09:45 – 15:45 ET (avoid the open and close auctions) |
 | Market regime | No new entries if VIX > 35 or SPY is down > 3% intraday (configurable) |
 
-### 5.2 Cash-Secured Put (CSP)
-- **Entry:** Sell puts at 30–45 DTE, delta 0.15–0.25, on an underlying the user marked "willing to own." The best candidates come from the scanner ranking (§5.9).
-- **Collateral:** Cash reserved = strike × 100 × qty. The bot tracks this in its own ledger; it does not rely on IB's margin view alone.
-- **Exit:** By default **hold to expiration** (R2). Close early only under the fee-aware rules in §5.8, the defend rule below, or margin restoration (§6.5).
-- **Defend:** If delta > 0.50 and DTE > 7, **roll** out (same strike or lower) for a net credit. If no credit roll exists, either accept assignment (wheel mode) or close at the 2× credit stop-loss (non-wheel mode).
-- **Assignment:** In wheel mode, assignment hands the shares to the Covered Call strategy.
+### 5.2 Short Put (margin-backed, R8)
+- **Entry:** Sell puts at 30–45 DTE, **delta 0.10–0.20**, on watchlist names (§10). The best candidates come from the scanner ranking (§5.9).
+- **Collateral:** None in cash. The put is margined against the stock portfolio. Its assignment value (strike × 100 × qty) counts against the **short-put notional cap** in §6.1, and its margin is checked with `whatIfOrder`.
+- **Exit:** By default **hold to expiration** (R2), provided it stays OTM. Close early only under the fee-aware rules in §5.8, the assignment-avoidance rules in §5.11, or margin restoration (§6.5).
+- **Defend:** Roll per §5.11 (down and out, for a net credit). **Never take assignment** (R7). If no acceptable roll exists, close.
 
 ### 5.3 Covered Call
-- **Entry:** For each 100 uncovered shares held, sell 1 call at 21–45 DTE, **delta ≤ 0.20 (target 0.10–0.20)**, strike ≥ cost basis (configurable), choosing the strike/expiry with the best premium score (§5.9). The R3 goal is **high premium at low delta**, so the bot waits (§5.10) for elevated IV rather than selling a low-delta call for little premium.
+- **Entry:** For each 100 uncovered shares held, sell 1 call at 21–45 DTE, **delta ≤ 0.15 (target 0.08–0.15)**, low enough that a roll is rarely needed, since shares must not be called away (R7), strike ≥ cost basis (configurable), choosing the strike/expiry with the best premium score (§5.9). The R3 goal is **high premium at low delta**, so the bot waits (§5.10) for elevated IV rather than selling a low-delta call for little premium.
 - **Coverage:** Never sell more calls than `floor(shares / 100)`. This uses the same coverage logic the margin code uses (commit `2eb3ff0`).
 - **Exit:** Hold to expiration by default (R2). Close early only under §5.8 or the defend rule.
-- **Defend:** If ITM and an ex-dividend date is before expiration with extrinsic < dividend, roll or close before ex-div (early assignment risk). Otherwise roll up and out for a credit, or allow the shares to be called away (configurable per symbol).
+- **Defend:** Roll **up and out** per §5.11 before the call can be assigned, including before ex-dividend dates. **Shares are never allowed to be called away** (R7). If no acceptable roll exists, buy back the call.
 
 ### 5.4 Credit Spreads (bull put / bear call)
 - **Entry:** Short leg delta 0.20–0.30, 30–45 DTE, width $5 (or per-symbol), credit ≥ **1/3 of width**.
@@ -219,8 +229,7 @@ Applied before any strategy-specific rule:
 - **Defend:** No adjustments (R2). Close the whole position at the 2× credit stop.
 
 ### 5.6 Naked Short Options
-Undefined risk. These are gated hardest and enabled last (Stage 5b).
-- **Naked puts:** Same rules as CSP, but margin-funded rather than cash-secured. Delta ≤ 0.20.
+Undefined risk. Short puts are now a core strategy (§5.2, because of R8). **Naked calls** (calls not covered by shares) remain gated hardest and are enabled last (Stage 5b).
 - **Naked calls:** Delta ≤ 0.15, index ETFs or mega-caps only (allowlist), **never** through earnings, **never** on hard-to-borrow or high short-interest names (squeeze risk).
 - **Mandatory stop:** Close if the option price reaches 3× the credit, or if the underlying crosses the strike.
 - **Mandatory stress check:** each new naked position must pass the stress test in §6.2 on its own and as part of the portfolio.
@@ -235,7 +244,7 @@ On every cycle, each open position runs through `RiskAnalyzer.analyze_position`
 | `PROFIT_TARGET_REACHED` | Close **only if** the fee-aware test in §5.8 says closing beats holding; otherwise hold to expiration |
 | `EXPIRING_SOON` (≤ 7 DTE) | Close or roll, by strategy rule |
 | `HIGH_DELTA_SHORT_CALL` | Roll or close |
-| `ITM_OPTION` (≤ 7 DTE) | Roll, close, or accept assignment (wheel) |
+| `ITM_OPTION` | Roll or close per §5.11. Never accept assignment |
 | `LARGE_LOSS` | Evaluate the stop-loss rule |
 
 Required changes to `risk.py`:
@@ -260,7 +269,7 @@ commission-free.
 |---|---|
 | **Hold to expiration** is the default exit. Letting an OTM option expire costs $0. | on |
 | Close early for profit only if: remaining premium ≥ **$0.10/contract** **and** ≥ 80% of max profit is captured **and** ≥ 10 DTE remain (so the freed margin can be re-used for a new sale) | `early_close` |
-| **Never buy back** a short option with mid ≤ $0.05 unless it's needed for margin restoration, pin risk, or an ex-dividend assignment risk | on |
+| **Never buy back** a short option with mid ≤ $0.05 unless it's needed for margin restoration or assignment avoidance (§5.11) | on |
 | Minimum **net credit per contract** after round-trip fees for new trades | $50 (≥ $0.50 premium) |
 | Minimum annualized return on margin, after fees, for new trades | 12% |
 | Prefer **monthly** (30–45 DTE) over weekly expirations: about 4× fewer trades for similar premium | on |
@@ -279,16 +288,15 @@ dashboard can show fees as a percentage of premium collected (target < 3%).
 Runs continuously during market hours (§8). It has two queues that always run:
 
 1. **Covered calls:** every holding with ≥ 100 uncovered shares.
-2. **Put sales:** every watchlist name marked `willing_to_own` (CSP), plus allowlisted names for naked puts once they are enabled (Stage 5b).
+2. **Put sales:** every watchlist name enabled for `short_put`.
 
 For each candidate (underlying × expiry 21–45 DTE × strike within the delta
 band), compute:
 
 ```
 premium_yield   = mid / capital_at_risk × 365 / DTE
-                  (capital_at_risk = strike × 100 for CSP;
-                   share value for covered calls;
-                   whatIf margin for naked puts)
+                  (capital_at_risk = whatIf margin for short puts;
+                   share value for covered calls)
 prob_otm        ≈ 1 − |delta|
 edge            = IV − realized_vol_20d            (selling rich volatility)
 score           = premium_yield × prob_otm
@@ -297,7 +305,7 @@ score           = premium_yield × prob_otm
                   − fee_drag                         (round-trip fees / capital)
 ```
 
-- **Hard filters:** delta ≤ 0.20 for covered calls, ≤ 0.25 for CSPs; net credit ≥ $50/contract; the common filters in §5.1.
+- **Hard filters:** delta ≤ 0.15 for covered calls, ≤ 0.20 for short puts; net credit ≥ $50/contract; the common filters in §5.1.
 - **Output:** a ranked list per underlying (best strike/expiry) shown on a new **Opportunities** page, and fed to the Risk Gate as intents when the tracker (§5.10) says the timing is right.
 - **R3 metric:** "high premium" means `premium_yield ≥ 15%` annualized for covered calls and `≥ 20%` for puts (configurable).
 
@@ -342,6 +350,39 @@ and extrinsic value. This feeds §5.8: it detects when the remaining premium
 is too small to be worth holding the margin, and when a roll is worth it. It
 also shows each position's "sell-by" signals on the positions page.
 
+### 5.11 Assignment avoidance: roll, never get assigned (R7)
+
+American-style equity options can be assigned at any time, usually when an
+ITM option has little extrinsic value left, or (for calls) the day before an
+ex-dividend date. The **Assignment Guard** checks every short option every
+management cycle (5 min).
+
+**Roll triggers (any one fires):**
+
+| Trigger | Default |
+|---|---|
+| ITM **and** extrinsic value < $0.15 (or < 0.5% of strike) | early-assignment danger zone |
+| Delta ≥ 0.50 (put) / ≥ 0.50 (call) | it's becoming an ITM position |
+| ≤ 5 DTE **and** underlying within 2% of the strike | pin risk / after-hours move risk |
+| Short call ITM, ex-dividend date before expiry, extrinsic < dividend + $0.05 | roll **by 15:30 ET on the day before** the ex-date |
+| Expiration day, any short option ITM or within 1% of the strike | **must** be rolled or closed by 15:00 ET; nothing ITM is left to expire |
+
+**How to roll:**
+1. Build candidates with **one combo order** (buy back the current option + sell the new one): next monthly expirations (30–60 DTE, up to a max of 90), with a strike that is the same or better (puts lower, calls higher).
+2. Choose the candidate with the best strike improvement that still gives a **net credit ≥ $0.05/contract** (covers fees, R2).
+3. **Never increase the contract count** in a roll (no doubling down).
+4. The roll must pass the Risk Gate like a new trade (§6.1–6.2). Rolling may not push the account closer to the margin limit (R9).
+5. A position may be rolled at most **4 times**. After that, or if no candidate meets rules 1–4, **close it** and take the loss. Losses are realized deliberately, never through an assignment.
+
+**Roll chains:** the journal links every roll to the original trade, so P&L,
+total credit, and days held are reported per chain, not per leg. A chain whose
+cumulative loss passes **3× the original credit** is closed regardless of roll options.
+
+**If an assignment still happens** (early assignment can't be fully prevented):
+- **Put assigned** → shares appear on margin. Alert immediately; at the next open, **sell the shares** (default `on_put_assignment: "sell_shares"`) to restore the account to its prior state.
+- **Call assigned** → shares are called away. Alert; at the next open, **buy the shares back** (default `on_call_assignment: "rebuy_shares"`) to stay fully invested (R8).
+- Both are logged as an assignment event on the chain, and the Assignment Guard's thresholds are reviewed.
+
 ---
 
 ## 6. Risk Gate
@@ -355,9 +396,10 @@ can be unit-tested exhaustively.
 | Limit | Default |
 |---|---|
 | **Excess Liquidity after the trade ≥ $100,000 + $25,000 entry buffer (R1)** (IB `whatIfOrder` result). The buffer keeps a new trade from immediately triggering §6.5. | $125,000 |
-| **Excess Liquidity under the §6.2 −8% stress scenario** | ≥ $100,000 |
+| **Cushion (EL ÷ NLV) after the trade (R9)** | ≥ 40% |
+| **Excess Liquidity under the §6.2 −20% market / IV +50% scenario (R9)** | ≥ $100,000 |
+| **Total short-put notional** (strike × 100 × qty, all short puts) (R8) | ≤ 50% of NLV |
 | Max margin utilization after the trade (IB `whatIfOrder` result) | 50% of NAV |
-| Min excess liquidity after the trade | 30% of NAV |
 | Max allocation per underlying (notional at risk) | 10% of NAV |
 | Max allocation per sector | 30% of NAV |
 | Max portfolio beta-weighted delta (SPY-equivalent shares) | ±0.5 × NAV / SPY price |
@@ -365,7 +407,6 @@ can be unit-tested exhaustively.
 | Max new positions per day | 5 (R2) |
 | Max contracts per order | 10 |
 | Max loss per defined-risk trade | 2% of NAV |
-| Cash reserved for CSPs | ≤ available cash |
 | Account must have the required option permission level | — |
 
 Closing and risk-reducing intents **skip** allocation limits, so the bot can
@@ -373,8 +414,9 @@ always get out. They are still checked for sanity (price, quantity, contract).
 
 ### 6.2 Stress test
 Before any opening trade, revalue the portfolio with the new position under these scenarios:
-- Underlying moves −25%, −15%, −8%, +8%, +15%, +25%
-- IV +50% (relative) combined with the −15% move
+- Underlying moves −25%, −20%, −15%, −8%, +8%, +15%, +25%, applied to **the stock holdings and the options together** (R8)
+- IV +50% (relative) combined with the −15% and −20% moves
+- Margin requirement recomputed under each scenario (stock margin rises as positions fall)
 
 Reject the trade if any scenario's portfolio loss exceeds **25% of NAV** or the
 scenario margin exceeds NAV. Use `py-vollib` (already a dependency) for
@@ -410,9 +452,9 @@ the 5-minute management cycle), using streamed `ExcessLiquidity`.
 
 | Excess Liquidity | State | Action |
 |---|---|---|
-| ≥ $125,000 | Normal | — |
-| $100,000 – $125,000 | **Warning** | No new opening trades. Alert. |
-| < $100,000 | **Breach** | Stop all opening. Within 2 minutes, start **automatic closing** until EL ≥ $110,000 (hysteresis, so one small move doesn't cause repeated closes). |
+| ≥ $125,000 **and** Cushion ≥ 40% | Normal | — |
+| $100,000 – $125,000, **or** Cushion 30–40% | **Warning** | No new opening trades (rolls that improve margin still allowed). Alert. |
+| < $100,000, **or** Cushion < 30% | **Breach** | Stop all opening. Within 2 minutes, start **automatic closing** until EL ≥ $110,000 and Cushion ≥ 35% (hysteresis, so one small move doesn't cause repeated closes). |
 | < $50,000 or IB `Cushion` < 5% | **Emergency** | Same as breach but price aggressively (up to the natural price) and alert by every channel. Getting out matters more than slippage. |
 
 **Which positions to close (fewest transactions, R2):**
@@ -448,7 +490,7 @@ close is notified, and the user can disable this with `margin_restore.auto: fals
 
 ### 7.3 Fills, partial fills, assignment
 - Partial fills update the position immediately; the remainder keeps working within the same price limits.
-- Assignment and exercise events (detected from position changes outside a bot order) are logged, attributed to their strategy, and handed to the wheel logic where applicable.
+- Assignment and exercise events (detected from position changes outside a bot order) are logged, attributed to their chain, and handled per §5.11 (sell assigned shares / rebuy called-away shares).
 
 ### 7.4 Reconciliation
 Every cycle, compare the bot's expected positions (from the journal) to IB
@@ -513,25 +555,30 @@ Every change is versioned into the journal.
   "mode": "paper",                      // paper | shadow | approve | auto
   "account_id": "DU1234567",
   "enabled_strategies": {
-    "csp":           {"manage": true,  "open": true},
+    "short_put":     {"manage": true,  "open": true},
     "covered_call":  {"manage": true,  "open": true},
     "credit_spread": {"manage": true,  "open": false},
     "iron_condor":   {"manage": true,  "open": false},
-    "naked_put":     {"manage": true,  "open": false},
     "naked_call":    {"manage": false, "open": false}
   },
   "watchlist": {
-    "AAPL": {"willing_to_own": true,  "strategies": ["csp", "covered_call", "credit_spread"]},
-    "SPY":  {"willing_to_own": false, "strategies": ["iron_condor", "naked_call"]}
+    "AAPL": {"strategies": ["short_put", "covered_call", "credit_spread"]},
+    "SPY":  {"strategies": ["short_put", "iron_condor", "naked_call"]}
   },
-  "entry":  {"dte_min": 21, "dte_max": 45, "cc_delta_max": 0.20, "put_delta_max": 0.25,
+  "entry":  {"dte_min": 21, "dte_max": 45, "cc_delta_max": 0.15, "put_delta_max": 0.20,
              "ivr_min": 30, "min_net_credit_per_contract": 50,
              "cc_min_premium_yield": 0.15, "put_min_premium_yield": 0.20},
   "exit":   {"hold_to_expiration": true, "early_close_min_captured_pct": 80,
              "early_close_min_dte": 10, "never_buy_back_below": 0.05, "stop_multiple": 2.0},
   "margin_floor": {"excess_liquidity_min": 100000, "entry_buffer": 25000,
                    "restore_target": 110000, "emergency_level": 50000,
+                   "cushion_min_new_trade": 0.40, "cushion_breach": 0.30, "cushion_restore": 0.35,
+                   "short_put_notional_max": 0.50, "stress_drop": 0.20,
                    "check_interval_s": 60, "auto": true},
+  "assignment_guard": {"min_extrinsic": 0.15, "max_delta": 0.50, "pin_dte": 5, "pin_pct": 0.02,
+                       "roll_min_credit": 0.05, "roll_max_dte": 90, "max_rolls": 4,
+                       "chain_max_loss_x_credit": 3.0,
+                       "on_put_assignment": "sell_shares", "on_call_assignment": "rebuy_shares"},
   "fees":   {"per_contract": 0.65, "tier": "ibkr_pro_tiered"},
   "risk": {
     "max_margin_util": 0.50,
@@ -562,12 +609,12 @@ human promotes the bot to the next stage by editing `mode`; the bot never promot
 | Stage | Mode | What runs | Exit criteria |
 |---|---|---|---|
 | **0. Backtest / replay** | offline | Strategies + risk gate against historical chains (FakeAdapter) | ≥ 2 years of history incl. 2020 and 2022; risk gate never breached; results reviewed |
-| **1. Paper** | `paper` | Full system on the IB paper account, all strategies except naked calls | 4 weeks; 0 reconcile mismatches; 0 unhandled errors; every halt trigger tested on purpose |
+| **1. Paper** | `paper` | Full system on the IB paper account (paper account set up fully invested, like the live one), all strategies except naked calls. **Assignment Guard must roll every test case** | 4 weeks; 0 reconcile mismatches; 0 unhandled errors; every halt trigger tested on purpose |
 | **2. Shadow live** | `shadow` | Reads the live account, generates intents, **sends nothing**; the user compares them with their own decisions | 2 weeks; ≥ 90% of intents judged "would have done this" |
 | **3. Approve each** | `approve` | Live orders, but each intent waits in **Pending Approvals** (UI and notification), expiring after 10 min. **Exception:** margin-floor restoration closes (§6.5) run automatically (R1/R5) | 4 weeks; slippage vs. mid within target; no approved order behaved unexpectedly |
 | **4. Auto-manage** | `auto` + open=false | Closes and rolls are automatic; new entries still need approval | 4 weeks clean |
-| **5a. Auto-open (defined risk)** | `auto` | CSP, covered calls, spreads, condors fully automatic within the limits | 8 weeks clean; start with 25% of the risk limits, then raise them step by step |
-| **5b. Auto-open (naked)** | `auto` | Naked puts first, then naked calls, each with its own 4-week paper + approval period | Explicit user sign-off |
+| **5a. Auto-open (core)** | `auto` | Covered calls, short puts, spreads, condors fully automatic within the limits | 8 weeks clean; start with 25% of the risk limits, then raise them step by step |
+| **5b. Auto-open (naked calls)** | `auto` | Naked calls, with their own 4-week paper + approval period | Explicit user sign-off |
 
 Rolling back to an earlier stage is always allowed and takes effect on the next cycle.
 
@@ -590,7 +637,8 @@ Rolling back to an earlier stage is always allowed and takes effect on the next 
 | M1 Broker foundation (R6) | `ib_adapter` (read-only), `fake_adapter`, live `portfolio_state`, account-summary streaming, reconciliation, journal | 2 wks |
 | M2 Risk gate + margin floor (R1, R5) | All §6 checks, $100k EL floor monitor and restoration, stress test, halt persistence, tests | 2 wks |
 | M3 Management + fees (R2, R5) | Position Manager over existing flags, `risk.py` upgrades, fee model, hold-to-expiry logic, order manager with pricing ladder | 2 wks |
-| M4 Entries (R3, R4) | Opportunity Scanner and Tracker, covered calls + CSPs first, then spreads + condors | 2 wks |
+| M3b Assignment Guard (R7) | Roll triggers, roll builder, roll chains, assignment handling (§5.11) | 1 wk |
+| M4 Entries (R3, R4) | Opportunity Scanner and Tracker, covered calls + short puts first, then spreads + condors | 2 wks |
 | M5 UI + alerts | Bot Status, Pending Approvals, Order Log, config editor, notifier | 1 wk |
 | M6 Backtest harness | Historical chain replay through FakeAdapter | 2 wks |
 | M7 Naked module | Naked put/call rules, extra stress checks | 1 wk |
@@ -603,13 +651,14 @@ Stage 1 (paper) can start after M1–M5.
 
 1. **Historical options data source** for Stage 0: options chain history is not free (candidates: ORATS, CBOE DataShop, Polygon). Budget?
 2. **Margin type:** is the account on Portfolio Margin or Reg-T? This changes how much naked exposure the limits allow.
-3. **Wheel vs. stop:** for CSPs that go ITM, default to taking assignment or stopping out? (Per symbol, via `willing_to_own`.)
+3. ~~Wheel vs. stop~~ **Resolved (R7):** no assignment; roll, otherwise close.
 4. **Legacy positions:** should the bot manage the existing ~500 positions, or only positions it opens?
 5. **Hosting:** run on a home machine or a cloud VM? IB Gateway needs a stable host and 2FA handling.
 6. **Notifications:** which channel (email, Telegram, Pushover, SMS)?
 7. **Approval UX in Stage 3:** web UI only, or approve from a phone notification?
 8. ~~R1 definition~~ **Resolved:** the floor is **Excess Liquidity ≥ $100k**.
 9. ~~R5 scope~~ **Resolved:** margin restoration **may close any position**, including manual and legacy ones.
+10. **Premium cash (R8):** collected premium arrives as cash. Should the bot leave it for you to invest, or (a later feature) buy a configured ETF with it?
 
 ---
 
