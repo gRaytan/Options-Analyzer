@@ -41,7 +41,7 @@ T10 → T29 → T30 → T31 → T33 → T33b → T33c → T41            (paper 
 | # | Task | Scope | Done when |
 |---|---|---|---|
 | **T06** | IB connection manager | `IBAdapter.connect()`: host, port, client ID, reconnect with 1→60s backoff, connection-state events, refusal to start if the account ID doesn't match config (§4.3). | Manual test against IB paper; unit tests with a mocked `ib_async` |
-| **T07** | Account snapshot stream | Subscribe to the account-summary tags (EL, NLV, MaintMargin, InitMargin, AvailableFunds, Cushion) and publish `AccountSnapshot` events. | Live values appear in logs from paper; staleness is flagged after 30s with no update |
+| **T07** | Account snapshot stream + margin-type check | Subscribe to the account-summary tags (EL, NLV, MaintMargin, InitMargin, AvailableFunds, Cushion) and publish `AccountSnapshot` events. | Live values appear in logs from paper; staleness is flagged after 30s with no update |
 | **T08** | Live positions → Portfolio | Map IB positions and portfolio items onto the existing `Portfolio` / `OptionPosition` / `StockPosition` models. | Same `Portfolio` analysis output from a CSV and from a live paper account holding the same positions |
 | **T09** | Chains + quotes | `reqSecDefOptParams`, contract qualification, snapshot and streaming quotes with Greeks, market-data-type check (refuse orders on delayed data), pacing limiter. | Can pull a full 30–45 DTE chain for 10 symbols within pacing limits |
 | **T10** | History fetcher | Daily bars + IV history via `reqHistoricalData`, cached on disk. | Returns 1 year of bars and IV for a symbol; cache hit on second call |
@@ -95,7 +95,7 @@ T10 → T29 → T30 → T31 → T33 → T33b → T33c → T41            (paper 
 
 | # | Task | Scope | Done when |
 |---|---|---|---|
-| **T36** | Historical data loader | Import from the chosen vendor (spec open question 1) into a local store. | Loads 2 years for 5 symbols |
+| **T36** | Synthetic history builder | Daily bars (IB/yfinance) + CBOE VIX/VXN/VIX9D/VIX3M; Black-Scholes chain generator with a conservative skew curve and pessimistic spreads (spec §11.1). | Generates chains 2008–present for SPY/QQQ/XSP; prices within tolerance of a few recorded live chains |
 | **T37** | Backtester | Replays history through the strategies, risk gate and FakeAdapter; report on win rate, P&L, max drawdown, fees, and floor breaches. | Report generated for the playbook strategy |
 | **T38** | Scheduler | All §8 jobs wired on the market calendar. | Dry-run day on paper with correct job timing |
 | **T39** | Watchdog + backups | Engine heartbeat, alert when down in market hours, nightly journal backup (§15). | Killing the engine triggers an alert |

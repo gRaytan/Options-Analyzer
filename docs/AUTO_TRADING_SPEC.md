@@ -109,7 +109,7 @@ These come directly from the account owner. Where they conflict with defaults el
 | Requirement | Why |
 |---|---|
 | IB margin account with options **Level 4** | With no cash (R8), short puts are naked puts backed by margin. |
-| **Portfolio Margin** (strongly recommended) | Reg-T naked put margin is several times higher. PM also nets index puts against the tail hedge. |
+| **Margin type: Reg-T** (owner's current understanding; the bot verifies it at startup, §4.3) | Reg-T naked put margin: broad index ≈ max(15% of underlying − OTM amount, 10% of strike) + premium; stocks ≈ max(20% − OTM, 10%) + premium. Under Reg-T, the binding limits are Cushion and the risk budget, not the put margin itself. Portfolio Margin can be revisited later. |
 | OPRA, US equity, and **CBOE index (SPX/XSP/VIX)** real-time market data | Live data is needed to price orders and to read VIX for regime sizing. |
 | IB Gateway + IBC on an always-on host (§15) | IB forces a daily restart; the bot must survive it. |
 | Separate IB **paper** account, set up fully invested like the live one | Stage 1. |
@@ -187,6 +187,7 @@ New UI pages: **Bot Status, Opportunities, Pending Approvals, Order Log, Risk Bu
 | Read-only first | IB's "Read-Only API" setting stays **on** in Stages 0–2. That's a broker-side guarantee that no order can be placed. |
 | Data | `reqPositions`, `reqAccountSummary` (`NetLiquidation`, `ExcessLiquidity`, `MaintMarginReq`, `InitMarginReq`, `AvailableFunds`, `Cushion`), `reqPnL`, `reqSecDefOptParams`, `reqMktData` (generic ticks 100/101/104/106), `reqExecutions`, `reqHistoricalData`. |
 | Pre-trade margin | `whatIfOrder` for every opening order and roll. |
+| Margin-type check | At startup, compare `whatIfOrder` margin on a reference short put with the Reg-T and PM formulas, and refuse to trade if the result doesn't match `margin_type` in config. |
 | Market data | Live only. On delayed data the bot runs read-only. |
 | Reconnect | Backoff 1s → 60s. On reconnect: reload positions, orders and executions, and reconcile before acting. |
 | Pacing | ≤ 50 msg/s; respect the market-data line limit; batch and snapshot wide scans. |
@@ -228,8 +229,9 @@ All numbers are **defaults** in `data/config/trading.json` (§10).
 **Both:** no cash collateral (R8). Every put counts toward short-put notional, the risk budget, and the expiry ladder (§6.1–6.2).
 
 ### 5.3 Covered calls
-- **Coverage:** by default at most **50% of the shares** in each holding (`cc_max_coverage: 0.5`), and never more than `floor(shares / 100)` contracts. Uses the existing coverage logic (commit `2eb3ff0`).
+- **Coverage:** set **per symbol**. Index ETFs (SPY, QQQ, QQQM) default to **50%** (owner-confirmed). Single stocks default to 50% until set per symbol (`cc_max_coverage` in the watchlist), and never more than `floor(shares / 100)` contracts. Uses the existing coverage logic (commit `2eb3ff0`).
 - **Entry:** 21–45 DTE, **delta 0.08–0.15**, strike ≥ cost basis (configurable).
+- **QQQM note:** QQQM options are thinly traded and usually fail the liquidity filter (§5.1). Calls on QQQ **don't cover** QQQM shares, because they're a different underlying, so IB would treat them as naked calls. To get covered-call income on that exposure, the QQQM shares would need to be held as QQQ (open question 13).
 - **Skip in strong uptrends** unless IV rank ≥ 60. A strong uptrend means price above a rising 50-day MA **and** a 20-day return > +8%. Selling calls into momentum mostly produces costly rolls.
 - **Exit / defend:** hold to expiry unless §5.8 says to close, and roll up and out per §5.11. **Shares are never called away** (R7). If no acceptable roll exists, buy back the call. The shares' gain offsets the loss on the call.
 
@@ -521,6 +523,7 @@ NYSE calendar, including holidays and early closes.
 {
   "mode": "paper",
   "account_id": "DU1234567",
+  "margin_type": "reg_t",
   "enabled_strategies": {
     "covered_call": {"manage": true, "open": true},
     "index_put":    {"manage": true, "open": true},
@@ -529,8 +532,10 @@ NYSE calendar, including holidays and early closes.
     "tail_hedge":   {"manage": true, "open": true}
   },
   "watchlist": {
-    "AAPL": {"strategies": ["covered_call", "stock_put"]},
-    "MSFT": {"strategies": ["covered_call", "stock_put"]}
+    "SPY":  {"strategies": ["covered_call"], "cc_max_coverage": 0.5},
+    "QQQ":  {"strategies": ["covered_call"], "cc_max_coverage": 0.5},
+    "QQQM": {"strategies": ["covered_call"], "cc_max_coverage": 0.5},
+    "AAPL": {"strategies": ["covered_call", "stock_put"], "cc_max_coverage": 0.5}
   },
   "index": {"underlyings": ["XSP", "SPXW"], "settlement": "PM", "switch_to_spx_at_contracts": 10},
   "entry": {
@@ -584,12 +589,33 @@ A human promotes each stage; the bot never promotes itself. Rolling back is alwa
 
 | Stage | Mode | What runs | Exit criteria |
 |---|---|---|---|
-| **0. Backtest** | offline | Full strategy + risk gate on historical chains (2018–present, including Feb 2018, 2020, 2022, Aug 2024) | **Walk-forward**: parameters tuned on one period and tested on a later one. Out-of-sample: overlay Sortino > 1.0; options-book max drawdown < 8% NLV; **0 EL floor breaches**; 0 unhandled assignments; overlay + stocks beats buy-and-hold on a risk-adjusted basis |
-| **1. Paper** | `paper` | Everything, on a fully invested paper account | 4 weeks; 0 reconcile mismatches; every halt and guard path triggered on purpose |
+| **0. Backtest** | offline | **Synthetic-chain backtest** (§11.1) 2008–present, covering 2008, Feb 2018, 2020, 2022 and Aug 2024, for index puts and SPY/QQQ covered calls; single-stock legs only approximated | **Walk-forward**: parameters tuned on one period and tested on a later one. Out-of-sample: overlay Sortino > 1.0; options-book max drawdown < 8% NLV; **0 EL floor breaches**; 0 unhandled assignments; overlay + stocks beats buy-and-hold on a risk-adjusted basis |
+| **1. Paper** | `paper` | Everything, on a fully invested paper account. **Real IB chains are recorded from day 1** | **8 weeks** (doubled, because there's no historical chain data); 0 reconcile mismatches; every halt and guard path triggered on purpose |
 | **2. Shadow** | `shadow` | Live account, read-only API; intents logged, nothing sent | 2 weeks; ≥ 90% of intents judged "would have done this" |
 | **3. Approve** | `approve` | Live orders, each approved by you (10-min expiry). Margin restoration and guard rolls **within 1 DTE** are automatic | 4 weeks; slippage within target |
 | **4. Auto-manage** | `auto`, open = approval | Closes, rolls and the hedge are automatic | 4 weeks clean |
 | **5. Auto-open** | `auto` | Everything automatic, starting at **25% of the risk budget**, +25% per clean month | 8 weeks clean at 100% |
+
+### 11.1 Backtest without paid historical data
+
+The owner has no historical options data, and IB doesn't serve expired option chains. Stage 0 therefore uses free data:
+
+| Input | Source | Used for |
+|---|---|---|
+| Daily OHLC for SPY, QQQ, watchlist stocks | IB `reqHistoricalData` (or yfinance) | Underlying paths, RV, trend indicators |
+| **VIX** (SPX 30-day implied vol) and **VXN** (Nasdaq-100) | CBOE (free daily history) | At-the-money IV for SPX/XSP/SPY and QQQ |
+| VIX9D / VIX3M | CBOE | Term structure, used to scale IV by DTE |
+| Skew | A fixed, conservative put-skew curve (OTM puts priced at higher IV than ATM, steeper when VIX is low), calibrated against the first weeks of recorded IB chains | OTM strike IV |
+
+Options are priced with Black-Scholes at those IVs. Bid-ask is modeled as a
+pessimistic spread (e.g. 5% of mid, minimum $0.05), plus fees.
+
+**Limits:** this is accurate enough for **index puts and SPY/QQQ covered
+calls**, the core of the strategy, but only rough for single stocks (no
+per-stock IV history), so single-stock puts start at a reduced budget until
+recorded data validates them. From Stage 1 on, the tracker records real IB
+chains every scan. After ~3 months that history replaces the synthetic skew
+curve, and the backtest is re-run against it.
 
 ---
 
@@ -611,8 +637,8 @@ See [AUTO_TRADING_PLAN.md](AUTO_TRADING_PLAN.md) (one PR per task).
 
 ## 14. Open Questions
 
-1. **Historical options data** for Stage 0 (IB doesn't serve expired option chains): ORATS, CBOE DataShop, or Polygon. Budget?
-2. **Margin type:** Portfolio Margin or Reg-T? This strongly affects how much put notional the limits allow.
+1. ~~Historical options data~~ **Resolved:** none available. Synthetic backtest (§11.1) + recording real chains from Stage 1.
+2. ~~Margin type~~ **Resolved:** Reg-T (verified automatically at startup).
 3. ~~Wheel vs. stop~~ Resolved: no assignment.
 4. **Legacy positions:** opt the existing ~500 positions into management, or only bot-opened ones?
 5. **Hosting:** cloud VM (recommended) or home machine?
@@ -621,8 +647,9 @@ See [AUTO_TRADING_PLAN.md](AUTO_TRADING_PLAN.md) (one PR per task).
 8. ~~R1 definition~~ Resolved: EL ≥ $100k.
 9. ~~R5 scope~~ Resolved: restoration may close any option.
 10. **Premium cash:** leave it, or later auto-invest it into a configured ETF?
-11. **Tax:** confirm Section 1256 treatment of XSP/SPXW for your situation with a tax advisor.
-12. **Covered-call coverage:** is 50% of each holding acceptable, or do you prefer full coverage (more income, less upside)?
+11. **Tax residency:** the 60/40 benefit of XSP/SPXW applies only to US taxpayers; outside the US it depends on local rules. Confirm with a tax advisor.
+12. **Covered-call coverage:** 50% confirmed for SPY/QQQ/QQQM. For single stocks: per symbol (to be set).
+13. **QQQM:** keep it (covered calls rarely possible), or hold that exposure as QQQ so calls can be sold on it?
 
 ---
 
