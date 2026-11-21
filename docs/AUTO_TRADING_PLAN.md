@@ -41,7 +41,7 @@ T10 → T29 → T30 → T31 → T33 → T33b → T33c → T41            (paper 
 | # | Task | Scope | Done when |
 |---|---|---|---|
 | **T06** | IB connection manager | `IBAdapter.connect()`: host, port, client ID, reconnect with 1→60s backoff, connection-state events, refusal to start if the account ID doesn't match config (§4.3). | Manual test against IB paper; unit tests with a mocked `ib_async` |
-| **T07** | Account snapshot stream + margin-type check | Subscribe to the account-summary tags (EL, NLV, MaintMargin, InitMargin, AvailableFunds, Cushion) and publish `AccountSnapshot` events. | Live values appear in logs from paper; staleness is flagged after 30s with no update |
+| **T07** | Account snapshot stream | Account values (EL, NLV, MaintMargin, InitMargin, AvailableFunds, cash) → `AccountSnapshot` events. IB refreshes these about every 3 min, so the staleness threshold is 240 s. | Live values appear from paper; staleness flagged after 240 s with no update |
 | **T08** | Live positions → Portfolio | Map IB positions and portfolio items onto the existing `Portfolio` / `OptionPosition` / `StockPosition` models. | Same `Portfolio` analysis output from a CSV and from a live paper account holding the same positions |
 | **T09** | Chains + quotes | `reqSecDefOptParams`, contract qualification, snapshot and streaming quotes with Greeks, market-data-type check (refuse orders on delayed data), pacing limiter. | Can pull a full 30–45 DTE chain for 10 symbols within pacing limits |
 | **T10** | History fetcher | Daily bars + IV history via `reqHistoricalData`, cached on disk. | Returns 1 year of bars and IV for a symbol; cache hit on second call |
@@ -55,7 +55,7 @@ T10 → T29 → T30 → T31 → T33 → T33b → T33c → T41            (paper 
 |---|---|---|---|
 | **T14** | Calendars | NYSE hours, holidays and early closes (`exchange_calendars`); earnings and ex-dividend dates (source chosen in this PR). | Tests for holidays, early closes, DST |
 | **T15** | Kill switch + halts | `HALT` file, UI button, CLI; halt reasons persisted; restart does not clear a halt (§6.4). | Tests for each trigger and for persistence across restart |
-| **T16** | Margin floor monitor (alert-only) | 60s loop on EL **and** Cushion with normal / warning / breach / emergency states and hysteresis (§6.5). **Alerts only; no closing yet.** | State-machine tests over EL time series |
+| **T16** | Margin floor monitor (alert-only) | 60s loop on EL **and** Cushion with normal / warning / breach / emergency states and hysteresis (§6.5). Between IB's ~3-min refreshes, conservative EL estimate from real-time P&L (losses count, gains wait). **Alerts only; no closing yet.** | State-machine tests over EL time series, including estimate-only worsening and stale-data warning |
 | **T17** | Risk gate: sanity checks | §6.3: quote freshness, price within bid/ask, no position flip, no duplicates, contract match. | One test per check, plus boundary cases |
 | **T18** | Risk gate: hard limits | §6.1: EL ≥ $125k and Cushion ≥ 40% after the trade (whatIf); short-put and index notional caps; **per-name/sector combined exposure**; **expiry ladder**; options-book beta delta. Risk-reducing intents skip allocation limits. | Property tests: no approved opening breaches any limit |
 | **T19** | Stress test | §6.2: stocks + options + hedge revalued together (beta-scaled), IV +50%, **margin ×1.5**, single-name −35% gaps. | Hand-checked fixtures; fully invested portfolio with no options passes (regression for the v0.3 bug) |

@@ -440,7 +440,16 @@ Halts persist across restarts; only a human clears them.
 
 ### 6.5 Margin floor monitor and automatic restoration (R1, R5)
 
-Every **60 s** during market hours, on streamed EL and Cushion:
+Every **60 s** during market hours, on EL and Cushion.
+
+**IB refreshes account values only about every 3 minutes.** Between
+refreshes, the monitor estimates EL from the last IB value plus the change
+in real-time P&L (`reqPnL`, about 1 s updates) since that refresh. The
+estimate is **conservative**: P&L losses reduce estimated EL in full, and
+gains are ignored until IB confirms them. A margin state can therefore turn
+worse between refreshes, but only IB's own numbers can make it better. If
+the account values are older than 240 s, the monitor treats the state as at
+least **Warning**.
 
 | State | Condition | Action |
 |---|---|---|
