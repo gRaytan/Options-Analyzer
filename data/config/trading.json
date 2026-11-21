@@ -1,0 +1,19 @@
+{
+  "mode": "paper",
+  "margin_type": "reg_t",
+  "enabled_strategies": {
+    "covered_call": {"manage": true, "open": true},
+    "index_put":    {"manage": true, "open": true},
+    "stock_put":    {"manage": true, "open": false},
+    "put_spread":   {"manage": true, "open": true},
+    "tail_hedge":   {"manage": true, "open": true}
+  },
+  "watchlist": {
+    "SPY":  {"strategies": ["covered_call"], "cc_max_coverage": 0.5},
+    "QQQ":  {"strategies": ["covered_call"], "cc_max_coverage": 0.5},
+    "QQQM": {"strategies": ["covered_call"], "cc_max_coverage": 0.5,
+             "cc_delta": [0.06, 0.10], "call_roll_delta": 0.30,
+             "min_oi": 50, "max_spread_pct": 0.20,
+             "fair_value_proxy": "QQQ", "order_step_s": 300}
+  }
+}
