@@ -321,6 +321,21 @@ passed with no sale in the current monthly cycle, it accepts the best
 available score that still meets the hard filters. That way shares aren't
 left uncovered for long.
 
+**Trend & regime detection.** Computed per underlying every scan cycle from
+IB historical bars and the IV history, all as deterministic indicators:
+
+| Indicator | Used for |
+|---|---|
+| Price vs. 20/50/200-day moving averages; 50/200 slope | Trend direction. In an **uptrend**, favor puts and raise covered-call strikes (lower delta) so shares aren't called away cheaply. In a **downtrend**, sell puts further OTM or skip them, and favor covered calls. |
+| RSI(14), distance from the 20-day high/low in ATRs | Short-term overbought/oversold timing: sell calls into strength, puts into weakness. |
+| IV rank / percentile, IV vs. 20-day realized vol | Whether premium is rich (sell) or cheap (wait). |
+| IV term structure (front vs. 2nd month) | Inversion signals an event or stress: be cautious, or sell the richer expiry. |
+| Put/call skew | Puts unusually rich vs. calls → favor put sales. |
+| Market regime (SPY trend, VIX level and its change) | Global throttle on new entries (§5.1). |
+
+The tracker stores these with every scan result. That gives a history that
+the backtest (Stage 0) can use to tune the thresholds, rather than guessing them.
+
 **Decay Tracker (open positions).** For each open short option, track
 captured premium over time against the theoretical theta curve, plus delta
 and extrinsic value. This feeds §5.8: it detects when the remaining premium
