@@ -62,7 +62,7 @@ These come directly from the account owner. Where they conflict with defaults el
 | # | Change | Why | Effect |
 |---|---|---|---|
 | 1 | **Fixed limits that would have blocked or halted everything.** The stress-loss cap, beta-delta cap, daily-loss halt, and drawdown halt were measured on the whole account. A fully invested portfolio breaches them from stock moves alone. They now apply to the **options book** (§6.1, §6.4). | v0.3 would have rejected every trade on a −25% stress (stocks alone lose 25%), and halted on any normal −3% day. | Bug fix |
-| 2 | **Index options (XSP / SPXW) become the main put engine** (§5.2). They're European-style and cash-settled. | They **can't be assigned**, so R7 holds structurally. A broad index carries less single-name gap risk. In the US they're Section 1256 contracts (60/40 tax treatment; confirm with a tax advisor). Using PM-settled series avoids the Friday-open settlement gap. | Less risk, more after-tax return |
+| 2 | **Index options (XSP / SPXW) become the main put engine** (§5.2). They're European-style and cash-settled. | They **can't be assigned**, so R7 holds structurally. A broad index carries less single-name gap risk. Using PM-settled series avoids the Friday-open settlement gap. (The US 60/40 tax benefit doesn't apply: the owner is taxed in Israel.) | Less risk, more after-tax return |
 | 3 | **Risk-budget allocation** (§6.2): the options book may lose at most **10% of NLV** in the stress scenario, and the scanner ranks trades by **edge per unit of stress loss** (§5.9). | Stress capacity is the scarce resource. Spending it where premium per unit of crash risk is highest maximizes return for a fixed level of risk. | More return at the same risk |
 | 4 | **Only sell rich volatility:** require IV ≥ 1.1× realized volatility, and compute expected value under realized volatility (§5.9). | Sellers earn the gap between implied and realized volatility. When there's no gap, there's no edge, only risk. | Fewer, better trades |
 | 5 | **Volatility-regime sizing** (§6.6): smaller size when VIX is very low (thin premium, underpriced crash risk). New: **sell after a volatility spike starts to fade**, instead of only blocking when VIX > 35. | Premium and edge are highest right after spikes. Low-VIX periods are when sellers get hurt. | More return, less tail risk |
@@ -231,7 +231,11 @@ All numbers are **defaults** in `data/config/trading.json` (§10).
 ### 5.3 Covered calls
 - **Coverage:** set **per symbol**. Index ETFs (SPY, QQQ, QQQM) default to **50%** (owner-confirmed). Single stocks default to 50% until set per symbol (`cc_max_coverage` in the watchlist), and never more than `floor(shares / 100)` contracts. Uses the existing coverage logic (commit `2eb3ff0`).
 - **Entry:** 21–45 DTE, **delta 0.08–0.15**, strike ≥ cost basis (configurable).
-- **QQQM note:** QQQM options are thinly traded and usually fail the liquidity filter (§5.1). Calls on QQQ **don't cover** QQQM shares, because they're a different underlying, so IB would treat them as naked calls. To get covered-call income on that exposure, the QQQM shares would need to be held as QQQ (open question 13).
+- **QQQM (owner holds it; covered calls wanted):** QQQM options are thinly traded, so they get their own rules:
+  - **Liquidity override:** OI ≥ 50 and spread ≤ 20% of mid (instead of the §5.1 defaults).
+  - **Fair value from QQQ:** QQQM tracks the same index as QQQ. The bot prices each QQQM option with QQQ's implied vol at the same moneyness and DTE, and quotes limit orders around that fair value rather than QQQM's wide displayed mid. Orders are worked patiently (§7.1 steps every 5 min instead of 60 s, for up to 1 hour).
+  - **Lower delta and earlier rolls:** delta ≤ 0.10 and roll at delta 0.30, because rolling an illiquid option late is expensive.
+  - **Calls on QQQ never stand in for QQQM coverage.** IB would margin them as naked calls.
 - **Skip in strong uptrends** unless IV rank ≥ 60. A strong uptrend means price above a rising 50-day MA **and** a 20-day return > +8%. Selling calls into momentum mostly produces costly rolls.
 - **Exit / defend:** hold to expiry unless §5.8 says to close, and roll up and out per §5.11. **Shares are never called away** (R7). If no acceptable roll exists, buy back the call. The shares' gain offsets the loss on the call.
 
@@ -511,7 +515,7 @@ NYSE calendar, including holidays and early closes.
 - **Journal** (SQLite, append-only): `intents`, `risk_checks`, `orders`, `order_events`, `fills`, `chains`, `positions_snapshot`, `account_snapshot`, `budget_snapshot`, `scan_results`, `halts`, `config_versions`.
 - **Every intent records** the strategy, trigger, quotes, Greeks, IV/RV, score components, every risk check, and the config version.
 - **Alerts:** fills, rejects, halts, margin states, assignments, reconcile mismatches, pending approvals, IB re-login needed, and the daily report.
-- **Metrics:** options-overlay P&L and its Sortino, budget used, premium per unit of stress loss, win rate per chain, roll rate, losing-chain rate, fees and interest as % of premium, hedge cost and payoff, overlay vs. buy-and-hold.
+- **Metrics:** options-overlay P&L and its Sortino, budget used, premium per unit of stress loss, win rate per chain, roll rate, losing-chain rate, fees and interest as % of premium, hedge cost and payoff, overlay vs. buy-and-hold, and an annual **realized P&L report** (per trade, USD, with fees) for tax filing.
 
 ---
 
@@ -534,7 +538,9 @@ NYSE calendar, including holidays and early closes.
   "watchlist": {
     "SPY":  {"strategies": ["covered_call"], "cc_max_coverage": 0.5},
     "QQQ":  {"strategies": ["covered_call"], "cc_max_coverage": 0.5},
-    "QQQM": {"strategies": ["covered_call"], "cc_max_coverage": 0.5},
+    "QQQM": {"strategies": ["covered_call"], "cc_max_coverage": 0.5, "cc_delta": [0.06, 0.10],
+             "call_roll_delta": 0.30, "min_oi": 50, "max_spread_pct": 0.20,
+             "fair_value_proxy": "QQQ", "order_step_s": 300},
     "AAPL": {"strategies": ["covered_call", "stock_put"], "cc_max_coverage": 0.5}
   },
   "index": {"underlyings": ["XSP", "SPXW"], "settlement": "PM", "switch_to_spx_at_contracts": 10},
@@ -647,9 +653,9 @@ See [AUTO_TRADING_PLAN.md](AUTO_TRADING_PLAN.md) (one PR per task).
 8. ~~R1 definition~~ Resolved: EL ≥ $100k.
 9. ~~R5 scope~~ Resolved: restoration may close any option.
 10. **Premium cash:** leave it, or later auto-invest it into a configured ETF?
-11. **Tax residency:** the 60/40 benefit of XSP/SPXW applies only to US taxpayers; outside the US it depends on local rules. Confirm with a tax advisor.
+11. ~~Tax residency~~ **Resolved:** taxed in Israel. The US 60/40 rule doesn't apply. Index options stay the primary put engine for the no-assignment reason. The journal keeps per-trade realized P&L and fees in USD for Israeli reporting (see the `tax_report` metric).
 12. **Covered-call coverage:** 50% confirmed for SPY/QQQ/QQQM. For single stocks: per symbol (to be set).
-13. **QQQM:** keep it (covered calls rarely possible), or hold that exposure as QQQ so calls can be sold on it?
+13. ~~QQQM~~ **Resolved:** keep QQQM, and sell covered calls on it with the QQQM rules in §5.3.
 
 ---
 
