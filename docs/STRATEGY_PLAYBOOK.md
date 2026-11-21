@@ -22,6 +22,14 @@ margin call."**
 
 ---
 
+## v0.4 refinements (see spec §1.2)
+- **Index puts (XSP / SPXW) are the main put engine.** They're cash-settled and European, so they can never be assigned. Single-stock puts are secondary, only on names below their exposure cap.
+- **Risk budget:** the options book may lose at most 10% of NLV in a −20% / IV +50% crash. Trades are chosen by **edge per unit of that crash loss**.
+- **Sell only rich volatility** (implied ≥ 1.1× realized), size down when VIX is very low, and **sell after a spike starts to fade**.
+- **Covered calls on ≤ 50% of each holding**, skipped in strong uptrends. No forced sales.
+- **Roll earlier** (puts at delta 0.35, calls at 0.40), while a credit roll with a better strike is still available.
+- **Replacement test + gamma exit:** close early only when a new trade earns clearly more on the same risk after fees, or when little premium is left but risk is rising.
+
 ## The strategy: covered calls + small short puts, rolled not assigned, with a crash hedge
 
 ```
@@ -50,8 +58,8 @@ finally closed at a loss. Picking strong stocks is what keeps rolls working.
 - Sell **calls after up moves** and **puts after down moves** (spec §5.10).
 
 ### Rule 3: Low delta, so rolls are rare
-- **Covered calls: 0.08–0.15 delta.** Low enough that the stock rarely reaches the strike. You keep your shares and the upside up to the strike.
-- **Short puts: 0.10–0.20 delta.**
+- **Covered calls: 0.08–0.15 delta, on at most 50% of each holding.** Low enough that the stock rarely reaches the strike. You keep your shares and the upside up to the strike.
+- **Short puts: 0.10–0.16 delta on XSP/SPXW (primary), 0.10–0.20 on single stocks (secondary).**
 - 30–45 DTE, monthly expirations (fewer transactions).
 
 ### Rule 4: Stay far from margin. These are hard limits, not targets.
@@ -61,7 +69,9 @@ finally closed at a loss. Picking strong stocks is what keeps rolls working.
 | Cushion (EL ÷ net liquidation) | ≥ 40% to open; automatic closing below 30% |
 | After a −20% market drop + IV +50% (stocks and options together) | EL still ≥ $100k |
 | Total short-put notional (strike × 100 × contracts) | ≤ 50% of net liquidation |
-| Per stock / per sector | ≤ 10% / 30% of net liquidation |
+| Options-book loss in a −20% / IV +50% crash | ≤ 10% of net liquidation (the risk budget) |
+| Per name / per sector (stock + puts + calls combined) | ≤ 15% / 35% of net liquidation |
+| Any one expiration | ≤ 35% of short-put notional |
 
 The short-put cap is the key one. With no cash in the account, every short put
 is extra leverage on top of a fully invested portfolio. **50% means that even if

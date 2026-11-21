@@ -3,11 +3,12 @@
 
 | | |
 |---|---|
-| **Status** | Draft v0.3 (user requirements R1–R9 incorporated) |
+| **Status** | Draft v0.4 (review: minimum risk, maximum return) |
 | **Date** | 2026-11-21 |
 | **Broker** | Interactive Brokers (TWS / IB Gateway API) |
 | **Scope** | Manage existing positions **and** open new ones |
-| **Strategies** | Covered calls and margin-backed short puts (core), credit spreads / iron condors, naked calls. **No assignments: roll instead** (R7) |
+| **Core strategies** | (1) Covered calls on holdings. (2) Short puts on **cash-settled index options (XSP / SPXW)** as the main put engine. (3) Single-stock short puts as a secondary engine. (4) Index put credit spreads. (5) A permanent tail hedge. |
+| **Not in v1** | Naked calls, iron condors (§1.3) |
 | **Autonomy** | Staged rollout: paper → shadow → approve-each → auto-manage → auto-open |
 
 ---
@@ -22,62 +23,84 @@ order.
 This spec adds a trading engine that:
 
 1. Connects to IB live (positions, quotes, account values) instead of CSV.
-2. Turns the existing risk flags into **exit and roll** decisions for open positions.
-3. Scans a watchlist for **new entries** across four premium-selling strategies.
-4. Passes every proposed order through a **risk gate** with hard limits. Strategy code cannot bypass the gate.
-5. Places, works, and reconciles orders, with a full audit trail.
-6. Gains autonomy in stages. Each stage has measurable exit criteria.
+2. Sells option premium against a **fully invested stock portfolio**, using a fixed **risk budget**, and spends that budget on the trades with the best premium for the risk they add.
+3. Rolls positions instead of letting them be assigned, and prefers instruments that **cannot be assigned at all**.
+4. Keeps the account far from margin at all times, and de-risks automatically when it isn't.
+5. Passes every order through a **risk gate** that strategy code cannot bypass, and records why each order was placed.
+6. Gains autonomy in stages, each with measurable exit criteria.
 
-The guiding principle: **a component that reduces risk (closing) gets autonomy
-before a component that adds risk (opening). Undefined-risk trades (naked
-calls) come last.**
+Guiding principles:
+- **Size by stress loss, not by margin.** Margin is what IB charges today; stress loss is what the account loses in a crash. The bot budgets the second.
+- **Risk-reducing actions get autonomy before risk-adding ones.**
+- **Prefer structural fixes over procedural ones.** An index option that can't be assigned beats a guard that tries to prevent assignment.
 
-### 1.1 User requirements (v0.2)
+### 1.1 User requirements
 
 These come directly from the account owner. Where they conflict with defaults elsewhere in this document, **they win**.
 
 | # | Requirement | Where it is implemented |
 |---|---|---|
-| **R1** | Keep a margin cushion of **at least $100,000 at all times** to minimize risk. | §6.1 (pre-trade floor), §6.5 (continuous monitor and automatic de-risking) |
-| **R2** | **Minimize transactions** to cut fees. | §5.8 (fee-aware rules), §7.5 (fee model); exits and rolls in §5 are fee-gated |
-| **R3** | Always look for **covered calls with high premium and low delta**, and for **puts to sell**. | §5.9 (Opportunity Scanner and ranking) |
-| **R4** | **Track** options to find the right moment to sell. | §5.10 (Opportunity Tracker for entries; Decay Tracker for open positions) |
-| **R5** | When margin requirements are not met, or the bot judges a position should be closed, **close it automatically**. | §6.5 (margin restoration), §5.7 (close decisions), §11 (closing is automatic from Stage 4; margin-restoration closes are automatic from Stage 3) |
-| **R6** | **Connect to the Interactive Brokers account through its API.** | §4.3 (connection spec), M1 in §13 |
-| **R7** | **No assignments.** Roll when needed instead of being assigned. | §5.11 (assignment avoidance), §5.2–5.3 |
-| **R8** | **No cash in the account; everything is invested.** Puts are backed by margin (the stock portfolio), not by cash. | §5.2 (margin-backed short puts), §6.1 (put notional cap), §6.2 (stress test includes the stock holdings) |
-| **R9** | **Manage the risk and always stay far from the margin limit.** | §6.1 (Cushion ≥ 40% for new trades), §6.2 (−20% stress), §6.5 (Cushion floor in addition to the $100k floor) |
+| **R1** | Keep a margin cushion of **at least $100,000 at all times**. | §6.1, §6.5 |
+| **R2** | **Minimize transactions** to cut fees. | §5.8, §7.5 |
+| **R3** | Always look for **covered calls with high premium and low delta**, and for **puts to sell**. | §5.9 |
+| **R4** | **Track** options to find the right moment to sell. | §5.10 |
+| **R5** | When margin requirements are not met, or a position should be closed, **close it automatically**. | §6.5, §5.7 |
+| **R6** | **Connect to the Interactive Brokers account through its API.** | §4.3 |
+| **R7** | **No assignments.** Roll when needed. | §5.2 (index puts can't be assigned), §5.11 |
+| **R8** | **No cash; everything is invested.** Puts are backed by margin on the stock portfolio. | §5.2, §6.2 |
+| **R9** | **Manage the risk and always stay far from the margin limit.** | §6.1, §6.2, §6.5, §6.6 |
 
-**Definition used for R1:** "margin" = IB **Excess Liquidity** (`ExcessLiquidity`
-account tag = equity with loan value − maintenance margin). That's the cushion
-IB uses before it starts liquidating positions. The floor is **$100,000**; see
-open question 8 (confirmed by the owner).
+**R1 definition (confirmed):** "margin" = IB **Excess Liquidity** (EL). The floor is **$100,000**.
 
-**Definition used for R9 ("far from margin"):** besides the $100k floor,
-the bot also watches IB **Cushion** (Excess Liquidity ÷ Net Liquidation).
-New trades require Cushion ≥ 40% after the trade, and restoration starts below
-30%. Whichever of the two floors ($100k or 30% Cushion) is stricter for the
-current account size wins. Because the account is fully invested (R8), a
-market drop hits twice: the stocks lose value **and** the short puts lose money,
-and both shrink Excess Liquidity at the same time. The R9 limits are sized for that.
+**R9 definition:** "far from margin" means all of these hold:
+- **Cushion** (EL ÷ Net Liquidation) ≥ 40% for any new trade.
+- Under a −20% market drop with IV +50% and margin requirements expanded by 1.5×, **EL stays ≥ $100k**.
+- The options book's loss in that scenario stays within the **risk budget** (§6.2).
+
+### 1.2 What changed in v0.4 and why
+
+| # | Change | Why | Effect |
+|---|---|---|---|
+| 1 | **Fixed limits that would have blocked or halted everything.** The stress-loss cap, beta-delta cap, daily-loss halt, and drawdown halt were measured on the whole account. A fully invested portfolio breaches them from stock moves alone. They now apply to the **options book** (§6.1, §6.4). | v0.3 would have rejected every trade on a −25% stress (stocks alone lose 25%), and halted on any normal −3% day. | Bug fix |
+| 2 | **Index options (XSP / SPXW) become the main put engine** (§5.2). They're European-style and cash-settled. | They **can't be assigned**, so R7 holds structurally. A broad index carries less single-name gap risk. In the US they're Section 1256 contracts (60/40 tax treatment; confirm with a tax advisor). Using PM-settled series avoids the Friday-open settlement gap. | Less risk, more after-tax return |
+| 3 | **Risk-budget allocation** (§6.2): the options book may lose at most **10% of NLV** in the stress scenario, and the scanner ranks trades by **edge per unit of stress loss** (§5.9). | Stress capacity is the scarce resource. Spending it where premium per unit of crash risk is highest maximizes return for a fixed level of risk. | More return at the same risk |
+| 4 | **Only sell rich volatility:** require IV ≥ 1.1× realized volatility, and compute expected value under realized volatility (§5.9). | Sellers earn the gap between implied and realized volatility. When there's no gap, there's no edge, only risk. | Fewer, better trades |
+| 5 | **Volatility-regime sizing** (§6.6): smaller size when VIX is very low (thin premium, underpriced crash risk). New: **sell after a volatility spike starts to fade**, instead of only blocking when VIX > 35. | Premium and edge are highest right after spikes. Low-VIX periods are when sellers get hurt. | More return, less tail risk |
+| 6 | **Combined exposure per name** (§6.1): stock + short puts + call deltas count together against the per-name cap. Single-stock puts aren't sold on names already at the cap. | v0.3 allowed selling puts on a stock you're already fully invested in, which doubles the exposure. | Less concentration |
+| 7 | **Earlier, cheaper rolls** (§5.11): roll puts at delta 0.35 and covered calls at 0.40, not 0.50. | Rolling earlier still gets a credit **and** a better strike. Waiting until 0.50 often leaves only "close at a loss." | Fewer losing closes |
+| 8 | **Smarter early closes** (§5.8): a "replacement test" closes a position when its remaining premium per day is far below what a new trade would earn on the same risk, net of fees. A "gamma exit" closes near-expiry positions where little premium is left but risk is rising. | Holding the last few cents of premium ties up risk budget and carries the most gamma risk. R2 is respected: a close happens only when it pays for itself after fees. | More return per unit of risk |
+| 9 | **Covered calls on ≤ 50% of each holding by default**, skipped in strong uptrends, and **no forced sale at 21 DTE** (§5.3, §5.10). | Calls cap upside, and rolling calls in a rally costs money. Partial coverage keeps upside and halves roll risk. R3 asks to *identify* opportunities, not to always sell. | Better total return |
+| 10 | **Tail hedge is now in the spec** (§5.12), counted in the stress test, and never closed by margin restoration. | It turns crash losses from fatal into survivable, and it supports EL when R1 is under the most pressure. | Much less tail risk |
+| 11 | **Expiration ladder** (§6.1): ≤ 35% of short-put notional in any one expiration. | It spreads timing risk. One bad Friday can't hit the whole book. | Less risk |
+| 12 | **Event guard for open positions** (§5.11): short options with earnings before expiry are rolled past the event or closed if delta > 0.25. Rolls avoid expiries that span earnings. | v0.3 only blocked new entries across earnings. | Less gap risk |
+| 13 | **Margin expansion in the stress test** (×1.5) (§6.2). | IB raises requirements in volatile markets, especially under Portfolio Margin. | More realistic R1 |
+| 14 | **Never sell core stock holdings automatically** (§6.5). Margin restoration closes options only; the only exception is shares that came from an assignment. | R8: the portfolio stays invested. | Matches owner intent |
+| 15 | **Margin interest counted as a cost** (§7.5). | With no cash, a debit (loss, roll debit) goes onto margin and costs interest. | Correct net returns |
+| 16 | **Naked calls and iron condors removed from v1** (§1.3). | They add risk the portfolio doesn't need. The stock portfolio is long, covered calls already supply the call-side income, and naked calls are the only unlimited-loss trade. | Less risk and less code |
+| 17 | **Stage 0 acceptance metrics** (§11): the overlay must beat buy-and-hold on a risk-adjusted basis, out of sample. | It stops the bot going live on curve-fitted parameters. | Less model risk |
+
+### 1.3 Out of scope for v1
+- **Naked calls.** Unlimited loss; not needed for a long-biased income overlay.
+- **Iron condors.** The call side duplicates covered calls, and the put side is already covered by index puts and spreads.
+- Both can come back in a later version, behind their own paper stage.
 
 ---
 
 ## 2. Goals and Non-Goals
 
 ### Goals
-- G1: Close or roll positions automatically when they hit the configured triggers (profit target, delta, DTE, assignment risk). No short option is ever left to be assigned (R7).
-- G2: Open new positions that match the strategy rules, without ever breaching the portfolio risk limits.
-- G3: Make every action explainable: each order links to the signal, inputs, and risk checks that produced it.
-- G4: Fail safe. On any unknown state (disconnect, stale data, reconcile mismatch) stop opening and keep only protective actions.
+- G1: Earn option income on a fully invested portfolio while keeping the account **far from margin** (R9) and **never assigned** (R7).
+- G2: Maximize **premium earned per unit of stress loss**, net of fees and margin interest.
+- G3: Make every action explainable. Each order links to its signal, inputs, and risk checks.
+- G4: Fail safe. On any unknown state (disconnect, stale data, reconcile mismatch), stop opening and keep only protective actions.
 - G5: Reuse the existing analysis code. Do not fork the logic.
 
 ### Non-Goals (v1)
-- High-frequency or intraday scalping. Decisions run on a schedule of minutes, not milliseconds.
-- Directional long-option strategies, futures options, and non-US underlyings.
-- Multi-user or SaaS operation. The bot trades one account.
-- Machine-learning signal generation. Rules are explicit and configurable.
-- Tax optimization (wash-sale avoidance). The bot logs the data; it does not act on it.
+- High-frequency or intraday scalping.
+- Directional long-option speculation (the tail hedge is insurance, not speculation), futures options, non-US underlyings.
+- Multi-user operation.
+- Machine-learning signals. Rules are explicit and configurable.
+- Tax optimization. The bot logs the data; it doesn't act on it.
 
 ---
 
@@ -85,12 +108,11 @@ and both shrink Excess Liquidity at the same time. The R9 limits are sized for t
 
 | Requirement | Why |
 |---|---|
-| IB margin account, options **Level 4** (naked) permissions | Required: with no cash (R8), every short put is a naked put backed by margin. |
-| Portfolio Margin (recommended) | Naked option margin under Reg-T is far higher. `MarginCalculator` already supports both. |
-| OPRA + US equity real-time market data subscriptions | yfinance (`src/data/price_fetcher.py`) is delayed and rate-limited, so it is not safe for order pricing. |
-| IB Gateway running headless with auto-restart (e.g. IBC) | IB forces a daily restart; the bot must survive it. |
-| Separate IB **paper** account | Required for Stage 1. Paper uses port 7497/4002; live uses 7496/4001. |
-| Account equity > $25k | Avoids pattern day trader restrictions on same-day open/close. |
+| IB margin account with options **Level 4** | With no cash (R8), short puts are naked puts backed by margin. |
+| **Portfolio Margin** (strongly recommended) | Reg-T naked put margin is several times higher. PM also nets index puts against the tail hedge. |
+| OPRA, US equity, and **CBOE index (SPX/XSP/VIX)** real-time market data | Live data is needed to price orders and to read VIX for regime sizing. |
+| IB Gateway + IBC on an always-on host (§15) | IB forces a daily restart; the bot must survive it. |
+| Separate IB **paper** account, set up fully invested like the live one | Stage 1. |
 
 ---
 
@@ -110,399 +132,359 @@ and both shrink Excess Liquidity at the same time. The R9 limits are sized for t
                       │                │              │
           ┌───────────▼───┐   ┌────────▼───────┐  ┌───▼──────────────┐
           │ Market State  │   │ Portfolio State│  │ Order Manager    │
-          │ (quotes, IV,  │   │ (existing      │  │ (place, walk,    │
-          │  chains,      │   │  Portfolio     │  │  cancel, fills,  │
-          │  calendar)    │   │  model, live)  │  │  reconcile)      │
+          │ quotes, IV/RV,│   │ existing       │  │ place, walk,     │
+          │ chains, VIX,  │   │ Portfolio      │  │ cancel, fills,   │
+          │ calendars     │   │ model, live    │  │ reconcile        │
           └───────┬───────┘   └────────┬───────┘  └───▲──────────────┘
                   │                    │              │ approved orders
           ┌───────▼────────────────────▼───────┐      │
           │          Strategy Engine            │      │
-          │  ┌──────────────┐ ┌──────────────┐  │      │
-          │  │ Position     │ │ Entry        │  │      │
-          │  │ Manager      │ │ Scanner      │  │      │
-          │  │ (exit/roll)  │ │ (new trades) │  │      │
-          │  └──────┬───────┘ └──────┬───────┘  │      │
-          └─────────┼────────────────┼──────────┘      │
-                    │  TradeIntents  │                 │
-          ┌─────────▼────────────────▼──────────┐      │
-          │             Risk Gate               │──────┤
-          │  hard limits · stress test ·        │      │
-          │  whatIf margin · kill switch        │      │
+          │  Position Manager · Assignment &    │      │
+          │  Event Guard · Scanner/Tracker ·    │      │
+          │  Tail Hedge                         │      │
           └─────────────────┬───────────────────┘      │
-                            │ (Stage 3: human approval)│
-                            └──────────────────────────┘
-                                      │
-          ┌───────────────────────────▼─────────────────┐
-          │ Journal (SQLite): intents, checks, orders,  │
-          │ fills, P&L, events  →  Flask UI + alerts    │
+                            │ TradeIntents             │
+          ┌─────────────────▼───────────────────┐      │
+          │ Risk Gate: hard limits · stress &   │──────┘
+          │ risk budget · regime sizing ·       │
+          │ whatIf margin · kill switch         │
+          └─────────────────┬───────────────────┘
+          ┌─────────────────▼───────────────────────────┐
+          │ Journal (SQLite) → Flask UI + alerts        │
           └─────────────────────────────────────────────┘
 ```
 
-### 4.1 Module layout (new code under `src/trading/`)
+### 4.1 Module layout (`src/trading/`)
 
 | Module | Responsibility | Reuses |
 |---|---|---|
-| `broker/ib_adapter.py` | The only module that imports the IB library. Async connection, reconnect with backoff, contract qualification, chain fetch, quotes, `whatIfOrder`, order placement, fill and position events. | — |
-| `broker/fake_adapter.py` | In-memory broker for tests and backtests. Same interface. | — |
-| `market_state.py` | Quote cache with timestamps, staleness checks, IV rank, earnings/ex-div calendar, market hours. | `analysis/greeks.py` for fallback Greeks |
-| `portfolio_state.py` | Builds the existing `Portfolio`/`OptionPosition` objects from live IB data instead of CSV. | `models/portfolio.py`, `models/position.py` |
-| `strategies/base.py` | `Strategy` interface: `scan()` → entry intents, `manage(position)` → exit/roll intents. | — |
-| `strategies/csp.py`, `covered_call.py`, `credit_spread.py`, `iron_condor.py`, `naked.py` | Strategy rules (§5). | `analysis/risk.py` flags |
-| `risk_gate.py` | Approves, resizes, or rejects every intent (§6). | `analysis/margin.py` |
-| `order_manager.py` | Pricing, order working, cancel/replace, timeouts, idempotency, reconciliation (§7). | — |
-| `scheduler.py` | Runs the decision loop on market-hours timers (§8). | — |
-| `journal.py` | SQLite persistence of all events (§9). | `data/storage.py` patterns |
-| `kill_switch.py` | Global halt state, file and UI triggers (§6.4). | — |
+| `broker/ib_adapter.py` | The only module that imports the IB library: connection, contracts, chains, quotes, `whatIfOrder`, orders, events. | — |
+| `broker/fake_adapter.py` | In-memory broker for tests and backtests. | — |
+| `market_state.py` | Quote cache and staleness, IV/RV, IV rank, VIX, earnings / ex-div calendar, market hours. | `analysis/greeks.py` |
+| `portfolio_state.py` | Live IB data → existing `Portfolio` / `OptionPosition` models. | `models/` |
+| `indicators.py` | MAs, RSI, ATR, IV rank/percentile, RV20/60, term structure, skew. | — |
+| `strategies/covered_call.py`, `index_put.py`, `stock_put.py`, `put_spread.py`, `tail_hedge.py` | Strategy rules (§5). | `analysis/risk.py` |
+| `guards/assignment_guard.py`, `guards/event_guard.py` | Roll / close triggers and roll builder (§5.11). | — |
+| `scanner.py`, `tracker.py` | Opportunity scoring and timing (§5.9–5.10). | — |
+| `risk/stress.py`, `risk/budget.py`, `risk/gate.py`, `risk/regime.py` | §6. | `analysis/margin.py` |
+| `order_manager.py`, `fees.py` | §7. | — |
+| `scheduler.py`, `journal.py`, `kill_switch.py`, `notifier.py` | §8, §9, §6.4. | `data/storage.py` |
 
-The Flask app (`src/web/app.py`) gets new pages: **Bot Status**, **Pending
-Approvals**, **Order Log**, and **Strategy Config**. The trading engine runs as a
-**separate process** (`python -m src.trading.run`) so a web crash cannot stop
-the engine and an engine crash cannot stop the web UI. The two communicate
-only through the journal database and the kill-switch file.
+The engine runs as its own process (`python -m src.trading.run`), separate
+from the Flask app. They share only the journal and the kill-switch file.
+New UI pages: **Bot Status, Opportunities, Pending Approvals, Order Log, Risk Budget, Config**.
 
 ### 4.2 Library choice
-Use **`ib_async`** (the maintained successor of `ib_insync`). Keep all IB types
-inside the adapter. The rest of the system works with internal dataclasses, so
-the broker can be swapped or faked.
+**`ib_async`** (the maintained successor of `ib_insync`). IB types stay inside the adapter.
 
 ### 4.3 IB API connection (R6)
 
 | Item | Spec |
 |---|---|
-| Endpoint | IB Gateway (preferred; lighter than TWS) on `127.0.0.1`. Ports: live 4001, paper 4002 (TWS: 7496 / 7497). |
-| Process supervision | IBC to log in, handle the daily restart, and restart the Gateway after a crash. 2FA via IB Key on the owner's phone once a week (IB's re-auth cadence). |
-| Client IDs | `1` = trading engine (the only one that places orders), `2` = web UI (read-only), `3+` = scripts. |
-| Read-only first | In API settings, "Read-Only API" stays **on** through Stages 0–2; it is turned off only when entering Stage 3. This is a broker-side guarantee that early stages can't place orders. |
-| Data pulled | `reqPositions`, `reqAccountSummary` (tags `NetLiquidation`, `ExcessLiquidity`, `MaintMarginReq`, `InitMarginReq`, `AvailableFunds`, `BuyingPower`, `Cushion`), `reqPnL`, `reqSecDefOptParams` (chains), `reqMktData` with generic ticks 100/101/104/106 (option volume, OI, historical and implied vol), `reqExecutions`, `reqHistoricalData` for IV rank. |
-| Pre-trade margin | `whatIfOrder` for every opening order and every roll, giving the post-trade `ExcessLiquidity` used by the R1 check. |
-| Market data type | Live (type 1). If only delayed data is available, the bot runs read-only and refuses to place orders. |
-| Reconnect | Exponential backoff 1s → 60s. On reconnect: reload positions, open orders and executions, then reconcile (§7.4) before acting. |
-| Pacing | Respect IB's limit of 50 messages/s and its market data line limit (100 by default). The scanner (§5.9) streams quotes in batches and uses snapshots for wide scans. |
-| Replacing CSV | Live positions feed the existing `Portfolio` model. CSV upload stays available for history (trades, dividends) and as a fallback. |
+| Endpoint | IB Gateway on `127.0.0.1`. Live 4001, paper 4002. |
+| Supervision | IBC handles login and the daily restart. 2FA via IB Key about once a week; the bot sends a high-priority alert when it's needed. |
+| Client IDs | `1` engine (the only one that places orders), `2` web UI (read-only), `3+` scripts. |
+| Read-only first | IB's "Read-Only API" setting stays **on** in Stages 0–2. That's a broker-side guarantee that no order can be placed. |
+| Data | `reqPositions`, `reqAccountSummary` (`NetLiquidation`, `ExcessLiquidity`, `MaintMarginReq`, `InitMarginReq`, `AvailableFunds`, `Cushion`), `reqPnL`, `reqSecDefOptParams`, `reqMktData` (generic ticks 100/101/104/106), `reqExecutions`, `reqHistoricalData`. |
+| Pre-trade margin | `whatIfOrder` for every opening order and roll. |
+| Market data | Live only. On delayed data the bot runs read-only. |
+| Reconnect | Backoff 1s → 60s. On reconnect: reload positions, orders and executions, and reconcile before acting. |
+| Pacing | ≤ 50 msg/s; respect the market-data line limit; batch and snapshot wide scans. |
 
 ---
 
 ## 5. Strategy Rules
 
-All numbers below are **defaults** in `data/config/trading.json` (§10). Each
-strategy can be enabled per stage and per symbol.
+All numbers are **defaults** in `data/config/trading.json` (§10).
 
 ### 5.1 Universe and common entry filters
-Applied before any strategy-specific rule:
 
 | Filter | Default |
 |---|---|
-| Underlying in watchlist | user-maintained list |
-| Underlying price | $20 – $1,000 |
-| Underlying avg daily volume | ≥ 1M shares |
-| Option open interest at strike | ≥ 500 |
-| Option bid-ask spread | ≤ 10% of mid **and** ≤ $0.10 for mid < $1.00 |
-| IV rank (52-week) | ≥ 30 |
-| Earnings blackout | No entry if earnings fall before expiration (configurable to allow) |
-| Ex-dividend | No short calls when ex-div falls before expiration and extrinsic < dividend |
-| Time of day | 09:45 – 15:45 ET (avoid the open and close auctions) |
-| Market regime | No new entries if VIX > 35 or SPY is down > 3% intraday (configurable) |
+| Single stocks | Watchlist only: large, liquid, profitable names you'd hold through a 30% drop |
+| Underlying avg daily volume | ≥ 1M shares (stocks) |
+| Option open interest at strike | ≥ 500 (stocks), ≥ 100 (XSP) |
+| Bid-ask spread | ≤ 10% of mid, and ≤ $0.10 when mid < $1.00 |
+| **Volatility edge** | IV ÷ max(RV20, RV60) ≥ **1.10** |
+| IV rank (52-week) | ≥ 25 for index, ≥ 30 for stocks |
+| Earnings | No new single-stock position whose expiry spans earnings |
+| Ex-dividend | No covered call whose expiry spans an ex-date while extrinsic < dividend |
+| Time of day | 09:45–15:45 ET |
+| Regime | Sizing per §6.6 |
 
-### 5.2 Short Put (margin-backed, R8)
-- **Entry:** Sell puts at 30–45 DTE, **delta 0.10–0.20**, on watchlist names (§10). The best candidates come from the scanner ranking (§5.9).
-- **Collateral:** None in cash. The put is margined against the stock portfolio. Its assignment value (strike × 100 × qty) counts against the **short-put notional cap** in §6.1, and its margin is checked with `whatIfOrder`.
-- **Exit:** By default **hold to expiration** (R2), provided it stays OTM. Close early only under the fee-aware rules in §5.8, the assignment-avoidance rules in §5.11, or margin restoration (§6.5).
-- **Defend:** Roll per §5.11 (down and out, for a net credit). **Never take assignment** (R7). If no acceptable roll exists, close.
+### 5.2 Short puts: index engine (primary) and single-stock engine (secondary)
 
-### 5.3 Covered Call
-- **Entry:** For each 100 uncovered shares held, sell 1 call at 21–45 DTE, **delta ≤ 0.15 (target 0.08–0.15)**, low enough that a roll is rarely needed, since shares must not be called away (R7), strike ≥ cost basis (configurable), choosing the strike/expiry with the best premium score (§5.9). The R3 goal is **high premium at low delta**, so the bot waits (§5.10) for elevated IV rather than selling a low-delta call for little premium.
-- **Coverage:** Never sell more calls than `floor(shares / 100)`. This uses the same coverage logic the margin code uses (commit `2eb3ff0`).
-- **Exit:** Hold to expiration by default (R2). Close early only under §5.8 or the defend rule.
-- **Defend:** Roll **up and out** per §5.11 before the call can be assigned, including before ex-dividend dates. **Shares are never allowed to be called away** (R7). If no acceptable roll exists, buy back the call.
+**Index puts (XSP, or SPXW for larger size):**
+- European-style and cash-settled: **no early assignment and no shares**, so R7 holds by construction. Use **PM-settled** series (XSP, SPXW) and avoid AM-settled SPX monthlies.
+- Entry: 30–45 DTE, delta **0.10–0.16**, chosen by the scanner score (§5.9).
+- An ITM index put at expiry settles in cash (a realized loss, not an assignment). The guard (§5.11) still rolls or closes it beforehand, so losses are taken under control rather than at the settlement price.
+- XSP is 1/10 of SPX (one contract ≈ $60k notional at SPX 6000), which allows fine-grained sizing. Switch to SPXW once the size reaches 10+ XSP contracts per expiry, for tighter spreads and lower fees per dollar of notional.
 
-### 5.4 Credit Spreads (bull put / bear call)
-- **Entry:** Short leg delta 0.20–0.30, 30–45 DTE, width $5 (or per-symbol), credit ≥ **1/3 of width**.
-- **Order:** Always one **combo (BAG) order** for both legs. Never leg in.
-- **Exit:** Hold to expiration unless §5.8 favors an early close. Spreads close before expiration when pin risk applies (below).
-- **Stop:** Close if the spread's value reaches 2× the credit received.
-- **Expiration:** Close any spread with the short leg within 1% of the money by 15:00 ET on expiration day (pin risk).
+**Single-stock puts (secondary):**
+- Only on watchlist names where combined exposure (§6.1) is under the per-name cap. Typically names you'd like to own **more** of.
+- Entry: 30–45 DTE, delta **0.10–0.20**, no earnings inside the expiry.
+- Defended by the Assignment Guard (§5.11).
 
-### 5.5 Iron Condor
-- **Entry:** Short put and short call at delta ~0.16, 30–45 DTE, equal widths, total credit ≥ 1/3 of width.
-- **Order:** One 4-leg combo order.
-- **Exit:** Hold to expiration unless §5.8 favors an early close.
-- **Defend:** No adjustments (R2). Close the whole position at the 2× credit stop.
+**Both:** no cash collateral (R8). Every put counts toward short-put notional, the risk budget, and the expiry ladder (§6.1–6.2).
 
-### 5.6 Naked Short Options
-Undefined risk. Short puts are now a core strategy (§5.2, because of R8). **Naked calls** (calls not covered by shares) remain gated hardest and are enabled last (Stage 5b).
-- **Naked calls:** Delta ≤ 0.15, index ETFs or mega-caps only (allowlist), **never** through earnings, **never** on hard-to-borrow or high short-interest names (squeeze risk).
-- **Mandatory stop:** Close if the option price reaches 3× the credit, or if the underlying crosses the strike.
-- **Mandatory stress check:** each new naked position must pass the stress test in §6.2 on its own and as part of the portfolio.
-- **Size cap:** Naked notional (strike × 100 × qty) ≤ 15% of NAV per underlying, ≤ 100% of NAV in total.
+### 5.3 Covered calls
+- **Coverage:** by default at most **50% of the shares** in each holding (`cc_max_coverage: 0.5`), and never more than `floor(shares / 100)` contracts. Uses the existing coverage logic (commit `2eb3ff0`).
+- **Entry:** 21–45 DTE, **delta 0.08–0.15**, strike ≥ cost basis (configurable).
+- **Skip in strong uptrends** unless IV rank ≥ 60. A strong uptrend means price above a rising 50-day MA **and** a 20-day return > +8%. Selling calls into momentum mostly produces costly rolls.
+- **Exit / defend:** hold to expiry unless §5.8 says to close, and roll up and out per §5.11. **Shares are never called away** (R7). If no acceptable roll exists, buy back the call. The shares' gain offsets the loss on the call.
 
-### 5.7 Position management loop (all strategies)
-On every cycle, each open position runs through `RiskAnalyzer.analyze_position`
-(existing code) and then the owning strategy's `manage()`:
+### 5.4 Index put credit spreads
+- Used **instead of naked index puts** when (a) Cushion is 40–50%, so naked margin is too expensive, or (b) VIX > 30 (§6.6). That gives defined risk when risk matters most.
+- Short leg delta 0.10–0.16; width set so max loss ≤ 1% of NLV per spread position; credit ≥ 20% of width.
+- Always one combo order. Same exit, roll, and guard rules as §5.2.
 
-| Existing flag | Default action |
+### 5.5 (removed in v0.4: iron condors, see §1.3)
+
+### 5.6 (removed in v0.4: naked calls, see §1.3)
+
+### 5.7 Position management loop
+Every 5 minutes, each open position runs through the existing
+`RiskAnalyzer.analyze_position`, then the guards (§5.11), then the
+strategy's `manage()`.
+
+| Flag | Action |
 |---|---|
-| `PROFIT_TARGET_REACHED` | Close **only if** the fee-aware test in §5.8 says closing beats holding; otherwise hold to expiration |
-| `EXPIRING_SOON` (≤ 7 DTE) | Close or roll, by strategy rule |
-| `HIGH_DELTA_SHORT_CALL` | Roll or close |
+| `PROFIT_TARGET_REACHED` | Close only if the replacement test (§5.8) passes |
+| `EXPIRING_SOON` | Gamma exit or guard rules (§5.8, §5.11) |
+| `HIGH_DELTA_SHORT_*` | Roll per §5.11 |
 | `ITM_OPTION` | Roll or close per §5.11. Never accept assignment |
-| `LARGE_LOSS` | Evaluate the stop-loss rule |
+| `LARGE_LOSS` | Chain loss rule (§5.11) |
 
-Required changes to `risk.py`:
-- Add a high-delta check for **short puts** (today the check is calls-only).
-- Add `EX_DIVIDEND_ASSIGNMENT_RISK` and `PIN_RISK` flags.
-- Make `LARGE_LOSS` relative to the credit received (e.g. 2×) rather than a fixed $500.
+`risk.py` upgrades: a high-delta check for **short puts**, plus
+`EX_DIVIDEND_ASSIGNMENT_RISK`, `PIN_RISK`, and `EARNINGS_BEFORE_EXPIRY` flags, and
+`LARGE_LOSS` measured relative to the credit received.
 
-Positions the bot did not open (legacy or manual) are **managed only if the
-user opts them in**. By default they are monitored and alerted, not traded.
-**Exception (R1/R5):** margin restoration (§6.5) may close any position in the
-account, because the $100k floor applies to the whole account.
+Legacy and manual positions are monitored and alerted, but traded only if you opt them in.
+**Exception:** margin restoration (§6.5) may close any **option** in the account.
 
-### 5.8 Fee-aware trading (R2)
+### 5.8 Fee-aware exits (R2)
 
-The goal is fewer, larger, higher-quality trades. Each order costs about
-**$0.65/contract plus exchange and regulatory fees** under IBKR Pro tiered
-pricing (verify against the account's own commission schedule), plus the
-bid-ask spread paid on entry and exit. Expiration and assignment are
-commission-free.
+Costs: about **$0.65/contract + exchange/regulatory fees** for stock and ETF
+options (index options carry an extra CBOE index fee, modeled in `fees.py`),
+plus the bid-ask spread, plus **margin interest** on any debit (§7.5).
+Expiration costs nothing.
 
 | Rule | Default |
 |---|---|
-| **Hold to expiration** is the default exit. Letting an OTM option expire costs $0. | on |
-| Close early for profit only if: remaining premium ≥ **$0.10/contract** **and** ≥ 80% of max profit is captured **and** ≥ 10 DTE remain (so the freed margin can be re-used for a new sale) | `early_close` |
-| **Never buy back** a short option with mid ≤ $0.05 unless it's needed for margin restoration or assignment avoidance (§5.11) | on |
-| Minimum **net credit per contract** after round-trip fees for new trades | $50 (≥ $0.50 premium) |
-| Minimum annualized return on margin, after fees, for new trades | 12% |
-| Prefer **monthly** (30–45 DTE) over weekly expirations: about 4× fewer trades for similar premium | on |
-| Rolls only as **one combo order** (one commission event, one spread crossing) and only for a **net credit** that covers the extra fees | on |
-| No adjustments on iron condors (closing beats adjusting after fees) | `max_adjustments: 0` |
-| Size up instead of spreading out: fewer underlyings, more contracts, within the per-underlying cap | on |
+| **Hold to expiration** is the default. | on |
+| **Replacement test:** close early when (a) ≥ 50% of the credit is captured, **and** (b) the position's remaining premium per day per unit of stress loss is < 50% of the best available candidate's, **and** (c) closing + reopening fees are < 10% of the new candidate's credit. The freed budget is redeployed right away. | on |
+| **Gamma exit:** DTE ≤ 10, remaining extrinsic < 20% of the original credit, and |delta| > 0.25 → close. Little premium is left, and risk is rising. | on |
+| Never buy back an option at mid ≤ $0.05, except for the guards or margin restoration | on |
+| Min net credit per new trade | **$20/contract** and ≥ 5× round-trip fees (v0.3's $50 blocked most low-delta covered calls) |
+| Monthly cycles preferred; laddered across expirations (§6.1) | on |
+| Rolls only as one combo order for a net credit | on |
 | Max new opening orders per day | 5 |
-| Margin restoration (§6.5) closes the **fewest positions** that restore the floor | on |
 
-Every intent carries an **estimated fee** and an **expected net P&L**. The
-journal records the actual commissions from IB execution reports, so the
-dashboard can show fees as a percentage of premium collected (target < 3%).
+The journal records actual commissions; the dashboard shows fees and margin
+interest as a percentage of premium (target < 4% combined).
 
 ### 5.9 Opportunity Scanner (R3)
 
-Runs continuously during market hours (§8). It has two queues that always run:
+Runs every 15 minutes in market hours over three queues: **covered calls**
+(holdings with uncovered shares under the coverage cap), **index puts**, and
+**single-stock puts** (watchlist names under their cap).
 
-1. **Covered calls:** every holding with ≥ 100 uncovered shares.
-2. **Put sales:** every watchlist name enabled for `short_put`.
-
-For each candidate (underlying × expiry 21–45 DTE × strike within the delta
-band), compute:
+For each candidate (underlying × expiry × strike in the delta band):
 
 ```
-premium_yield   = mid / capital_at_risk × 365 / DTE
-                  (capital_at_risk = whatIf margin for short puts;
-                   share value for covered calls)
-prob_otm        ≈ 1 − |delta|
-edge            = IV − realized_vol_20d            (selling rich volatility)
-score           = premium_yield × prob_otm
-                  × (1 + 0.5 × clamp(IV_rank/100, 0, 1))
-                  × liquidity_factor                 (spread and OI penalty)
-                  − fee_drag                         (round-trip fees / capital)
+credit_net    = mid − round-trip fee estimate
+σ_real        = max(RV20, RV60) × 1.10                 # conservative realized vol
+EV            = credit_net − E_real[ max(0, intrinsic at expiry) ]
+                # expected payout under a realized-vol (not implied-vol) distribution
+                # → positive only when implied vol is rich vs. realized
+stress_loss   = loss of this position in the §6.2 budget scenario
+                # (−20%, IV +50%; single stocks scaled by beta, floor 1.0)
+edge_score    = EV / stress_loss × 365 / DTE           # annualized edge per unit of crash risk
+timing_mult   = from the tracker (§5.10), 0.8–1.3
+score         = edge_score × timing_mult × liquidity_factor
 ```
 
-- **Hard filters:** delta ≤ 0.15 for covered calls, ≤ 0.20 for short puts; net credit ≥ $50/contract; the common filters in §5.1.
-- **Output:** a ranked list per underlying (best strike/expiry) shown on a new **Opportunities** page, and fed to the Risk Gate as intents when the tracker (§5.10) says the timing is right.
-- **R3 metric:** "high premium" means `premium_yield ≥ 15%` annualized for covered calls and `≥ 20%` for puts (configurable).
+- **Hard filters:** EV > 0; vol edge ≥ 1.10 (§5.1); delta bands per strategy; credit ≥ min net credit.
+- **Allocation:** the risk budget (§6.2) is filled greedily by score, subject to every §6.1 limit. Higher-scoring trades get the budget first.
+- **R3 "high premium" check (display):** annualized premium yield ≥ 15% for covered calls (on share value) and ≥ 20% for puts (on whatIf margin).
 
 ### 5.10 Tracking: when to sell (R4)
 
-**Opportunity Tracker (entries).** Every scanner result is stored with a
-timestamp, so the bot sees how premium for the same delta changes over the
-day and over weeks. It fires a sell when the **timing score** is high, rather
-than at the first acceptable quote:
+**Opportunity Tracker.** Stores every scan result, so the bot sees how the
+premium for a given delta moves over hours and weeks. `timing_mult` rises when:
 
 | Signal | Covered calls | Puts |
 |---|---|---|
-| IV rank ≥ 50, or IV percentile in the top third of its 30-day range | ✓ | ✓ |
-| Underlying move | after an up move (≥ +1 ATR over 1–3 days, or near a 20-day high): call premium is richer | after a down move (≤ −1 ATR, or near support): put premium is richer |
-| Score vs. its own 20-day history | top quartile | top quartile |
-| IV spike before earnings | sell only if the expiry is **after** the IV crush or the earnings rule allows it | same |
-| Time decay | sell at 30–45 DTE, where theta per day of margin is efficient | same |
+| IV rank ≥ 50, or IV in the top third of its 30-day range | ✓ | ✓ |
+| Underlying move | after an up move (≥ +1 ATR in 1–3 days, or near the 20-day high) | after a down move (≤ −1 ATR, or near support) |
+| Score in the top quartile of its own 20-day history | ✓ | ✓ |
+| VIX spike fading (§6.6) | — | ✓ (strongest signal for index puts) |
 
-If no signal fires for a holding, the bot keeps waiting. When 21 DTE has
-passed with no sale in the current monthly cycle, it accepts the best
-available score that still meets the hard filters. That way shares aren't
-left uncovered for long.
+**No forced sales.** If timing never fires in a cycle, nothing is sold.
+Unused risk budget is safer than budget spent on thin premium.
 
-**Trend & regime detection.** Computed per underlying every scan cycle from
-IB historical bars and the IV history, all as deterministic indicators:
+**Trend & regime indicators** (stored with every scan, used by §5.3, §6.6):
+- **20/50/200-day MAs and their slopes:** trend direction. Uptrend → skip or lower the covered-call delta; downtrend → move puts further OTM or skip single-stock puts.
+- **RSI(14), distance from the 20-day high/low in ATRs:** sell calls into strength, puts into weakness.
+- **IV rank and percentile, IV ÷ RV:** whether premium is rich.
+- **Term structure (front vs. second month):** inversion means stress, so use the regime rules.
+- **Put/call skew:** rich puts favor put sales.
+- **VIX level and change:** regime (§6.6).
 
-| Indicator | Used for |
-|---|---|
-| Price vs. 20/50/200-day moving averages; 50/200 slope | Trend direction. In an **uptrend**, favor puts and raise covered-call strikes (lower delta) so shares aren't called away cheaply. In a **downtrend**, sell puts further OTM or skip them, and favor covered calls. |
-| RSI(14), distance from the 20-day high/low in ATRs | Short-term overbought/oversold timing: sell calls into strength, puts into weakness. |
-| IV rank / percentile, IV vs. 20-day realized vol | Whether premium is rich (sell) or cheap (wait). |
-| IV term structure (front vs. 2nd month) | Inversion signals an event or stress: be cautious, or sell the richer expiry. |
-| Put/call skew | Puts unusually rich vs. calls → favor put sales. |
-| Market regime (SPY trend, VIX level and its change) | Global throttle on new entries (§5.1). |
+**Decay Tracker.** For each open position: captured premium vs. the theoretical
+theta curve, delta, extrinsic value, and remaining premium per unit of stress
+loss. Feeds the replacement test and gamma exit (§5.8).
 
-The tracker stores these with every scan result. That gives a history that
-the backtest (Stage 0) can use to tune the thresholds, rather than guessing them.
+### 5.11 Assignment & Event Guard (R7)
 
-**Decay Tracker (open positions).** For each open short option, track
-captured premium over time against the theoretical theta curve, plus delta
-and extrinsic value. This feeds §5.8: it detects when the remaining premium
-is too small to be worth holding the margin, and when a roll is worth it. It
-also shows each position's "sell-by" signals on the positions page.
-
-### 5.11 Assignment avoidance: roll, never get assigned (R7)
-
-American-style equity options can be assigned at any time, usually when an
-ITM option has little extrinsic value left, or (for calls) the day before an
-ex-dividend date. The **Assignment Guard** checks every short option every
-management cycle (5 min).
+Checks every short option every 5 minutes. Index options (§5.2) can't be
+assigned, but the guard still manages them (expiry settlement and loss control).
 
 **Roll triggers (any one fires):**
 
-| Trigger | Default |
+| Trigger | Puts | Covered calls |
+|---|---|---|
+| **Early roll** while it's still cheap | delta ≥ **0.35** | delta ≥ **0.40** |
+| ITM and extrinsic < $0.15 (or < 0.5% of strike), the early-assignment zone (single stocks) | ✓ | ✓ |
+| ≤ 5 DTE and underlying within 2% of the strike | ✓ | ✓ |
+| Ex-dividend before expiry while ITM and extrinsic < dividend + $0.05: roll by 15:30 ET the day before | — | ✓ |
+| **Earnings before expiry** (positions opened before an earnings date was set, or rolled into one) and delta > 0.25: roll past the event, or close, the day before | ✓ | ✓ |
+| Expiration day, ITM or within 1% of the strike: roll or close by 15:00 ET | ✓ | ✓ |
+
+**Roll builder:**
+1. One combo order: buy back the current option and sell the new one. Next expirations 30–60 DTE, max 90, that **don't span earnings**.
+2. Strike the same or better (puts lower, calls higher). Choose the best strike improvement with **net credit ≥ $0.05/contract**.
+3. **Never add contracts.**
+4. The roll passes the Risk Gate like a new trade, and it must not increase the position's stress loss.
+5. Max **4 rolls** per chain. A chain whose cumulative loss exceeds **3× the original credit** is closed. If no roll qualifies, close.
+
+**If a single-stock assignment still happens:** a put assignment → sell the shares at the next open; a call assignment → buy the shares back at the next open (R8). Alert immediately, and log it on the chain.
+
+### 5.12 Tail hedge
+
+| Item | Default |
 |---|---|
-| ITM **and** extrinsic value < $0.15 (or < 0.5% of strike) | early-assignment danger zone |
-| Delta ≥ 0.50 (put) / ≥ 0.50 (call) | it's becoming an ITM position |
-| ≤ 5 DTE **and** underlying within 2% of the strike | pin risk / after-hours move risk |
-| Short call ITM, ex-dividend date before expiry, extrinsic < dividend + $0.05 | roll **by 15:30 ET on the day before** the ex-date |
-| Expiration day, any short option ITM or within 1% of the strike | **must** be rolled or closed by 15:00 ET; nothing ITM is left to expire |
-
-**How to roll:**
-1. Build candidates with **one combo order** (buy back the current option + sell the new one): next monthly expirations (30–60 DTE, up to a max of 90), with a strike that is the same or better (puts lower, calls higher).
-2. Choose the candidate with the best strike improvement that still gives a **net credit ≥ $0.05/contract** (covers fees, R2).
-3. **Never increase the contract count** in a roll (no doubling down).
-4. The roll must pass the Risk Gate like a new trade (§6.1–6.2). Rolling may not push the account closer to the margin limit (R9).
-5. A position may be rolled at most **4 times**. After that, or if no candidate meets rules 1–4, **close it** and take the loss. Losses are realized deliberately, never through an assignment.
-
-**Roll chains:** the journal links every roll to the original trade, so P&L,
-total credit, and days held are reported per chain, not per leg. A chain whose
-cumulative loss passes **3× the original credit** is closed regardless of roll options.
-
-**If an assignment still happens** (early assignment can't be fully prevented):
-- **Put assigned** → shares appear on margin. Alert immediately; at the next open, **sell the shares** (default `on_put_assignment: "sell_shares"`) to restore the account to its prior state.
-- **Call assigned** → shares are called away. Alert; at the next open, **buy the shares back** (default `on_call_assignment: "rebuy_shares"`) to stay fully invested (R8).
-- Both are logged as an assignment event on the chain, and the Assignment Guard's thresholds are reviewed.
+| Instrument | SPY puts (or XSP / SPXW puts), **10–15% OTM**, 60–120 DTE |
+| Budget | **5–10% of premium collected** in the trailing month, bought monthly in one order |
+| Roll | When DTE < 30, or when the hedge has gained ≥ 3× its cost (take part of the profit, then re-strike) |
+| In the stress test | Counted. It offsets the options book's stress loss, which frees risk budget, so the hedge partly pays for itself in allowed size |
+| Margin restoration | **Never closed** by §6.5. It's the position that protects EL in a crash |
+| Monetization rule | After a crash (VIX > 40), sell half the hedge once it's worth ≥ 5× cost, and use the gain to support EL and the cushion |
 
 ---
 
 ## 6. Risk Gate
 
-Every `TradeIntent` (open, close, roll) passes through the risk gate. The gate
-is a pure function of (intent, portfolio state, market state, config), so it
-can be unit-tested exhaustively.
+A pure function of (intent, portfolio, market, config), unit-tested exhaustively.
 
-### 6.1 Hard limits (checked on every opening intent)
+### 6.1 Hard limits (every opening intent and roll)
 
 | Limit | Default |
 |---|---|
-| **Excess Liquidity after the trade ≥ $100,000 + $25,000 entry buffer (R1)** (IB `whatIfOrder` result). The buffer keeps a new trade from immediately triggering §6.5. | $125,000 |
-| **Cushion (EL ÷ NLV) after the trade (R9)** | ≥ 40% |
-| **Excess Liquidity under the §6.2 −20% market / IV +50% scenario (R9)** | ≥ $100,000 |
-| **Total short-put notional** (strike × 100 × qty, all short puts) (R8) | ≤ 50% of NLV |
-| Max margin utilization after the trade (IB `whatIfOrder` result) | 50% of NAV |
-| Max allocation per underlying (notional at risk) | 10% of NAV |
-| Max allocation per sector | 30% of NAV |
-| Max portfolio beta-weighted delta (SPY-equivalent shares) | ±0.5 × NAV / SPY price |
-| Max short vega | configurable $ per 1 IV point |
-| Max new positions per day | 5 (R2) |
-| Max contracts per order | 10 |
-| Max loss per defined-risk trade | 2% of NAV |
-| Account must have the required option permission level | — |
+| **EL after the trade** (whatIf) | ≥ **$125,000** (R1 floor $100k + $25k buffer) |
+| **Cushion after the trade** | ≥ **40%** (R9) |
+| **EL in the §6.2 scenario** (stocks + options + hedge, margin ×1.5) | ≥ **$100,000** |
+| **Options-book stress loss** (§6.2) | ≤ the **risk budget**: 10% of NLV, scaled by regime (§6.6) |
+| **Total short-put notional** | ≤ **50% of NLV** |
+| **Per-name combined exposure**: stock value + short-put notional × delta-adjusted, − covered-call delta | ≤ **15% of NLV** (the existing stock weights may already exceed this; the rule then blocks **adding** to the name) |
+| Index put notional (XSP/SPX) | ≤ 40% of NLV (within the 50% total) |
+| Per-sector combined exposure | ≤ 35% of NLV, same rule as per-name |
+| **Expiry ladder**: short-put notional in any one expiration | ≤ **35%** of total short-put notional |
+| **Options-book beta-weighted delta** (excluding stocks) | ≤ +0.35 × NLV in SPY-dollar terms |
+| Max contracts per order | 10 (index: 5 SPXW / 20 XSP) |
+| Max new opening orders per day | 5 |
 
-Closing and risk-reducing intents **skip** allocation limits, so the bot can
-always get out. They are still checked for sanity (price, quantity, contract).
+Closing and risk-reducing intents skip the allocation limits (sanity checks still apply).
 
-### 6.2 Stress test
-Before any opening trade, revalue the portfolio with the new position under these scenarios:
-- Underlying moves −25%, −20%, −15%, −8%, +8%, +15%, +25%, applied to **the stock holdings and the options together** (R8)
-- IV +50% (relative) combined with the −15% and −20% moves
-- Margin requirement recomputed under each scenario (stock margin rises as positions fall)
+### 6.2 Stress test and risk budget
 
-Reject the trade if any scenario's portfolio loss exceeds **25% of NAV** or the
-scenario margin exceeds NAV. Use `py-vollib` (already a dependency) for
-repricing.
+**Scenarios** (stocks + options + hedge revalued together, single stocks scaled by beta):
+- Market −25%, −20%, −15%, −8%, +8%, +15%, +25%
+- IV +50% (relative) together with the −15%, −20%, and −25% moves
+- **Margin requirements ×1.5** in every down scenario (IB raises requirements in stress)
+- A single-stock **−35% gap** on each name with a short put (idiosyncratic risk)
+
+**Budget scenario:** −20% with IV +50%.
+
+**Checks:**
+1. **Options-book loss** (short options + spreads + hedge, excluding stock P&L) in the budget scenario ≤ **risk budget** (10% NLV × regime multiplier).
+2. **Account EL** in the −25%/IV +50%/margin ×1.5 scenario ≥ $100k.
+3. Each single-stock −35% gap: the loss on that name's short options ≤ 2% of NLV.
+
+Repricing uses `py-vollib`. The Risk Budget page shows the budget used and free.
 
 ### 6.3 Sanity checks (every order)
-- The quote is fresher than 5 seconds.
-- The limit price is within the current bid/ask.
-- The quantity is not larger than the position being closed.
-- The contract matches the intended expiration, strike, right, and multiplier (100).
-- The order side cannot flip a position (e.g. closing −5 with a +10 buy).
-- No duplicate: no working order already exists for the same position.
+Quote < 5s old; limit price within the bid/ask; quantity ≤ the position being closed; contract matches the intent; no side flip; no duplicate working order.
 
 ### 6.4 Kill switch and circuit breakers
 
+All loss-based triggers use **options-book P&L**, because stock moves alone would trip them on normal days.
+
 | Trigger | Action |
 |---|---|
-| Manual: UI button, `touch data/trading/HALT`, or CLI | Cancel all **opening** orders; stop new entries; keep managing (closing) unless `HALT_ALL` |
-| Daily realized + unrealized loss > 3% of NAV | Halt opening for the rest of the day |
-| Drawdown from equity high-water mark > 10% | Halt opening until a human resets it |
-| Broker disconnect > 60s | Stop all new orders; on reconnect, reconcile before resuming |
-| Reconciliation mismatch (§7.4) | Halt all trading; alert |
-| Unhandled exception in the strategy engine | Halt opening; alert |
-| Margin call / excess liquidity < 10% NAV | Halt opening; Position Manager prioritizes closes that free the most margin |
+| Manual: UI button, `touch data/trading/HALT`, or CLI | Cancel opening orders, stop new entries, keep guards and closes (unless `HALT_ALL`) |
+| Options-book daily loss > **1.5% of NLV** | Halt opening for the day |
+| Options-book drawdown from its high-water mark > **5% of NLV** | Risk budget halved until recovered to −2% |
+| Options-book drawdown > **8% of NLV** | Halt opening until a human resets it |
+| Broker disconnect > 60s | No new orders; reconcile on reconnect |
+| Reconciliation mismatch | Halt all trading; alert |
+| Unhandled engine exception | Halt opening; alert |
 
-Halt states persist in the journal. A restart **does not** clear a halt;
-only a human can.
+Halts persist across restarts; only a human clears them.
 
 ### 6.5 Margin floor monitor and automatic restoration (R1, R5)
 
-Runs **every 60 seconds** during market hours (its own loop, independent of
-the 5-minute management cycle), using streamed `ExcessLiquidity`.
+Every **60 s** during market hours, on streamed EL and Cushion:
 
-| Excess Liquidity | State | Action |
+| State | Condition | Action |
 |---|---|---|
-| ≥ $125,000 **and** Cushion ≥ 40% | Normal | — |
-| $100,000 – $125,000, **or** Cushion 30–40% | **Warning** | No new opening trades (rolls that improve margin still allowed). Alert. |
-| < $100,000, **or** Cushion < 30% | **Breach** | Stop all opening. Within 2 minutes, start **automatic closing** until EL ≥ $110,000 and Cushion ≥ 35% (hysteresis, so one small move doesn't cause repeated closes). |
-| < $50,000 or IB `Cushion` < 5% | **Emergency** | Same as breach but price aggressively (up to the natural price) and alert by every channel. Getting out matters more than slippage. |
+| Normal | EL ≥ $125k and Cushion ≥ 40% | — |
+| Warning | EL $100–125k, or Cushion 30–40% | No new openings; new put exposure only as spreads (§5.4) that don't reduce EL. Alert. |
+| **Breach** | EL < $100k, or Cushion < 30% | Within 2 min, **auto-close options** until EL ≥ $110k and Cushion ≥ 35% |
+| Emergency | EL < $50k, or Cushion < 15% | Same as breach, priced aggressively (up to the natural price); alert on every channel |
 
-**Which positions to close (fewest transactions, R2):**
-1. Compute, for each short position, the margin freed by closing it (`whatIfOrder` on the closing order) and the cost to close (debit plus fees plus slippage).
-2. First close positions that are also flagged for closing (ITM, high delta, loss stop), since they're high risk anyway.
-3. Then rank the rest by **margin freed ÷ cost to close**, which picks the cheapest margin to release. Take the smallest set whose combined margin release reaches the target.
-4. Prefer closing whole positions over partial ones (one order instead of several).
-5. Don't close covered calls (they free no margin) unless required to sell the underlying shares.
-6. Re-check EL after each fill. Stop as soon as the target is reached.
+**Close order:**
+1. Positions already flagged (ITM, high delta, chain-loss).
+2. Then by **margin freed ÷ cost to close**, the smallest set that reaches the target. Whole positions are preferred.
+3. **Never closed:** the tail hedge; and stock holdings (R8). Exception: shares that came from an assignment.
+4. Re-check after each fill; stop when the target is reached.
 
-**Out-of-hours breach:** if EL drops below the floor while the market is
-closed (e.g. a pre-market gap), the bot alerts immediately and runs
-restoration at 09:31 ET, after the open, without waiting for the 09:45 window.
+Out-of-hours breach: alert immediately and act at 09:31 ET.
+Restoration closes are automatic from **Stage 3**, with a notification for each.
 
-**Autonomy:** margin-restoration closes are risk-reducing, so they run
-automatically from **Stage 3** onward. They skip per-order approval, but every
-close is notified, and the user can disable this with `margin_restore.auto: false`.
+### 6.6 Volatility-regime sizing
+
+The risk budget (10% NLV) is multiplied by:
+
+| Regime | Multiplier | Entry style |
+|---|---|---|
+| VIX < 13 (thin premium, complacency) | **0.5** | Lowest deltas only |
+| VIX 13–20 | 0.8 | Normal |
+| VIX 20–30 | 1.0 | Normal, best edge |
+| VIX > 30 and **rising** (above its 5-day average) | **0** (no new risk) | Guards and hedge only |
+| VIX > 30 and **≥ 15% below its 5-day high** (spike fading) | **0.6** | **Spreads only** (§5.4), delta ≤ 0.10, nearest ladder slots first |
+| Options-book drawdown > 5% (§6.4) | × 0.5 | — |
 
 ---
 
 ## 7. Order Management
 
-### 7.1 Pricing and working orders
-- **Limit orders only.** No market orders on options, ever.
-- Start at the **mid** price. If unfilled after 60s, step 10% of the spread toward the natural price. Repeat up to 4 steps, and never cross a configured worst price (e.g. never pay more than mid + 40% of the spread).
-- If still unfilled, cancel and retry next cycle. After 3 failed cycles, alert and skip until the next day.
-- Multi-leg trades use IB combo orders with a net limit price.
-- Rolls go out as **one combo order** (close the old leg and open the new leg together), so a half-done roll cannot leave the account naked.
+### 7.1 Pricing
+- Limit orders only. Start at mid; after 60s, step 10% of the spread toward the natural price; at most 4 steps; never worse than mid ± 40% of the spread (emergency: up to natural).
+- If unfilled, retry next cycle. After 3 failed cycles, alert and skip until the next day.
+- Multi-leg trades and rolls go out as **one combo order**.
 
 ### 7.2 Idempotency
-- Each intent gets a deterministic ID (strategy + position + action + date). It goes in the IB `orderRef` field.
-- On startup, the bot fetches all open orders and today's executions and matches them to intents by `orderRef` before doing anything else.
+A deterministic intent ID goes in `orderRef`. On startup, open orders and today's executions are matched to intents before anything else runs.
 
-### 7.3 Fills, partial fills, assignment
-- Partial fills update the position immediately; the remainder keeps working within the same price limits.
-- Assignment and exercise events (detected from position changes outside a bot order) are logged, attributed to their chain, and handled per §5.11 (sell assigned shares / rebuy called-away shares).
+### 7.3 Fills and assignment
+Partial fills update positions immediately. Assignments and exercises (position changes not caused by a bot order) are logged and handled per §5.11.
 
 ### 7.4 Reconciliation
-Every cycle, compare the bot's expected positions (from the journal) to IB
-positions. Any unexplained difference halts trading (§6.4) until a human
-acknowledges it. Positions opened manually in TWS appear as "unmanaged."
+Every cycle, journal-expected positions are compared with IB. Any unexplained difference halts trading until a human acknowledges it. Manual positions are tagged "unmanaged."
 
-
-### 7.5 Fee model (R2)
-`fees.py` estimates commission plus exchange, ORF, OCC and FINRA TAF fees per
-order from the account's tier, and gets calibrated against actual
-`commissionReport` values. Every strategy decision uses **net-of-fee**
-numbers, and the dashboard shows monthly fees vs. premium collected.
+### 7.5 Fees and financing
+`fees.py` models commission, exchange (including CBOE index fees), ORF, OCC and TAF fees, calibrated from `commissionReport`, plus **margin interest** on negative cash at the account's IB benchmark rate. All decisions use **net** figures.
 
 ---
 
@@ -510,220 +492,169 @@ numbers, and the dashboard shows monthly fees vs. premium collected.
 
 | Time (ET) | Job |
 |---|---|
-| 09:00 | Pre-market: load calendar (earnings, ex-div, holidays), refresh watchlist data, verify connection and permissions |
-| 09:31 – 16:00, every 60 s | Margin floor monitor (§6.5) |
-| 09:45 – 15:45, every 5 min | Management cycle: all open positions |
-| 09:45 – 15:45, every 15 min | Opportunity scanner + tracker (§5.9–5.10); orders only when the timing score fires |
-| 15:00 on expiration days | Pin-risk sweep: close near-the-money short legs expiring today |
-| 16:15 | End of day: reconcile, snapshot P&L/Greeks, daily report |
+| 09:00 | Load calendars (earnings, ex-div, holidays), refresh indicators, verify connection and permissions |
+| 09:31–16:00, every 60 s | Margin floor monitor (§6.5) |
+| 09:45–15:45, every 5 min | Management cycle + guards |
+| 09:45–15:45, every 15 min | Scanner + tracker; orders only when timing fires and budget is free |
+| 15:00, expiration days | Expiry sweep (§5.11) |
+| Monthly, first trading day after the standard expiration | Tail hedge purchase / roll (§5.12) |
+| 16:15 | Reconcile, snapshot P&L / Greeks / budget, daily report |
 
-The scheduler uses the NYSE calendar (holidays, early closes at 13:00 ET).
+NYSE calendar, including holidays and early closes.
 
 ---
 
 ## 9. Persistence and Observability
 
-### 9.1 Journal (SQLite, `data/trading/journal.db`)
-Tables: `intents`, `risk_checks` (each check result and its inputs),
-`orders`, `order_events`, `fills`, `positions_snapshot`, `account_snapshot`,
-`halts`, `config_versions`. Records are append-only; nothing is updated in place.
-
-### 9.2 Every intent records
-The strategy, the trigger (e.g. `PROFIT_TARGET_REACHED`), the quotes and Greeks
-at decision time, the risk-gate result for each check, and the config version.
-This is the "why" behind every trade (goal G3).
-
-### 9.3 Alerts
-Push or email (via a pluggable notifier) for: fills, rejects, halts,
-assignments, reconcile mismatches, approvals waiting (Stage 3), and the daily report.
-
-### 9.4 Metrics
-Win rate, average credit, average days held, P&L by strategy/underlying,
-slippage vs. mid, fill rate, max drawdown, and theta/delta/vega over time. These
-are shown on the existing Charts page.
+- **Journal** (SQLite, append-only): `intents`, `risk_checks`, `orders`, `order_events`, `fills`, `chains`, `positions_snapshot`, `account_snapshot`, `budget_snapshot`, `scan_results`, `halts`, `config_versions`.
+- **Every intent records** the strategy, trigger, quotes, Greeks, IV/RV, score components, every risk check, and the config version.
+- **Alerts:** fills, rejects, halts, margin states, assignments, reconcile mismatches, pending approvals, IB re-login needed, and the daily report.
+- **Metrics:** options-overlay P&L and its Sortino, budget used, premium per unit of stress loss, win rate per chain, roll rate, losing-chain rate, fees and interest as % of premium, hedge cost and payoff, overlay vs. buy-and-hold.
 
 ---
 
 ## 10. Configuration
 
-`data/config/trading.json` sits next to the existing `settings.json`. The
-bot validates it on load (e.g. with pydantic) and rejects unknown keys.
-Every change is versioned into the journal.
+`data/config/trading.json`, validated on load (unknown keys rejected) and versioned into the journal.
 
 ```json
 {
-  "mode": "paper",                      // paper | shadow | approve | auto
+  "mode": "paper",
   "account_id": "DU1234567",
   "enabled_strategies": {
-    "short_put":     {"manage": true,  "open": true},
-    "covered_call":  {"manage": true,  "open": true},
-    "credit_spread": {"manage": true,  "open": false},
-    "iron_condor":   {"manage": true,  "open": false},
-    "naked_call":    {"manage": false, "open": false}
+    "covered_call": {"manage": true, "open": true},
+    "index_put":    {"manage": true, "open": true},
+    "stock_put":    {"manage": true, "open": true},
+    "put_spread":   {"manage": true, "open": true},
+    "tail_hedge":   {"manage": true, "open": true}
   },
   "watchlist": {
-    "AAPL": {"strategies": ["short_put", "covered_call", "credit_spread"]},
-    "SPY":  {"strategies": ["short_put", "iron_condor", "naked_call"]}
+    "AAPL": {"strategies": ["covered_call", "stock_put"]},
+    "MSFT": {"strategies": ["covered_call", "stock_put"]}
   },
-  "entry":  {"dte_min": 21, "dte_max": 45, "cc_delta_max": 0.15, "put_delta_max": 0.20,
-             "ivr_min": 30, "min_net_credit_per_contract": 50,
-             "cc_min_premium_yield": 0.15, "put_min_premium_yield": 0.20},
-  "exit":   {"hold_to_expiration": true, "early_close_min_captured_pct": 80,
-             "early_close_min_dte": 10, "never_buy_back_below": 0.05, "stop_multiple": 2.0},
-  "margin_floor": {"excess_liquidity_min": 100000, "entry_buffer": 25000,
-                   "restore_target": 110000, "emergency_level": 50000,
-                   "cushion_min_new_trade": 0.40, "cushion_breach": 0.30, "cushion_restore": 0.35,
-                   "short_put_notional_max": 0.50, "stress_drop": 0.20,
-                   "check_interval_s": 60, "auto": true},
-  "assignment_guard": {"min_extrinsic": 0.15, "max_delta": 0.50, "pin_dte": 5, "pin_pct": 0.02,
-                       "roll_min_credit": 0.05, "roll_max_dte": 90, "max_rolls": 4,
-                       "chain_max_loss_x_credit": 3.0,
-                       "on_put_assignment": "sell_shares", "on_call_assignment": "rebuy_shares"},
-  "fees":   {"per_contract": 0.65, "tier": "ibkr_pro_tiered"},
+  "index": {"underlyings": ["XSP", "SPXW"], "settlement": "PM", "switch_to_spx_at_contracts": 10},
+  "entry": {
+    "dte_min": 30, "dte_max": 45, "cc_dte_min": 21,
+    "cc_delta": [0.08, 0.15], "index_put_delta": [0.10, 0.16], "stock_put_delta": [0.10, 0.20],
+    "cc_max_coverage": 0.5, "cc_skip_strong_uptrend": true,
+    "min_vol_edge": 1.10, "ivr_min_index": 25, "ivr_min_stock": 30,
+    "min_net_credit_per_contract": 20
+  },
+  "exit": {
+    "hold_to_expiration": true,
+    "replacement_test": {"min_captured": 0.5, "rel_efficiency": 0.5, "max_fee_ratio": 0.10},
+    "gamma_exit": {"dte": 10, "max_remaining_extrinsic": 0.20, "min_delta": 0.25},
+    "never_buy_back_below": 0.05
+  },
+  "guard": {
+    "put_roll_delta": 0.35, "call_roll_delta": 0.40,
+    "min_extrinsic": 0.15, "pin_dte": 5, "pin_pct": 0.02, "earnings_delta": 0.25,
+    "roll_min_credit": 0.05, "roll_max_dte": 90, "max_rolls": 4, "chain_max_loss_x_credit": 3.0,
+    "on_put_assignment": "sell_shares", "on_call_assignment": "rebuy_shares"
+  },
+  "margin_floor": {
+    "excess_liquidity_min": 100000, "entry_buffer": 25000, "restore_target": 110000,
+    "emergency_level": 50000, "cushion_min_new_trade": 0.40, "cushion_breach": 0.30,
+    "cushion_restore": 0.35, "cushion_emergency": 0.15, "check_interval_s": 60, "auto": true
+  },
   "risk": {
-    "max_margin_util": 0.50,
-    "min_excess_liquidity": 0.30,
-    "max_per_underlying": 0.10,
-    "max_per_sector": 0.30,
-    "max_trades_per_day": 5,
-    "max_contracts_per_order": 10,
-    "daily_loss_halt": 0.03,
-    "drawdown_halt": 0.10,
-    "stress_max_loss": 0.25
+    "risk_budget_pct_nlv": 0.10,
+    "short_put_notional_max": 0.50, "index_put_notional_max": 0.40,
+    "per_name_max": 0.15, "per_sector_max": 0.35, "expiry_max_share": 0.35,
+    "options_beta_delta_max": 0.35, "stress_margin_multiplier": 1.5, "single_name_gap": 0.35,
+    "single_name_gap_max_loss": 0.02,
+    "options_daily_loss_halt": 0.015, "options_dd_reduce": 0.05, "options_dd_halt": 0.08,
+    "max_orders_per_day": 5
   },
-  "naked": {"call_allowlist": ["SPY", "QQQ", "IWM"], "max_notional_per_underlying": 0.15,
-            "max_notional_total": 1.0, "stop_multiple": 3.0}
+  "regime": {"vix_low": 13, "vix_mid": 20, "vix_high": 30, "fade_from_high": 0.15,
+             "mult": {"low": 0.5, "normal": 0.8, "elevated": 1.0, "rising": 0.0, "fading": 0.6}},
+  "tail_hedge": {"underlying": "SPY", "otm": [0.10, 0.15], "dte": [60, 120],
+                 "budget_pct_premium": [0.05, 0.10], "roll_dte": 30, "take_profit_x": 3.0},
+  "fees": {"per_contract": 0.65, "tier": "ibkr_pro_tiered", "margin_rate_source": "ib_benchmark"}
 }
 ```
 
-Secrets (account IDs for live, notifier tokens) come from `.env` (python-dotenv
-is already a dependency), never from committed config.
+Secrets come from `.env` only.
 
 ---
 
 ## 11. Staged Rollout
 
-Each stage must meet its exit criteria before the next stage is enabled. A
-human promotes the bot to the next stage by editing `mode`; the bot never promotes itself.
+A human promotes each stage; the bot never promotes itself. Rolling back is always allowed.
 
 | Stage | Mode | What runs | Exit criteria |
 |---|---|---|---|
-| **0. Backtest / replay** | offline | Strategies + risk gate against historical chains (FakeAdapter) | ≥ 2 years of history incl. 2020 and 2022; risk gate never breached; results reviewed |
-| **1. Paper** | `paper` | Full system on the IB paper account (paper account set up fully invested, like the live one), all strategies except naked calls. **Assignment Guard must roll every test case** | 4 weeks; 0 reconcile mismatches; 0 unhandled errors; every halt trigger tested on purpose |
-| **2. Shadow live** | `shadow` | Reads the live account, generates intents, **sends nothing**; the user compares them with their own decisions | 2 weeks; ≥ 90% of intents judged "would have done this" |
-| **3. Approve each** | `approve` | Live orders, but each intent waits in **Pending Approvals** (UI and notification), expiring after 10 min. **Exception:** margin-floor restoration closes (§6.5) run automatically (R1/R5) | 4 weeks; slippage vs. mid within target; no approved order behaved unexpectedly |
-| **4. Auto-manage** | `auto` + open=false | Closes and rolls are automatic; new entries still need approval | 4 weeks clean |
-| **5a. Auto-open (core)** | `auto` | Covered calls, short puts, spreads, condors fully automatic within the limits | 8 weeks clean; start with 25% of the risk limits, then raise them step by step |
-| **5b. Auto-open (naked calls)** | `auto` | Naked calls, with their own 4-week paper + approval period | Explicit user sign-off |
-
-Rolling back to an earlier stage is always allowed and takes effect on the next cycle.
+| **0. Backtest** | offline | Full strategy + risk gate on historical chains (2018–present, including Feb 2018, 2020, 2022, Aug 2024) | **Walk-forward**: parameters tuned on one period and tested on a later one. Out-of-sample: overlay Sortino > 1.0; options-book max drawdown < 8% NLV; **0 EL floor breaches**; 0 unhandled assignments; overlay + stocks beats buy-and-hold on a risk-adjusted basis |
+| **1. Paper** | `paper` | Everything, on a fully invested paper account | 4 weeks; 0 reconcile mismatches; every halt and guard path triggered on purpose |
+| **2. Shadow** | `shadow` | Live account, read-only API; intents logged, nothing sent | 2 weeks; ≥ 90% of intents judged "would have done this" |
+| **3. Approve** | `approve` | Live orders, each approved by you (10-min expiry). Margin restoration and guard rolls **within 1 DTE** are automatic | 4 weeks; slippage within target |
+| **4. Auto-manage** | `auto`, open = approval | Closes, rolls and the hedge are automatic | 4 weeks clean |
+| **5. Auto-open** | `auto` | Everything automatic, starting at **25% of the risk budget**, +25% per clean month | 8 weeks clean at 100% |
 
 ---
 
 ## 12. Testing
 
-- **Unit:** risk gate (each limit, each boundary), strategy selection (strike/delta/DTE picking), pricing ladder, idempotency key generation, coverage counting.
-- **Property tests:** the gate never approves an opening trade that would breach a limit, across random portfolios.
-- **Integration:** `FakeAdapter` scenarios: partial fills, rejects, disconnect mid-order, assignment, half-filled roll attempts, gateway restart, stale quotes.
-- **Paper smoke test:** a scripted daily run against the IB paper account (`scripts/test_paper_trading.py`).
-- **Existing tests** in `scripts/` keep passing; `RiskAnalyzer` changes are covered by new cases.
+- **Unit:** every risk limit and boundary; stress and budget math against hand-checked fixtures; scanner EV and score; guard triggers; roll builder; pricing ladder; fees and interest.
+- **Property:** the gate never approves an opening that breaches any limit; restoration never closes the hedge or stock.
+- **Integration (FakeAdapter):** partial fills, rejects, disconnects mid-order, single-stock assignment, half-filled roll attempts, gateway restart, stale quotes, VIX spike sequences.
+- **Paper smoke test:** a scripted daily run.
+- Existing `scripts/` tests keep passing.
 
 ---
 
 ## 13. Implementation Plan
 
-| Milestone | Deliverables | Est. |
-|---|---|---|
-| M1 Broker foundation (R6) | `ib_adapter` (read-only), `fake_adapter`, live `portfolio_state`, account-summary streaming, reconciliation, journal | 2 wks |
-| M2 Risk gate + margin floor (R1, R5) | All §6 checks, $100k EL floor monitor and restoration, stress test, halt persistence, tests | 2 wks |
-| M3 Management + fees (R2, R5) | Position Manager over existing flags, `risk.py` upgrades, fee model, hold-to-expiry logic, order manager with pricing ladder | 2 wks |
-| M3b Assignment Guard (R7) | Roll triggers, roll builder, roll chains, assignment handling (§5.11) | 1 wk |
-| M4 Entries (R3, R4) | Opportunity Scanner and Tracker, covered calls + short puts first, then spreads + condors | 2 wks |
-| M5 UI + alerts | Bot Status, Pending Approvals, Order Log, config editor, notifier | 1 wk |
-| M6 Backtest harness | Historical chain replay through FakeAdapter | 2 wks |
-| M7 Naked module | Naked put/call rules, extra stress checks | 1 wk |
-
-Stage 1 (paper) can start after M1–M5.
+See [AUTO_TRADING_PLAN.md](AUTO_TRADING_PLAN.md) (one PR per task).
 
 ---
 
 ## 14. Open Questions
 
-1. **Historical options data source** for Stage 0: options chain history is not free (candidates: ORATS, CBOE DataShop, Polygon). Budget?
-2. **Margin type:** is the account on Portfolio Margin or Reg-T? This changes how much naked exposure the limits allow.
-3. ~~Wheel vs. stop~~ **Resolved (R7):** no assignment; roll, otherwise close.
-4. **Legacy positions:** should the bot manage the existing ~500 positions, or only positions it opens?
-5. **Hosting:** run on a home machine or a cloud VM? IB Gateway needs a stable host and 2FA handling.
-6. **Notifications:** which channel (email, Telegram, Pushover, SMS)?
-7. **Approval UX in Stage 3:** web UI only, or approve from a phone notification?
-8. ~~R1 definition~~ **Resolved:** the floor is **Excess Liquidity ≥ $100k**.
-9. ~~R5 scope~~ **Resolved:** margin restoration **may close any position**, including manual and legacy ones.
-10. **Premium cash (R8):** collected premium arrives as cash. Should the bot leave it for you to invest, or (a later feature) buy a configured ETF with it?
+1. **Historical options data** for Stage 0 (IB doesn't serve expired option chains): ORATS, CBOE DataShop, or Polygon. Budget?
+2. **Margin type:** Portfolio Margin or Reg-T? This strongly affects how much put notional the limits allow.
+3. ~~Wheel vs. stop~~ Resolved: no assignment.
+4. **Legacy positions:** opt the existing ~500 positions into management, or only bot-opened ones?
+5. **Hosting:** cloud VM (recommended) or home machine?
+6. **Notifications:** which channel?
+7. **Approval UX:** web only, or approve from a phone notification?
+8. ~~R1 definition~~ Resolved: EL ≥ $100k.
+9. ~~R5 scope~~ Resolved: restoration may close any option.
+10. **Premium cash:** leave it, or later auto-invest it into a configured ETF?
+11. **Tax:** confirm Section 1256 treatment of XSP/SPXW for your situation with a tax advisor.
+12. **Covered-call coverage:** is 50% of each holding acceptable, or do you prefer full coverage (more income, less upside)?
 
 ---
 
 ## 15. Deployment: How the Bot Runs
 
-The bot is a long-running program on an **always-on machine**. It does not
-run inside a chat session; those are temporary.
-
-```
- Always-on host (home mini-PC or small cloud VM, US-East)
- ┌──────────────────────────────────────────────────────────┐
- │ docker compose                                           │
- │  ┌──────────────┐   API (localhost)   ┌────────────────┐ │
- │  │ IB Gateway   │◀───────────────────▶│ trading-engine │ │
- │  │ + IBC        │                     │ python -m      │ │
- │  │ (auto login, │                     │ src.trading.run│ │
- │  │  daily       │                     └───────┬────────┘ │
- │  │  restart)    │                             │ SQLite   │
- │  └──────────────┘                     ┌───────▼────────┐ │
- │                                       │ web-ui (Flask) │─┼──▶ phone / browser
- │                                       └────────────────┘ │    (VPN / Tailscale only)
- └──────────────────────────────────────────────────────────┘
-```
+An always-on host running `docker compose` with three services: `ib-gateway`
+(IBC), `trading-engine`, `web-ui`, all with `restart: unless-stopped`.
 
 | Item | Choice |
 |---|---|
-| Host | Option A: home mini-PC or always-on desktop (free; depends on home power/internet). Option B: small cloud VM (2 vCPU / 4 GB, about $10–20/mo) in US-East, close to IB's servers. Recommended: **B**, because a home outage during a margin breach is the scenario R1 exists for. |
-| Packaging | `docker-compose.yml` with three services: `ib-gateway` (community image with IBC), `trading-engine`, `web-ui`. `restart: unless-stopped` on all three. |
-| Secrets | IB username/password in a Docker secret or `.env` on the host only; never in git. |
-| Access | The web UI is **not exposed to the internet**. Reach it through Tailscale/WireGuard. Alerts go out via the notifier (push/email). |
-| Login / 2FA | IBC handles daily restarts. IB requires a full re-login with 2FA about once a week; the bot alerts you to approve it on IB Key. While logged out it can't trade or monitor margin, so this alert is high priority. |
-| Health | A watchdog pings the engine every minute. If the engine is down during market hours, it alerts you (a dead bot can't enforce the $100k floor). Optionally also set an IB-side margin alert in TWS as an independent backup. |
-| Updates | Deploy only outside market hours. The engine reconciles on startup (§7.4) before doing anything. |
-| Backups | Nightly copy of `journal.db` and config. |
+| Host | Recommended: a small cloud VM in US-East (~$10–20/mo). Alternative: a home mini-PC. |
+| Secrets | `.env` / Docker secrets on the host only. |
+| Access | Web UI only over Tailscale/WireGuard; never exposed publicly. |
+| Login | IBC handles daily restarts; weekly 2FA via IB Key, with a high-priority alert when it's needed. |
+| Health | A watchdog alerts if the engine is down in market hours. Also set an IB-side margin alert as an independent backup. |
+| Updates | Deploy outside market hours only; the engine reconciles on start. |
+| Backups | Nightly copy of the journal and config. |
 
 ## 16. Role of an LLM
 
-**The bot does not need an LLM, and no LLM is in the trading path.** Every
-decision (scan, entry, exit, margin restoration) is a deterministic rule
-in this spec, for these reasons:
-
-- **Predictable:** the same inputs always give the same decision, and they can be backtested.
-- **Auditable:** every order traces to a rule and its numbers (§9.2).
-- **Reliable:** no dependence on an external API being up, fast, or consistent during a margin breach.
-- **Free to run:** no per-decision cost.
-
-Optional LLM uses later, all **advisory and outside the order path** (an
-LLM can never create, approve or send an order):
-
-| Use | How |
-|---|---|
-| Daily / weekly report in plain language | Reads the journal, explains what the bot did and why, and highlights anomalies. |
-| News and event check | Before an entry, summarizes headlines for the underlying. It can only **veto** (skip) a trade, never add one. |
-| Config assistant | "Raise the covered-call delta cap to 0.25" → proposes a config diff that a human applies. |
-| Post-mortems | Explains a losing trade or a halt from the journal data. |
-
-If any of these are added, they run as a separate service that reads the
-journal. Turning them off changes no trading behavior.
+No LLM is in the trading path. Every decision is a deterministic rule, so it's
+predictable, auditable, backtestable, and works during an outage. Optional
+later uses are advisory only (an LLM can never create, approve, or send an
+order): plain-language daily reports, a news check that can only **veto** an
+entry, a config assistant that proposes changes for a human to apply, and post-mortems.
 
 ## 17. Risk Disclosure
 
-Selling options, especially naked calls, can lose more than the premium
-collected, and naked call losses are theoretically unlimited. Gaps
-(earnings, overnight news) bypass stop-losses, because stops only act when
-the market is open and liquid. Automation adds its own risks: software bugs,
-bad data, and broker outages. The limits, stress tests, and staged rollout
-reduce these risks; they do not remove them. The user stays responsible for
-every trade the system places.
+Selling options can lose far more than the premium collected. Gaps (earnings,
+overnight news) skip past stops and guards, because they act only when the
+market is open and liquid. A fully invested account selling puts takes a
+double hit in a crash. The risk budget, stress tests, tail hedge, and staged
+rollout reduce these risks; they don't remove them. Backtest results are not
+a guarantee. Software bugs, bad data, and broker outages are additional risks.
+The account owner remains responsible for every trade the system places.
