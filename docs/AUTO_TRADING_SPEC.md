@@ -3,7 +3,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft v0.1 |
+| **Status** | Draft v0.2 (user requirements R1–R6 incorporated) |
 | **Date** | 2026-11-21 |
 | **Broker** | Interactive Brokers (TWS / IB Gateway API) |
 | **Scope** | Manage existing positions **and** open new ones |
@@ -31,6 +31,24 @@ This spec adds a trading engine that:
 The guiding principle: **a component that reduces risk (closing) gets autonomy
 before a component that adds risk (opening). Undefined-risk trades (naked
 calls) come last.**
+
+### 1.1 User requirements (v0.2)
+
+These come directly from the account owner. Where they conflict with defaults elsewhere in this document, **they win**.
+
+| # | Requirement | Where it is implemented |
+|---|---|---|
+| **R1** | Keep a margin cushion of **at least $100,000 at all times** to minimize risk. | §6.1 (pre-trade floor), §6.5 (continuous monitor and automatic de-risking) |
+| **R2** | **Minimize transactions** to cut fees. | §5.8 (fee-aware rules), §7.5 (fee model); exits and rolls in §5 are fee-gated |
+| **R3** | Always look for **covered calls with high premium and low delta**, and for **puts to sell**. | §5.9 (Opportunity Scanner and ranking) |
+| **R4** | **Track** options to find the right moment to sell. | §5.10 (Opportunity Tracker for entries; Decay Tracker for open positions) |
+| **R5** | When margin requirements are not met, or the bot judges a position should be closed, **close it automatically**. | §6.5 (margin restoration), §5.7 (close decisions), §11 (closing is automatic from Stage 4; margin-restoration closes are automatic from Stage 3) |
+| **R6** | **Connect to the Interactive Brokers account through its API.** | §4.3 (connection spec), M1 in §13 |
+
+**Definition used for R1:** "margin" = IB **Excess Liquidity** (`ExcessLiquidity`
+account tag = equity with loan value − maintenance margin). That's the cushion
+IB uses before it starts liquidating positions. The floor is **$100,000**; see
+open question 8 to confirm this interpretation.
 
 ---
 
@@ -136,6 +154,21 @@ Use **`ib_async`** (the maintained successor of `ib_insync`). Keep all IB types
 inside the adapter. The rest of the system works with internal dataclasses, so
 the broker can be swapped or faked.
 
+### 4.3 IB API connection (R6)
+
+| Item | Spec |
+|---|---|
+| Endpoint | IB Gateway (preferred; lighter than TWS) on `127.0.0.1`. Ports: live 4001, paper 4002 (TWS: 7496 / 7497). |
+| Process supervision | IBC to log in, handle the daily restart, and restart the Gateway after a crash. 2FA via IB Key on the owner's phone once a week (IB's re-auth cadence). |
+| Client IDs | `1` = trading engine (the only one that places orders), `2` = web UI (read-only), `3+` = scripts. |
+| Read-only first | In API settings, "Read-Only API" stays **on** through Stages 0–2; it is turned off only when entering Stage 3. This is a broker-side guarantee that early stages can't place orders. |
+| Data pulled | `reqPositions`, `reqAccountSummary` (tags `NetLiquidation`, `ExcessLiquidity`, `MaintMarginReq`, `InitMarginReq`, `AvailableFunds`, `BuyingPower`, `Cushion`), `reqPnL`, `reqSecDefOptParams` (chains), `reqMktData` with generic ticks 100/101/104/106 (option volume, OI, historical and implied vol), `reqExecutions`, `reqHistoricalData` for IV rank. |
+| Pre-trade margin | `whatIfOrder` for every opening order and every roll, giving the post-trade `ExcessLiquidity` used by the R1 check. |
+| Market data type | Live (type 1). If only delayed data is available, the bot runs read-only and refuses to place orders. |
+| Reconnect | Exponential backoff 1s → 60s. On reconnect: reload positions, open orders and executions, then reconcile (§7.4) before acting. |
+| Pacing | Respect IB's limit of 50 messages/s and its market data line limit (100 by default). The scanner (§5.9) streams quotes in batches and uses snapshots for wide scans. |
+| Replacing CSV | Live positions feed the existing `Portfolio` model. CSV upload stays available for history (trades, dividends) and as a fallback. |
+
 ---
 
 ## 5. Strategy Rules
@@ -160,30 +193,30 @@ Applied before any strategy-specific rule:
 | Market regime | No new entries if VIX > 35 or SPY is down > 3% intraday (configurable) |
 
 ### 5.2 Cash-Secured Put (CSP)
-- **Entry:** Sell 1 put at 30–45 DTE, delta 0.20–0.30, on an underlying the user marked "willing to own."
+- **Entry:** Sell puts at 30–45 DTE, delta 0.15–0.25, on an underlying the user marked "willing to own." The best candidates come from the scanner ranking (§5.9).
 - **Collateral:** Cash reserved = strike × 100 × qty. The bot tracks this in its own ledger; it does not rely on IB's margin view alone.
-- **Exit:** Buy to close at **50% of max profit** (existing `profit_target_percentage`), or at 21 DTE, whichever comes first.
+- **Exit:** By default **hold to expiration** (R2). Close early only under the fee-aware rules in §5.8, the defend rule below, or margin restoration (§6.5).
 - **Defend:** If delta > 0.50 and DTE > 7, **roll** out (same strike or lower) for a net credit. If no credit roll exists, either accept assignment (wheel mode) or close at the 2× credit stop-loss (non-wheel mode).
 - **Assignment:** In wheel mode, assignment hands the shares to the Covered Call strategy.
 
 ### 5.3 Covered Call
-- **Entry:** For each 100 shares held (existing stock positions), sell 1 call at 30–45 DTE, delta 0.20–0.30, strike ≥ cost basis (configurable).
+- **Entry:** For each 100 uncovered shares held, sell 1 call at 21–45 DTE, **delta ≤ 0.20 (target 0.10–0.20)**, strike ≥ cost basis (configurable), choosing the strike/expiry with the best premium score (§5.9). The R3 goal is **high premium at low delta**, so the bot waits (§5.10) for elevated IV rather than selling a low-delta call for little premium.
 - **Coverage:** Never sell more calls than `floor(shares / 100)`. This uses the same coverage logic the margin code uses (commit `2eb3ff0`).
-- **Exit:** Close at 50% profit or 21 DTE.
+- **Exit:** Hold to expiration by default (R2). Close early only under §5.8 or the defend rule.
 - **Defend:** If ITM and an ex-dividend date is before expiration with extrinsic < dividend, roll or close before ex-div (early assignment risk). Otherwise roll up and out for a credit, or allow the shares to be called away (configurable per symbol).
 
 ### 5.4 Credit Spreads (bull put / bear call)
 - **Entry:** Short leg delta 0.20–0.30, 30–45 DTE, width $5 (or per-symbol), credit ≥ **1/3 of width**.
 - **Order:** Always one **combo (BAG) order** for both legs. Never leg in.
-- **Exit:** Close at 50% of max profit, or at 21 DTE.
+- **Exit:** Hold to expiration unless §5.8 favors an early close. Spreads close before expiration when pin risk applies (below).
 - **Stop:** Close if the spread's value reaches 2× the credit received.
 - **Expiration:** Close any spread with the short leg within 1% of the money by 15:00 ET on expiration day (pin risk).
 
 ### 5.5 Iron Condor
 - **Entry:** Short put and short call at delta ~0.16, 30–45 DTE, equal widths, total credit ≥ 1/3 of width.
 - **Order:** One 4-leg combo order.
-- **Exit:** Close the whole condor at 50% profit or 21 DTE.
-- **Defend:** When one side's short delta > 0.35, roll the untested side closer for extra credit (max one adjustment), or close the whole position at the 2× credit stop.
+- **Exit:** Hold to expiration unless §5.8 favors an early close.
+- **Defend:** No adjustments (R2). Close the whole position at the 2× credit stop.
 
 ### 5.6 Naked Short Options
 Undefined risk. These are gated hardest and enabled last (Stage 5b).
@@ -199,7 +232,7 @@ On every cycle, each open position runs through `RiskAnalyzer.analyze_position`
 
 | Existing flag | Default action |
 |---|---|
-| `PROFIT_TARGET_REACHED` | Close |
+| `PROFIT_TARGET_REACHED` | Close **only if** the fee-aware test in §5.8 says closing beats holding; otherwise hold to expiration |
 | `EXPIRING_SOON` (≤ 7 DTE) | Close or roll, by strategy rule |
 | `HIGH_DELTA_SHORT_CALL` | Roll or close |
 | `ITM_OPTION` (≤ 7 DTE) | Roll, close, or accept assignment (wheel) |
@@ -212,6 +245,87 @@ Required changes to `risk.py`:
 
 Positions the bot did not open (legacy or manual) are **managed only if the
 user opts them in**. By default they are monitored and alerted, not traded.
+**Exception (R1/R5):** margin restoration (§6.5) may close any position in the
+account, because the $100k floor applies to the whole account.
+
+### 5.8 Fee-aware trading (R2)
+
+The goal is fewer, larger, higher-quality trades. Each order costs about
+**$0.65/contract plus exchange and regulatory fees** under IBKR Pro tiered
+pricing (verify against the account's own commission schedule), plus the
+bid-ask spread paid on entry and exit. Expiration and assignment are
+commission-free.
+
+| Rule | Default |
+|---|---|
+| **Hold to expiration** is the default exit. Letting an OTM option expire costs $0. | on |
+| Close early for profit only if: remaining premium ≥ **$0.10/contract** **and** ≥ 80% of max profit is captured **and** ≥ 10 DTE remain (so the freed margin can be re-used for a new sale) | `early_close` |
+| **Never buy back** a short option with mid ≤ $0.05 unless it's needed for margin restoration, pin risk, or an ex-dividend assignment risk | on |
+| Minimum **net credit per contract** after round-trip fees for new trades | $50 (≥ $0.50 premium) |
+| Minimum annualized return on margin, after fees, for new trades | 12% |
+| Prefer **monthly** (30–45 DTE) over weekly expirations: about 4× fewer trades for similar premium | on |
+| Rolls only as **one combo order** (one commission event, one spread crossing) and only for a **net credit** that covers the extra fees | on |
+| No adjustments on iron condors (closing beats adjusting after fees) | `max_adjustments: 0` |
+| Size up instead of spreading out: fewer underlyings, more contracts, within the per-underlying cap | on |
+| Max new opening orders per day | 5 |
+| Margin restoration (§6.5) closes the **fewest positions** that restore the floor | on |
+
+Every intent carries an **estimated fee** and an **expected net P&L**. The
+journal records the actual commissions from IB execution reports, so the
+dashboard can show fees as a percentage of premium collected (target < 3%).
+
+### 5.9 Opportunity Scanner (R3)
+
+Runs continuously during market hours (§8). It has two queues that always run:
+
+1. **Covered calls:** every holding with ≥ 100 uncovered shares.
+2. **Put sales:** every watchlist name marked `willing_to_own` (CSP), plus allowlisted names for naked puts once they are enabled (Stage 5b).
+
+For each candidate (underlying × expiry 21–45 DTE × strike within the delta
+band), compute:
+
+```
+premium_yield   = mid / capital_at_risk × 365 / DTE
+                  (capital_at_risk = strike × 100 for CSP;
+                   share value for covered calls;
+                   whatIf margin for naked puts)
+prob_otm        ≈ 1 − |delta|
+edge            = IV − realized_vol_20d            (selling rich volatility)
+score           = premium_yield × prob_otm
+                  × (1 + 0.5 × clamp(IV_rank/100, 0, 1))
+                  × liquidity_factor                 (spread and OI penalty)
+                  − fee_drag                         (round-trip fees / capital)
+```
+
+- **Hard filters:** delta ≤ 0.20 for covered calls, ≤ 0.25 for CSPs; net credit ≥ $50/contract; the common filters in §5.1.
+- **Output:** a ranked list per underlying (best strike/expiry) shown on a new **Opportunities** page, and fed to the Risk Gate as intents when the tracker (§5.10) says the timing is right.
+- **R3 metric:** "high premium" means `premium_yield ≥ 15%` annualized for covered calls and `≥ 20%` for puts (configurable).
+
+### 5.10 Tracking: when to sell (R4)
+
+**Opportunity Tracker (entries).** Every scanner result is stored with a
+timestamp, so the bot sees how premium for the same delta changes over the
+day and over weeks. It fires a sell when the **timing score** is high, rather
+than at the first acceptable quote:
+
+| Signal | Covered calls | Puts |
+|---|---|---|
+| IV rank ≥ 50, or IV percentile in the top third of its 30-day range | ✓ | ✓ |
+| Underlying move | after an up move (≥ +1 ATR over 1–3 days, or near a 20-day high): call premium is richer | after a down move (≤ −1 ATR, or near support): put premium is richer |
+| Score vs. its own 20-day history | top quartile | top quartile |
+| IV spike before earnings | sell only if the expiry is **after** the IV crush or the earnings rule allows it | same |
+| Time decay | sell at 30–45 DTE, where theta per day of margin is efficient | same |
+
+If no signal fires for a holding, the bot keeps waiting. When 21 DTE has
+passed with no sale in the current monthly cycle, it accepts the best
+available score that still meets the hard filters. That way shares aren't
+left uncovered for long.
+
+**Decay Tracker (open positions).** For each open short option, track
+captured premium over time against the theoretical theta curve, plus delta
+and extrinsic value. This feeds §5.8: it detects when the remaining premium
+is too small to be worth holding the margin, and when a roll is worth it. It
+also shows each position's "sell-by" signals on the positions page.
 
 ---
 
@@ -225,13 +339,15 @@ can be unit-tested exhaustively.
 
 | Limit | Default |
 |---|---|
+| **Excess Liquidity after the trade ≥ $100,000 + $25,000 entry buffer (R1)** (IB `whatIfOrder` result). The buffer keeps a new trade from immediately triggering §6.5. | $125,000 |
+| **Excess Liquidity under the §6.2 −8% stress scenario** | ≥ $100,000 |
 | Max margin utilization after the trade (IB `whatIfOrder` result) | 50% of NAV |
 | Min excess liquidity after the trade | 30% of NAV |
 | Max allocation per underlying (notional at risk) | 10% of NAV |
 | Max allocation per sector | 30% of NAV |
 | Max portfolio beta-weighted delta (SPY-equivalent shares) | ±0.5 × NAV / SPY price |
 | Max short vega | configurable $ per 1 IV point |
-| Max new positions per day | 10 |
+| Max new positions per day | 5 (R2) |
 | Max contracts per order | 10 |
 | Max loss per defined-risk trade | 2% of NAV |
 | Cash reserved for CSPs | ≤ available cash |
@@ -272,6 +388,34 @@ repricing.
 Halt states persist in the journal. A restart **does not** clear a halt;
 only a human can.
 
+### 6.5 Margin floor monitor and automatic restoration (R1, R5)
+
+Runs **every 60 seconds** during market hours (its own loop, independent of
+the 5-minute management cycle), using streamed `ExcessLiquidity`.
+
+| Excess Liquidity | State | Action |
+|---|---|---|
+| ≥ $125,000 | Normal | — |
+| $100,000 – $125,000 | **Warning** | No new opening trades. Alert. |
+| < $100,000 | **Breach** | Stop all opening. Within 2 minutes, start **automatic closing** until EL ≥ $110,000 (hysteresis, so one small move doesn't cause repeated closes). |
+| < $50,000 or IB `Cushion` < 5% | **Emergency** | Same as breach but price aggressively (up to the natural price) and alert by every channel. Getting out matters more than slippage. |
+
+**Which positions to close (fewest transactions, R2):**
+1. Compute, for each short position, the margin freed by closing it (`whatIfOrder` on the closing order) and the cost to close (debit plus fees plus slippage).
+2. First close positions that are also flagged for closing (ITM, high delta, loss stop), since they're high risk anyway.
+3. Then rank the rest by **margin freed ÷ cost to close**, which picks the cheapest margin to release. Take the smallest set whose combined margin release reaches the target.
+4. Prefer closing whole positions over partial ones (one order instead of several).
+5. Don't close covered calls (they free no margin) unless required to sell the underlying shares.
+6. Re-check EL after each fill. Stop as soon as the target is reached.
+
+**Out-of-hours breach:** if EL drops below the floor while the market is
+closed (e.g. a pre-market gap), the bot alerts immediately and runs
+restoration at 09:31 ET, after the open, without waiting for the 09:45 window.
+
+**Autonomy:** margin-restoration closes are risk-reducing, so they run
+automatically from **Stage 3** onward. They skip per-order approval, but every
+close is notified, and the user can disable this with `margin_restore.auto: false`.
+
 ---
 
 ## 7. Order Management
@@ -296,6 +440,13 @@ Every cycle, compare the bot's expected positions (from the journal) to IB
 positions. Any unexplained difference halts trading (§6.4) until a human
 acknowledges it. Positions opened manually in TWS appear as "unmanaged."
 
+
+### 7.5 Fee model (R2)
+`fees.py` estimates commission plus exchange, ORF, OCC and FINRA TAF fees per
+order from the account's tier, and gets calibrated against actual
+`commissionReport` values. Every strategy decision uses **net-of-fee**
+numbers, and the dashboard shows monthly fees vs. premium collected.
+
 ---
 
 ## 8. Scheduling
@@ -303,8 +454,9 @@ acknowledges it. Positions opened manually in TWS appear as "unmanaged."
 | Time (ET) | Job |
 |---|---|
 | 09:00 | Pre-market: load calendar (earnings, ex-div, holidays), refresh watchlist data, verify connection and permissions |
+| 09:31 – 16:00, every 60 s | Margin floor monitor (§6.5) |
 | 09:45 – 15:45, every 5 min | Management cycle: all open positions |
-| 10:00, 12:00, 14:00 | Entry scan (all enabled strategies) |
+| 09:45 – 15:45, every 15 min | Opportunity scanner + tracker (§5.9–5.10); orders only when the timing score fires |
 | 15:00 on expiration days | Pin-risk sweep: close near-the-money short legs expiring today |
 | 16:15 | End of day: reconcile, snapshot P&L/Greeks, daily report |
 
@@ -357,14 +509,21 @@ Every change is versioned into the journal.
     "AAPL": {"willing_to_own": true,  "strategies": ["csp", "covered_call", "credit_spread"]},
     "SPY":  {"willing_to_own": false, "strategies": ["iron_condor", "naked_call"]}
   },
-  "entry":  {"dte_min": 30, "dte_max": 45, "delta_min": 0.20, "delta_max": 0.30, "ivr_min": 30},
-  "exit":   {"profit_target_pct": 50, "dte_exit": 21, "stop_multiple": 2.0},
+  "entry":  {"dte_min": 21, "dte_max": 45, "cc_delta_max": 0.20, "put_delta_max": 0.25,
+             "ivr_min": 30, "min_net_credit_per_contract": 50,
+             "cc_min_premium_yield": 0.15, "put_min_premium_yield": 0.20},
+  "exit":   {"hold_to_expiration": true, "early_close_min_captured_pct": 80,
+             "early_close_min_dte": 10, "never_buy_back_below": 0.05, "stop_multiple": 2.0},
+  "margin_floor": {"excess_liquidity_min": 100000, "entry_buffer": 25000,
+                   "restore_target": 110000, "emergency_level": 50000,
+                   "check_interval_s": 60, "auto": true},
+  "fees":   {"per_contract": 0.65, "tier": "ibkr_pro_tiered"},
   "risk": {
     "max_margin_util": 0.50,
     "min_excess_liquidity": 0.30,
     "max_per_underlying": 0.10,
     "max_per_sector": 0.30,
-    "max_trades_per_day": 10,
+    "max_trades_per_day": 5,
     "max_contracts_per_order": 10,
     "daily_loss_halt": 0.03,
     "drawdown_halt": 0.10,
@@ -390,7 +549,7 @@ human promotes the bot to the next stage by editing `mode`; the bot never promot
 | **0. Backtest / replay** | offline | Strategies + risk gate against historical chains (FakeAdapter) | ≥ 2 years of history incl. 2020 and 2022; risk gate never breached; results reviewed |
 | **1. Paper** | `paper` | Full system on the IB paper account, all strategies except naked calls | 4 weeks; 0 reconcile mismatches; 0 unhandled errors; every halt trigger tested on purpose |
 | **2. Shadow live** | `shadow` | Reads the live account, generates intents, **sends nothing**; the user compares them with their own decisions | 2 weeks; ≥ 90% of intents judged "would have done this" |
-| **3. Approve each** | `approve` | Live orders, but each intent waits in **Pending Approvals** (UI and notification), expiring after 10 min | 4 weeks; slippage vs. mid within target; no approved order behaved unexpectedly |
+| **3. Approve each** | `approve` | Live orders, but each intent waits in **Pending Approvals** (UI and notification), expiring after 10 min. **Exception:** margin-floor restoration closes (§6.5) run automatically (R1/R5) | 4 weeks; slippage vs. mid within target; no approved order behaved unexpectedly |
 | **4. Auto-manage** | `auto` + open=false | Closes and rolls are automatic; new entries still need approval | 4 weeks clean |
 | **5a. Auto-open (defined risk)** | `auto` | CSP, covered calls, spreads, condors fully automatic within the limits | 8 weeks clean; start with 25% of the risk limits, then raise them step by step |
 | **5b. Auto-open (naked)** | `auto` | Naked puts first, then naked calls, each with its own 4-week paper + approval period | Explicit user sign-off |
@@ -413,10 +572,10 @@ Rolling back to an earlier stage is always allowed and takes effect on the next 
 
 | Milestone | Deliverables | Est. |
 |---|---|---|
-| M1 Broker foundation | `ib_adapter`, `fake_adapter`, live `portfolio_state`, reconciliation, journal | 2 wks |
-| M2 Risk gate + kill switch | All §6 checks, stress test, halt persistence, tests | 2 wks |
-| M3 Management | Position Manager over existing flags, `risk.py` upgrades, order manager with pricing ladder | 2 wks |
-| M4 Entries | Scanner, CSP + covered call (wheel), then spreads + condors | 2 wks |
+| M1 Broker foundation (R6) | `ib_adapter` (read-only), `fake_adapter`, live `portfolio_state`, account-summary streaming, reconciliation, journal | 2 wks |
+| M2 Risk gate + margin floor (R1, R5) | All §6 checks, $100k EL floor monitor and restoration, stress test, halt persistence, tests | 2 wks |
+| M3 Management + fees (R2, R5) | Position Manager over existing flags, `risk.py` upgrades, fee model, hold-to-expiry logic, order manager with pricing ladder | 2 wks |
+| M4 Entries (R3, R4) | Opportunity Scanner and Tracker, covered calls + CSPs first, then spreads + condors | 2 wks |
 | M5 UI + alerts | Bot Status, Pending Approvals, Order Log, config editor, notifier | 1 wk |
 | M6 Backtest harness | Historical chain replay through FakeAdapter | 2 wks |
 | M7 Naked module | Naked put/call rules, extra stress checks | 1 wk |
@@ -434,6 +593,8 @@ Stage 1 (paper) can start after M1–M5.
 5. **Hosting:** run on a home machine or a cloud VM? IB Gateway needs a stable host and 2FA handling.
 6. **Notifications:** which channel (email, Telegram, Pushover, SMS)?
 7. **Approval UX in Stage 3:** web UI only, or approve from a phone notification?
+8. **R1 definition:** this spec reads "margin ≥ $100k" as **Excess Liquidity ≥ $100k**. Alternatives: Available Funds ≥ $100k (stricter; uses initial margin), or a margin requirement cap (MaintMarginReq ≤ NAV − $100k). Confirm.
+9. **R5 scope:** may margin restoration close positions the bot didn't open (manual and legacy positions)? This spec says **yes**, because the floor protects the whole account.
 
 ---
 
