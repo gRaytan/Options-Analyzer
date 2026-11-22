@@ -50,7 +50,7 @@ Requires **Python 3.12**. The pinned pandas version doesn't support 3.13 yet.
 ```bash
 git clone https://github.com/gRaytan/Options-Analyzer.git
 cd Options-Analyzer
-git checkout auto/T09-chains-quotes      # until the PRs are merged into main
+git checkout main && git pull
 python3.12 -m venv venv
 source venv/bin/activate                  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
