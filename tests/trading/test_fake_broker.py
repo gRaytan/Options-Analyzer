@@ -168,3 +168,20 @@ def test_set_account_publishes_and_what_if_adds_margin(broker):
     assert events[-1].excess_liquidity == 120_000
     impact = run(broker.what_if(sell_put(-1.0)))
     assert impact.maint_margin_after == pytest.approx(300_000 + 0.15 * 550 * 100)
+
+
+def test_resting_order_fills_when_the_quote_reaches_it(broker):
+    state = run(broker.place_order(sell_put(-1.30)))  # above the 1.00 bid: rests
+    assert not state.status.is_done
+    broker.set_quote(quote(PUT, 1.30, 1.40))
+    assert run(broker.positions())[0].quantity == -1
+
+
+def test_quote_source_serves_missing_quotes_and_fills(broker):
+    other = OptionContract("XSP", date(2026, 12, 31), 500, Right.PUT)
+    with pytest.raises(Exception):
+        run(broker.quote(other))
+    broker.set_quote_source(lambda c: quote(c, 0.50, 0.60) if c == other else None)
+    assert run(broker.quote(other)).bid == 0.50
+    req = OrderRequest("o2", (OrderLeg(other, Action.SELL, 1),), -0.50, "o2")
+    assert run(broker.place_order(req)).status is OrderStatus.FILLED

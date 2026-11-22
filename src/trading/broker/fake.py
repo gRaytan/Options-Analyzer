@@ -102,6 +102,17 @@ class FakeAdapter(BrokerAdapter):
             ):
                 self._maybe_fill(state)
 
+    def set_quote_source(self, source) -> None:
+        """Fallback for contracts without a set quote: ``source(contract) -> Quote | None``
+        (e.g. a synthetic market in a backtest, T36)."""
+        self._quote_source = source
+
+    def _quote_for(self, contract) -> Optional[Quote]:
+        q = self._quotes.get(contract.key)
+        if q is None and getattr(self, "_quote_source", None) is not None:
+            q = self._quote_source(contract)
+        return q
+
     def set_account(self, **changes) -> None:
         self._account = replace(self._account, ts=self._clock(), **changes)
         self._publish(EVENT_ACCOUNT, self._account)
@@ -189,10 +200,10 @@ class FakeAdapter(BrokerAdapter):
 
     async def quote(self, contract: Contract) -> Quote:
         self._require_connection()
-        try:
-            return self._quotes[contract.key]
-        except KeyError:
-            raise BrokerError(f"no quote for {contract.key}") from None
+        q = self._quote_for(contract)
+        if q is None:
+            raise BrokerError(f"no quote for {contract.key}")
+        return q
 
     async def option_chain(self, underlying: str) -> List[OptionChain]:
         self._require_connection()
@@ -277,7 +288,7 @@ class FakeAdapter(BrokerAdapter):
     def _natural_price(self, order: OrderRequest) -> Optional[float]:
         total = 0.0
         for leg in order.legs:
-            quote = self._quotes.get(leg.contract.key)
+            quote = self._quote_for(leg.contract)
             if quote is None or quote.bid is None or quote.ask is None:
                 return None
             total += quote.ask if leg.action is Action.BUY else -quote.bid
@@ -300,7 +311,7 @@ class FakeAdapter(BrokerAdapter):
         if len(order.legs) == 1:
             price = abs(net_price)
         else:
-            quote = self._quotes.get(leg.contract.key)
+            quote = self._quote_for(leg.contract)
             price = quote.mid if quote and quote.mid is not None else abs(net_price)
         commission = self.commission_per_contract * quantity
         fill = Fill(
