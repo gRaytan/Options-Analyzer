@@ -65,6 +65,8 @@ class WatchlistEntry(_Strict):
     max_spread_pct: Optional[float] = Field(default=None, gt=0.0, le=1.0)
     fair_value_proxy: Optional[str] = None
     order_step_s: Optional[int] = Field(default=None, gt=0)
+    sector: Optional[str] = None  # for the per-sector cap; ETFs: "index"
+    beta: Optional[float] = Field(default=None, gt=0.0, le=5.0)  # vs. SPY; default 1.0
 
     @field_validator("cc_delta")
     @classmethod
@@ -211,6 +213,9 @@ class RiskConfig(_Strict):
     options_dd_reduce: float = Field(default=0.05, gt=0.0, le=1.0)
     options_dd_halt: float = Field(default=0.08, gt=0.0, le=1.0)
     max_orders_per_day: int = Field(default=5, ge=0)
+    max_contracts_per_order: int = Field(default=10, gt=0)
+    max_contracts_spx: int = Field(default=5, gt=0)
+    max_contracts_xsp: int = Field(default=20, gt=0)
 
     @model_validator(mode="after")
     def _ordering(self):
