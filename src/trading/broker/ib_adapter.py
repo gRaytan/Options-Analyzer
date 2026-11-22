@@ -4,8 +4,9 @@ This is the only module that imports ``ib_async``. Implemented so far:
 
 * T06: connect to IB Gateway / TWS, verify the account, reconnect with backoff.
 * T07: account values (net liquidation, excess liquidity, margin, Cushion).
+* T08: positions (stocks and equity / index options).
 
-Remaining data and order methods arrive in T08–T09, T18 and T22.
+Remaining data and order methods arrive in T09, T18 and T22.
 
 **Account value freshness:** IB pushes account values roughly every
 3 minutes, not in real time. Snapshots carry the time of IB's last update,
@@ -28,7 +29,7 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from typing import Awaitable, Callable, List, Optional
 
 from src.trading.broker.base import (
@@ -38,7 +39,16 @@ from src.trading.broker.base import (
     BrokerDisconnected,
     BrokerError,
 )
-from src.trading.domain import AccountSnapshot, utcnow
+from src.trading.domain import (
+    AccountSnapshot,
+    Contract,
+    ExerciseStyle,
+    OptionContract,
+    Position,
+    Right,
+    StockContract,
+    utcnow,
+)
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +70,39 @@ ACCOUNT_STALE_AFTER_S = 240.0
 
 class AccountDataUnavailable(BrokerError):
     """IB hasn't sent (all) account values yet."""
+
+
+# European-style, cash-settled index option roots (no early assignment).
+EUROPEAN_INDEX_ROOTS = {"SPX", "XSP", "NDX", "XND", "RUT", "MRUT", "VIX", "DJX"}
+
+
+def contract_from_ib(contract) -> Optional[Contract]:
+    """Translate an ``ib_async`` contract to a domain contract.
+
+    Returns ``None`` for instruments the engine doesn't trade (futures,
+    bonds, FX, ...), so callers can report them instead of guessing.
+    """
+    sec_type = getattr(contract, "secType", "")
+    currency = getattr(contract, "currency", "") or "USD"
+    if sec_type == "STK":
+        return StockContract(contract.symbol, currency=currency)
+    if sec_type == "OPT":
+        expiry_raw = contract.lastTradeDateOrContractMonth[:8]
+        expiry = date(int(expiry_raw[:4]), int(expiry_raw[4:6]), int(expiry_raw[6:8]))
+        right = Right.CALL if contract.right.upper().startswith("C") else Right.PUT
+        european = contract.symbol.upper() in EUROPEAN_INDEX_ROOTS
+        return OptionContract(
+            underlying=contract.symbol,
+            expiry=expiry,
+            strike=float(contract.strike),
+            right=right,
+            multiplier=int(float(contract.multiplier or 100)),
+            style=ExerciseStyle.EUROPEAN if european else ExerciseStyle.AMERICAN,
+            cash_settled=european,
+            trading_class=contract.tradingClass or None,
+            currency=currency,
+        )
+    return None
 
 
 class AccountMismatch(BrokerError):
@@ -141,6 +184,7 @@ class IBAdapter(BrokerAdapter):
         self._closing = False
         self._reconnect_task: Optional[asyncio.Task] = None
         self._account_updated_at: Optional[datetime] = None
+        self.unsupported_positions: List[str] = []
         self.ib.disconnectedEvent += self._on_disconnected
         self.ib.accountValueEvent += self._on_account_value
 
@@ -314,8 +358,54 @@ class IBAdapter(BrokerAdapter):
 
     # -- not yet implemented (later plan tasks) ---------------------------------
 
-    async def positions(self):
-        raise NotImplementedError("plan T08")
+    # -- positions (T08) --------------------------------------------------------
+
+    async def positions(self) -> List[Position]:
+        """Current positions with IB's market prices.
+
+        Uses IB's portfolio items (they include a market price, refreshed
+        with the account values about every 3 minutes). Falls back to the
+        plain position list, without prices, if portfolio data hasn't arrived.
+        Instruments the engine doesn't trade are listed in
+        ``unsupported_positions`` and left out.
+        """
+        if not self.is_connected:
+            raise BrokerDisconnected("not connected to IB")
+        items = [
+            i
+            for i in self.ib.portfolio(self.account_id)
+            if i.account == self.account_id
+        ]
+        if items:
+            rows = [
+                (i.contract, i.position, i.averageCost, i.marketPrice) for i in items
+            ]
+        else:
+            rows = [
+                (p.contract, p.position, p.avgCost, None)
+                for p in self.ib.positions(self.account_id)
+                if p.account == self.account_id
+            ]
+        result: List[Position] = []
+        unsupported: List[str] = []
+        for ib_contract, quantity, avg_cost, market_price in rows:
+            if not quantity:
+                continue
+            contract = contract_from_ib(ib_contract)
+            if contract is None:
+                unsupported.append(
+                    f"{getattr(ib_contract, 'secType', '?')} "
+                    f"{getattr(ib_contract, 'localSymbol', '') or ib_contract.symbol}"
+                )
+                continue
+            # IB reports option average cost per contract (premium x multiplier).
+            per_unit_cost = float(avg_cost) / contract.multiplier
+            price = None
+            if market_price is not None and market_price == market_price:  # not NaN
+                price = float(market_price)
+            result.append(Position(contract, float(quantity), per_unit_cost, price))
+        self.unsupported_positions = unsupported
+        return result
 
     async def quote(self, contract):
         raise NotImplementedError("plan T09")

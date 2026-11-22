@@ -192,6 +192,7 @@ class Position:
     contract: Contract
     quantity: float  # negative = short
     avg_cost: float  # per share / per option (not multiplied)
+    market_price: Optional[float] = None  # per share / per option, when known
 
     @property
     def is_short(self) -> bool:
