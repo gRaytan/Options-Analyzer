@@ -25,6 +25,7 @@ from src.trading.notifier import Notifier
 from src.trading.reconcile import expected_from_journal, reconcile, result_to_dict
 from src.trading.risk.budget import BudgetTracker
 from src.trading import guard as assignment_guard
+from src.trading import rolls
 from src.trading.calendars import EventCalendar
 from src.trading.domain import OptionContract
 from src.trading.status import write_heartbeat
@@ -276,7 +277,9 @@ async def _cycle(
             "unmanaged": len(result.unmanaged),
         }
         if config is not None:
-            await _check_guard(adapter, positions, config, events, notifier)
+            await _check_guard(
+                adapter, positions, config, events, notifier, journal, snap
+            )
         if budget is not None:
             used = await budget.update(adapter, positions, snap)
             if used and used["over_budget"]:
@@ -309,8 +312,12 @@ GUARD_ALERT_LEVEL = {
 }
 
 
-async def _check_guard(adapter, positions, config, events, notifier) -> None:
-    """Assignment & Event Guard (T28a): detect roll triggers; alert only for now."""
+async def _check_guard(
+    adapter, positions, config, events, notifier, journal=None, snap=None
+) -> None:
+    """Assignment & Event Guard: detect roll triggers (T28a) and plan rolls (T28b).
+
+    Alert-only until mode gating (T28) sends the orders."""
     global _last_guard  # pylint: disable=global-statement
     shorts = [
         p
@@ -326,12 +333,17 @@ async def _check_guard(adapter, positions, config, events, notifier) -> None:
             }
         except BrokerError as exc:
             log.warning("guard: no quotes (%s)", exc)
-    signals = assignment_guard.scan(shorts, quotes, utcnow().date(), config, events)
-    _last_guard = [s.to_dict() for s in signals]
+    today = utcnow().date()
+    signals = assignment_guard.scan(shorts, quotes, today, config, events)
+    plans = await _plan_rolls(
+        adapter, shorts, signals, config, events, journal, snap, today
+    )
+    _last_guard = [{**s.to_dict(), "plan": plans.get(s.key, "")} for s in signals]
     for sig in signals:
         log.warning(
             "GUARD %s %s: %s %s", sig.trigger, sig.key, sig.detail, sig.deadline
         )
+        plan_text = plans.get(sig.key, "")
         _alert(
             notifier,
             GUARD_ALERT_LEVEL[sig.severity],
@@ -339,8 +351,33 @@ async def _check_guard(adapter, positions, config, events, notifier) -> None:
             f"Roll needed: {sig.key}",
             f"{sig.trigger.replace('_', ' ')}: {sig.detail}"
             + (f". Act: {sig.deadline}" if sig.deadline else "")
-            + "\n(Automatic rolling arrives in a later version.)",
+            + (f"\nPlan: {plan_text}" if plan_text else "")
+            + "\n(Orders are sent once mode gating is enabled.)",
         )
+
+
+MAX_ROLL_PLANS_PER_CYCLE = 3  # each plan quotes a chain: keep IB pacing low
+
+
+async def _plan_rolls(adapter, shorts, signals, config, events, journal, snap, today):
+    """Plan a roll (or close) per triggered position (T28b). Not executed yet."""
+    if journal is None or snap is None or not signals:
+        return {}
+    book = rolls.ChainBook(journal)
+    by_key = {p.contract.key: p for p in shorts}
+    plans = {}
+    for sig in signals:
+        if sig.key in plans or len(plans) >= MAX_ROLL_PLANS_PER_CYCLE:
+            continue
+        try:
+            plan = await rolls.roll_for(
+                adapter, by_key[sig.key], snap, config, book, today, sig.trigger, events
+            )
+        except (BrokerError, ValueError) as exc:
+            plans[sig.key] = f"could not plan ({exc})"
+            continue
+        plans[sig.key] = f"{plan.action}: {plan.reason}"
+    return plans
 
 
 MARGIN_ALERT_LEVEL = {

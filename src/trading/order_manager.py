@@ -204,8 +204,15 @@ class OrderManager:
         # Round the cap *up* to the next tick (at most the natural price), so a
         # one-tick-wide market can still trade; costs at most one tick.
         cap = min(math.ceil(max(prices) / tick - 1e-9) * tick, natural)
+        # An intent may set a hard worst price, e.g. a roll that must still
+        # collect a minimum credit: never pay more than that.
+        worst = intent.details.get("worst_price")
+        if worst is not None:
+            cap = min(cap, float(worst))
+            if cap < best - 1e-9:
+                return None  # the market can't meet the intent's worst price
         self._cap = round(cap, 2)
-        return round_to_tick(raw, tick, best, cap)
+        return round_to_tick(min(raw, cap), tick, best, cap)
 
     def _note_failure(self, intent_id: str) -> None:
         n = self.failed_cycles.get(intent_id, 0) + 1
