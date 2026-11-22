@@ -89,6 +89,10 @@ class FakeAdapter(BrokerAdapter):
         self.commission_per_contract = commission_per_contract
         self.what_if_fn = what_if_fn
         self.auto_fill = True
+        # How far from mid toward the natural price a resting order must be to
+        # fill: 1.0 = only at the natural price (default); a backtest uses less
+        # (real orders often fill between mid and natural).
+        self.fill_threshold = 1.0
         self.pnl: Optional[float] = None  # scripted daily P&L
 
     # -- scripting helpers ----------------------------------------------------
@@ -157,6 +161,60 @@ class FakeAdapter(BrokerAdapter):
         return self._set_order(
             replace(state, status=status, filled=filled, avg_price=avg)
         )
+
+    def mark(self, price_of) -> None:
+        """Set every position's market price: ``price_of(contract) -> float | None``."""
+        for key, pos in list(self._positions.items()):
+            px = price_of(pos.contract)
+            if px is not None:
+                self._positions[key] = replace(pos, market_price=px)
+
+    def settle_expired(self, today, close_on) -> list:
+        """Settle options that expired before ``today`` (backtests, T37).
+
+        ``close_on(underlying, expiry) -> float`` is the underlying's close on
+        the expiry day. Cash-settled options pay their intrinsic value; ITM
+        physical options become shares at the strike (short puts / long calls
+        receive shares); OTM options vanish. Returns (key, kind, $ value at
+        expiry: qty x multiplier x intrinsic) per settled option.
+        """
+        events = []
+        for pos in list(self._positions.values()):
+            c = pos.contract
+            if not isinstance(c, OptionContract) or c.expiry >= today:
+                continue
+            und = close_on(c.underlying, c.expiry)
+            if und is None:
+                continue
+            put = c.right.value == "P"
+            intrinsic = max(0.0, (c.strike - und) if put else (und - c.strike))
+            qty = pos.quantity
+            self._apply_position(c, -qty, 0.0)
+            if intrinsic <= 0:
+                events.append((c.key, "expired", 0.0))
+                continue
+            if c.cash_settled:
+                amount = qty * c.multiplier * intrinsic
+                self._adjust_cash(amount)
+                events.append((c.key, "cash_settled", amount))
+            else:
+                shares = abs(qty) * c.multiplier
+                # Short put / long call -> receive shares; short call / long put -> deliver.
+                receive = put == (qty < 0)
+                sign = 1 if receive else -1
+                self._apply_position(
+                    StockContract(c.underlying), sign * shares, c.strike
+                )
+                self._adjust_cash(-sign * shares * c.strike)
+                # The option's value at expiry (now held as shares), for P&L reports.
+                events.append(
+                    (
+                        c.key,
+                        "assigned" if qty < 0 else "exercised",
+                        qty * c.multiplier * intrinsic,
+                    )
+                )
+        return events
 
     def assign(self, option: OptionContract, contracts: int) -> None:
         """Simulate assignment of a short option (spec §5.11)."""
@@ -247,9 +305,14 @@ class FakeAdapter(BrokerAdapter):
             return state
         order = state.order
         natural = self._natural_price(order)
+        mid = self._net_mid(order)
         # Prices are net debits per unit: a credit is negative. An order is
-        # marketable when it is willing to pay at least the natural price.
-        if natural is not None and order.limit_price >= natural - 1e-9:
+        # marketable when it is willing to pay at least the natural price
+        # (or ``fill_threshold`` of the way there from mid).
+        trigger = natural
+        if natural is not None and mid is not None and self.fill_threshold < 1.0:
+            trigger = mid + self.fill_threshold * (natural - mid)
+        if trigger is not None and order.limit_price >= trigger - 1e-9:
             state = self.fill_order(order.order_ref, state.remaining, order.limit_price)
         return state
 
@@ -294,6 +357,15 @@ class FakeAdapter(BrokerAdapter):
             total += quote.ask if leg.action is Action.BUY else -quote.bid
         return total
 
+    def _net_mid(self, order: OrderRequest) -> Optional[float]:
+        total = 0.0
+        for leg in order.legs:
+            quote = self._quote_for(leg.contract)
+            if quote is None or quote.mid is None:
+                return None
+            total += leg.action.sign * quote.mid
+        return total
+
     def _set_order(self, state: OrderState) -> OrderState:
         self._orders[state.order.order_ref] = state
         self._publish(EVENT_ORDER, state)
@@ -307,12 +379,17 @@ class FakeAdapter(BrokerAdapter):
         net_price: float,
         order: OrderRequest,
     ) -> None:
-        # Per-leg price: single legs fill at the net price; combo legs at their quote.
+        # Per-leg price: single legs fill at the net price; combo legs at their
+        # mids, with the first leg absorbing the difference so the legs add up
+        # to the net price actually paid.
         if len(order.legs) == 1:
             price = abs(net_price)
         else:
             quote = self._quote_for(leg.contract)
             price = quote.mid if quote and quote.mid is not None else abs(net_price)
+            mid = self._net_mid(order)
+            if leg is order.legs[0] and mid is not None:
+                price = round(max(0.0, price + (net_price - mid) * leg.action.sign), 4)
         commission = self.commission_per_contract * quantity
         fill = Fill(
             exec_id=f"fake-{next(self._exec_ids)}",

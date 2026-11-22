@@ -271,6 +271,23 @@ def _close(
     return RollPlan("close", reason, intent, chain=chain)
 
 
+def close_instead(plan: RollPlan, reason: str, today: date) -> RollPlan:
+    """Turn a roll plan into a plain close of the old position (same chain)."""
+    old = next(leg for leg in plan.intent.legs if leg.action is Action.BUY)
+    intent = TradeIntent(
+        make_intent_id(STRATEGY, IntentKind.CLOSE, old.contract.key, today),
+        STRATEGY,
+        IntentKind.CLOSE,
+        (old,),
+        "GUARD_CLOSE",
+        utcnow(),
+        True,
+        plan.intent.chain_id,
+        {"reason": reason},
+    )
+    return RollPlan("close", reason, intent, chain=plan.chain)
+
+
 def plan_roll(
     pos: Position,
     old_quote: Quote,
