@@ -100,6 +100,14 @@ class EntryConfig(_Strict):
     ivr_min_index: float = Field(default=25, ge=0, le=100)
     ivr_min_stock: float = Field(default=30, ge=0, le=100)
     min_net_credit_per_contract: float = Field(default=20, ge=0)
+    min_fee_multiple: float = Field(
+        default=5.0, ge=1.0
+    )  # net credit >= 5x round-trip fees
+    cc_strike_above_cost: bool = True  # covered-call strike >= the shares' cost basis
+    max_spread_pct: float = Field(default=0.10, gt=0.0, le=1.0)
+    max_spread_cheap: float = Field(default=0.10, gt=0.0)  # $ cap when mid < $1
+    min_open_interest: int = Field(default=500, ge=0)  # stocks; index uses 100
+    index_scan_root: str = "XSP"  # index puts are scanned on this root
 
     @field_validator("cc_delta", "index_put_delta", "stock_put_delta")
     @classmethod
