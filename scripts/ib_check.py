@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.trading.broker.base import BrokerError  # noqa: E402
 from src.trading.config import load_trading_config  # noqa: E402
+from src.trading.domain import OptionContract  # noqa: E402
 from src.trading.broker.ib_adapter import IBAdapter, IBConnectionSettings  # noqa: E402
 
 
@@ -74,6 +75,22 @@ async def main(args) -> int:
         print(f"  Initial margin:        ${snap.init_margin:,.0f}")
         print(f"  Available funds:       ${snap.available_funds:,.0f}")
         print(f"  Cash:                  ${snap.cash:,.0f}")
+
+    positions = await adapter.positions()
+    options = [p for p in positions if isinstance(p.contract, OptionContract)]
+    stocks = [p for p in positions if not isinstance(p.contract, OptionContract)]
+    print(f"\nPositions: {len(stocks)} stock/ETF, {len(options)} option")
+    for p in sorted(options, key=lambda p: p.contract.expiry)[:15]:
+        price = f"{p.market_price:.2f}" if p.market_price is not None else "n/a"
+        style = "European" if not p.contract.can_be_assigned_early else "American"
+        print(
+            f"  {p.contract.key:<28} qty {p.quantity:>5g}  cost {p.avg_cost:>8.2f}  "
+            f"price {price:>8}  {style}"
+        )
+    if len(options) > 15:
+        print(f"  ... and {len(options) - 15} more")
+    if adapter.unsupported_positions:
+        print(f"  Not handled by the bot: {', '.join(adapter.unsupported_positions)}")
     await adapter.disconnect()
     return 0
 
