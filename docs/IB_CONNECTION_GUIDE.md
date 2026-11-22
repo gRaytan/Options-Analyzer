@@ -50,7 +50,7 @@ Requires **Python 3.12**. The pinned pandas version doesn't support 3.13 yet.
 ```bash
 git clone https://github.com/gRaytan/Options-Analyzer.git
 cd Options-Analyzer
-git checkout auto/T06-ib-connection      # until the PRs are merged into main
+git checkout auto/T07-account            # until the PRs are merged into main
 python3.12 -m venv venv
 source venv/bin/activate                  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
@@ -76,7 +76,19 @@ OK: connected
   Account checked:       DU1234567 (paper)
   Server version:        176
   IB server time:        2026-11-23 15:04:11+00:00
+
+Account
+  Net liquidation:       $1,000,000
+  Excess liquidity:      $450,000   (floor $100,000; new trades need $125,000) OK
+  Cushion:               45.0%   (new trades need 40%) OK
+  Maintenance margin:    $300,000
+  Initial margin:        $380,000
+  Available funds:       $420,000
+  Cash:                  $-5,000
 ```
+
+(Your numbers will differ. If you see `WARNING: no account values received
+yet`, run it again a minute later; IB sends account values shortly after login.)
 
 **If it fails:**
 

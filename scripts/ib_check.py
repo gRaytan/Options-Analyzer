@@ -16,6 +16,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.trading.broker.base import BrokerError  # noqa: E402
+from src.trading.config import load_trading_config  # noqa: E402
 from src.trading.broker.ib_adapter import IBAdapter, IBConnectionSettings  # noqa: E402
 
 
@@ -44,6 +45,35 @@ async def main(args) -> int:
     )
     print(f"  Server version:        {ib.client.serverVersion()}")
     print(f"  IB server time:        {await ib.reqCurrentTimeAsync()}")
+
+    floor = load_trading_config().margin_floor
+    snap = None
+    for _ in range(20):  # account values arrive just after connecting
+        try:
+            snap = await adapter.account_snapshot()
+            break
+        except BrokerError:
+            await asyncio.sleep(0.5)
+    if snap is None:
+        print("WARNING: no account values received yet (try again in a minute)")
+    else:
+        el_ok = snap.excess_liquidity >= floor.entry_min_excess_liquidity
+        cushion_ok = snap.cushion >= floor.cushion_min_new_trade
+        print("\nAccount")
+        print(f"  Net liquidation:       ${snap.net_liquidation:,.0f}")
+        print(
+            f"  Excess liquidity:      ${snap.excess_liquidity:,.0f}   "
+            f"(floor ${floor.excess_liquidity_min:,.0f}; new trades need "
+            f"${floor.entry_min_excess_liquidity:,.0f}) {'OK' if el_ok else 'BELOW'}"
+        )
+        print(
+            f"  Cushion:               {snap.cushion:.1%}   (new trades need "
+            f"{floor.cushion_min_new_trade:.0%}) {'OK' if cushion_ok else 'BELOW'}"
+        )
+        print(f"  Maintenance margin:    ${snap.maint_margin:,.0f}")
+        print(f"  Initial margin:        ${snap.init_margin:,.0f}")
+        print(f"  Available funds:       ${snap.available_funds:,.0f}")
+        print(f"  Cash:                  ${snap.cash:,.0f}")
     await adapter.disconnect()
     return 0
 
