@@ -27,6 +27,13 @@ from src.trading.risk.budget import BudgetTracker
 from src.trading import guard as assignment_guard
 from src.trading import rolls
 from src.trading.assignments import handle_assignment
+from src.trading import margin_restoration
+from src.trading.approvals import ApprovalQueue
+from src.trading.executor import Executor
+from src.trading.mode_policy import connection_read_only, live_allowed
+from src.trading.order_manager import ExecStatus, OrderManager
+from src.trading.position_manager import PositionManager
+from src.trading.broker.ib_adapter import is_paper_account
 from src.trading.calendars import EventCalendar
 from src.trading.domain import OptionContract
 from src.trading.status import write_heartbeat
@@ -77,8 +84,13 @@ async def monitor(
         if not config.account_id:
             log.error("TRADING_ACCOUNT_ID is not set")
             return 2
+        settings = IBConnectionSettings.from_env()
+        is_live = not is_paper_account(config.account_id) or not settings.is_paper_port
         adapter = IBAdapter(
-            config.account_id, IBConnectionSettings.from_env(), read_only=True
+            config.account_id,
+            settings,
+            read_only=connection_read_only(config, is_live),
+            allow_live=live_allowed(config),
         )
     if journal is None:
         journal = Journal(os.environ.get("TRADING_JOURNAL", str(DEFAULT_JOURNAL_PATH)))
@@ -103,6 +115,7 @@ async def monitor(
             pass
 
     budget = BudgetTracker(config, journal)
+    executor = _make_executor(adapter, journal, config, halts, notifier, budget)
 
     # Restore the breach latch, so a restart during a breach stays in breach.
     last_margin = journal.latest("margin_events")
@@ -151,6 +164,7 @@ async def monitor(
                 notifier,
                 events,
                 config,
+                executor,
             )
         except Exception as exc:  # pylint: disable=broad-except
             # Spec §6.4: an unhandled engine error halts opening; keep running.
@@ -226,8 +240,10 @@ async def _cycle(
     notifier=None,
     events=None,
     config=None,
+    executor=None,
 ):
-    """One monitor pass: account and margin, positions, reconciliation, budget."""
+    """One monitor pass: account and margin, positions, reconciliation, budget,
+    then acting on what was found (T28)."""
     snap = None
     try:
         snap = await adapter.account_snapshot()
@@ -315,9 +331,135 @@ async def _cycle(
                     used["budget"],
                     used["regime"],
                 )
+        if executor is not None and config is not None:
+            await _act(executor, journal, config, margin, positions, snap, notifier)
     except BrokerError as exc:
         log.warning("no positions: %s", exc)
     return reconcile_state, last_reconcile
+
+
+def _make_executor(adapter, journal, config, halts, notifier, budget) -> Executor:
+    steps = {s: e.order_step_s for s, e in config.watchlist.items() if e.order_step_s}
+    orders = OrderManager(
+        adapter, journal, step_overrides=steps, allow_live=live_allowed(config)
+    )
+
+    def on_request(data: dict) -> None:
+        _alert(
+            notifier,
+            "warning",
+            f"approval:{data['intent_id']}",
+            "Approval needed",
+            f"{data['summary']}\nApprove or reject on the Approvals page within 10 minutes.",
+        )
+
+    approvals = ApprovalQueue(journal, on_request=on_request)
+
+    def regime_multiplier() -> float:
+        return (
+            budget.last["multiplier"] if budget.last else 0.0
+        )  # unknown = no new risk
+
+    return Executor(
+        adapter,
+        journal,
+        config,
+        halts,
+        orders,
+        approvals,
+        regime_multiplier=regime_multiplier,
+    )
+
+
+def _done(journal, intent_id: str) -> bool:
+    return any(
+        r.data.get("event") == "result"
+        and r.data.get("status") in ("filled", "already_done")
+        for r in journal.read("order_events", key=intent_id)
+    )
+
+
+async def _act(executor, journal, config, margin, positions, snap, notifier) -> None:
+    """Act on this cycle's findings, through the mode policy (T28)."""
+    if snap is None:
+        return
+    today = utcnow().date()
+    shorts = [
+        p
+        for p in positions
+        if isinstance(p.contract, OptionContract) and p.quantity < 0
+    ]
+    try:
+        quotes = await executor.quotes([p.contract for p in shorts]) if shorts else {}
+    except BrokerError as exc:
+        log.warning("act: no quotes (%s)", exc)
+        quotes = {}
+
+    # 1. Margin restoration comes first; during a breach nothing else runs.
+    reading = margin.last
+    if reading is not None and reading.state.value in ("breach", "emergency"):
+        flagged = {g["key"] for g in _last_guard}
+        est = (
+            reading.excess_liquidity
+            if reading.excess_liquidity is not None
+            else snap.excess_liquidity
+        )
+        plan = margin_restoration.plan(positions, quotes, snap, est, config, flagged)
+        if plan.closes:
+            result = await margin_restoration.restore(
+                plan,
+                executor.submit,
+                emergency=reading.state.value == "emergency",
+                today=today,
+            )
+            _alert(
+                notifier,
+                "critical",
+                "restoration",
+                "Margin restoration",
+                f"Need ${plan.need:,.0f} of Excess Liquidity; planned {len(plan.closes)} close(s), "
+                f"filled so far ${result.gained:,.0f}.",
+            )
+        elif plan.need > 0:
+            _alert(
+                notifier,
+                "critical",
+                "restoration-none",
+                "Margin breach: nothing to close",
+                f"Need ${plan.need:,.0f} of Excess Liquidity, but no naked short option can be "
+                "closed to free it. Action needed.",
+            )
+        return
+
+    # 2. Guard rolls and closes planned this cycle (T28b).
+    book = rolls.ChainBook(journal)
+    for plan in list(_last_roll_plans.values()):
+        res = await executor.submit(plan.intent)
+        if res is not None and res.status is ExecStatus.FILLED:
+            if plan.action == "roll":
+                book.record_roll(
+                    plan.chain, plan.candidate.new.key, -(res.avg_price or 0.0)
+                )
+            else:
+                book.record_close(plan.chain, res.avg_price or 0.0)
+
+    # 3. Position manager exits for the bot's own positions (T25).
+    managed = set(expected_from_journal(journal))
+    for decision in PositionManager(config).review(
+        positions, quotes, snap, managed, today
+    ):
+        await executor.submit(decision.intent)
+
+    # 4. Undo pending assignments (T28c).
+    pending = {}
+    for rec in journal.read(
+        "intents"
+    ):  # the order manager journals intents too: dedupe
+        if rec.data.strategy == "assignment_handler":
+            pending[rec.key] = rec.data
+    for intent_id, intent in pending.items():
+        if not _done(journal, intent_id):
+            await executor.submit(intent)
 
 
 _last_guard: list = []
@@ -383,6 +525,7 @@ async def _plan_rolls(adapter, shorts, signals, config, events, journal, snap, t
     book = rolls.ChainBook(journal)
     by_key = {p.contract.key: p for p in shorts}
     plans = {}
+    _last_roll_plans.clear()
     for sig in signals:
         if sig.key in plans or len(plans) >= MAX_ROLL_PLANS_PER_CYCLE:
             continue
@@ -394,7 +537,11 @@ async def _plan_rolls(adapter, shorts, signals, config, events, journal, snap, t
             plans[sig.key] = f"could not plan ({exc})"
             continue
         plans[sig.key] = f"{plan.action}: {plan.reason}"
+        _last_roll_plans[sig.key] = plan
     return plans
+
+
+_last_roll_plans: dict = {}  # key -> RollPlan from this cycle (executed by _act)
 
 
 MARGIN_ALERT_LEVEL = {
