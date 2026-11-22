@@ -125,6 +125,28 @@ The bot also enforces this itself: a live account (`U…`, or a live port) can
 only be opened read-only until the mode-gating task (plan T28) is built and you
 explicitly enable it.
 
+## 7. Backtest data (one time, read-only)
+
+The backtest (plan T36/T37) prices options synthetically from free data,
+so it only needs daily price bars from IB. VIX/VXN come from CBOE.
+
+```bash
+python scripts/backtest_data.py fetch --source ib --account DU1234567
+```
+
+That saves about 18 years of SPY, QQQ, QQQM and SPX daily bars under
+`data/backtest/`.
+
+**Calibration (a few times over the first weeks):**
+1. During market hours, record a live XSP chain:
+   ```bash
+   python scripts/backtest_data.py snapshot --symbol XSP --account DU1234567
+   ```
+2. After the close, compare it with the synthetic prices and send me the output:
+   ```bash
+   python scripts/backtest_data.py compare data/backtest/recorded/XSP_<date>.csv
+   ```
+
 ## Why this session can't connect directly
 
 The cloud session I work in can't reach IB Gateway on your computer, because
