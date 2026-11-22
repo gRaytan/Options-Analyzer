@@ -679,6 +679,19 @@ def create_app(config=None):
                 flash(str(exc), 'danger')
         return redirect(url_for('bot_approvals'))
 
+    @app.route('/bot/opportunities')
+    def bot_opportunities():
+        """Latest scanner results (T30) with timing (T31)."""
+        scan = None
+        if os.path.exists(journal_path()):
+            with Journal(journal_path()) as journal:
+                rec = journal.latest("scan_results")
+                if rec is not None:
+                    scan = {"ts": rec.ts, **rec.data}
+        return render_template('bot_opportunities.html', scan=scan,
+                               portfolios=app.portfolios,
+                               portfolio_filter=session.get('portfolio_filter', 'all'))
+
     @app.route('/api/bot-status')
     def api_bot_status():
         _, status = bot_status()

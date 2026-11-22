@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+
+{% block title %}Opportunities - Options Analyzer{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h4><i class="bi bi-search"></i> Opportunities</h4>
+    <p class="subtitle">What the scanner found in its latest run. "Ready" means the timing is good enough to sell now; the risk gate still decides. Refreshes every 60 seconds.</p>
+</div>
+
+{% if not scan %}
+<div class="alert alert-secondary">No scan yet. The engine scans during market hours once entries are enabled.</div>
+{% else %}
+<p class="small text-muted">Scan from {{ scan.ts.strftime('%Y-%m-%d %H:%M UTC') }}.</p>
+
+{% if scan.best %}
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-trophy me-2"></i>Best candidates</div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+        <table class="table mb-0 sortable-table">
+            <thead>
+                <tr>
+                    <th>Ready</th><th data-sort="string">Strategy</th><th data-sort="string">Contract</th>
+                    <th class="text-end" data-sort="number">Qty</th><th class="text-end" data-sort="number">Delta</th>
+                    <th class="text-end" data-sort="number">Bid / Ask</th><th class="text-end" data-sort="number">Net credit</th>
+                    <th class="text-end" data-sort="number">Edge (EV)</th><th class="text-end" data-sort="number">Crash loss</th>
+                    <th class="text-end" data-sort="number">Yield / yr</th><th class="text-end" data-sort="number">Timing</th>
+                    <th class="text-end" data-sort="number">Score</th><th>Why now</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for c in scan.best %}
+                <tr>
+                    <td>{% if c.fire %}<span class="badge bg-success">Ready</span>{% else %}<span class="text-muted small">wait</span>{% endif %}</td>
+                    <td class="text-nowrap">{{ c.strategy | replace('_', ' ') }}</td>
+                    <td class="text-nowrap">{{ c.key }}</td>
+                    <td class="text-end">{{ c.contracts }}</td>
+                    <td class="text-end">{{ "%.2f"|format(c.delta) if c.delta is not none else "—" }}</td>
+                    <td class="text-end text-nowrap">{{ "%.2f"|format(c.bid or 0) }} / {{ "%.2f"|format(c.ask or 0) }}</td>
+                    <td class="text-end">${{ "{:,.0f}".format(c.net_credit) }}</td>
+                    <td class="text-end text-profit">${{ "{:,.0f}".format(c.ev) }}</td>
+                    <td class="text-end">{{ "${:,.0f}".format(c.stress_loss) if c.stress_loss else "—" }}</td>
+                    <td class="text-end">{{ "{:.0%}".format(c.annual_yield) }}</td>
+                    <td class="text-end">{{ "%.2f"|format(c.timing or 1) }}×</td>
+                    <td class="text-end">{{ "%.4f"|format(c.score) }}</td>
+                    <td class="small">{{ (c.timing_reasons or []) | join('; ') or '—' }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+    </div>
+</div>
+{% else %}
+<div class="alert alert-secondary">Nothing passed the filters in the latest scan.</div>
+{% endif %}
+
+{% if scan.rejected %}
+<div class="card">
+    <div class="card-header"><i class="bi bi-funnel me-2"></i>Why other options were skipped</div>
+    <div class="card-body p-0">
+        <table class="table mb-0">
+            <thead><tr><th>Reason</th><th class="text-end">Options</th></tr></thead>
+            <tbody>
+            {% for reason, n in scan.rejected | dictsort(by='value', reverse=true) %}
+                <tr><td>{{ reason }}</td><td class="text-end">{{ n }}</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+{% endif %}
+
+<script>setTimeout(function () { window.location.reload(); }, 60000);</script>
+{% endblock %}
