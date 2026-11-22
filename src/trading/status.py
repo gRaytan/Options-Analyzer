@@ -67,6 +67,7 @@ class BotStatus:
     halt: HaltState = field(default_factory=lambda: HaltState(False))
     margin_reason: str = ""
     budget: Optional[dict] = None  # live risk budget from the engine (T19b)
+    guard: List[dict] = field(default_factory=list)  # roll triggers (T28a)
     estimated_excess_liquidity: Optional[float] = None
 
     def to_json(self) -> dict:
@@ -82,6 +83,7 @@ class BotStatus:
             "margin_state": self.margin_state.value,
             "margin_reason": self.margin_reason,
             "budget": self.budget,
+            "guard": self.guard,
             "estimated_excess_liquidity": self.estimated_excess_liquidity,
             "reconcile": self.reconcile,
             "halt": {
@@ -149,6 +151,8 @@ def load_bot_status(
         status.live = heartbeat.get("live")
         status.account_stale = heartbeat.get("account_stale")
         status.last_error = heartbeat.get("last_error", "")
+        if status.engine_running and isinstance(heartbeat.get("guard"), list):
+            status.guard = heartbeat["guard"]
         if status.engine_running and isinstance(heartbeat.get("budget"), dict):
             status.budget = heartbeat["budget"]
         if status.engine_running and isinstance(heartbeat.get("margin"), dict):

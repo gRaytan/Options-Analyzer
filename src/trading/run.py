@@ -24,6 +24,9 @@ from src.trading.margin_monitor import MarginMonitor, MarginReading
 from src.trading.notifier import Notifier
 from src.trading.reconcile import expected_from_journal, reconcile, result_to_dict
 from src.trading.risk.budget import BudgetTracker
+from src.trading import guard as assignment_guard
+from src.trading.calendars import EventCalendar
+from src.trading.domain import OptionContract
 from src.trading.status import write_heartbeat
 
 log = logging.getLogger("trading.run")
@@ -60,9 +63,14 @@ async def monitor(
     journal=None,
     halt_file=None,
     notifier=None,
+    events=None,
 ) -> int:
     """Run the read-only monitor loop. ``adapter``/``journal`` are injectable for tests."""
+    global _last_guard  # pylint: disable=global-statement
+    _last_guard = []
     config = load_trading_config()
+    if adapter is None and events is None:
+        events = EventCalendar()  # production: earnings / ex-dividend dates
     if adapter is None:
         if not config.account_id:
             log.error("TRADING_ACCOUNT_ID is not set")
@@ -139,6 +147,8 @@ async def monitor(
                 reconcile_state,
                 budget,
                 notifier,
+                events,
+                config,
             )
         except Exception as exc:  # pylint: disable=broad-except
             # Spec §6.4: an unhandled engine error halts opening; keep running.
@@ -152,6 +162,7 @@ async def monitor(
             adapter,
             margin=reading.to_dict() if reading else None,
             budget=budget.last,
+            guard=_last_guard,
             halted=halt.active,
             halt_scope=halt.scope.value if halt.active else None,
             halt_reason=halt.reason if halt.active else "",
@@ -211,6 +222,8 @@ async def _cycle(
     reconcile_state,
     budget=None,
     notifier=None,
+    events=None,
+    config=None,
 ):
     """One monitor pass: account and margin, positions, reconciliation, budget."""
     snap = None
@@ -262,6 +275,8 @@ async def _cycle(
             "mismatches": len(result.mismatches),
             "unmanaged": len(result.unmanaged),
         }
+        if config is not None:
+            await _check_guard(adapter, positions, config, events, notifier)
         if budget is not None:
             used = await budget.update(adapter, positions, snap)
             if used and used["over_budget"]:
@@ -283,6 +298,49 @@ async def _cycle(
     except BrokerError as exc:
         log.warning("no positions: %s", exc)
     return reconcile_state, last_reconcile
+
+
+_last_guard: list = []
+GUARD_ALERT_LEVEL = {
+    "critical": "critical",
+    "high": "warning",
+    "warning": "warning",
+    "normal": "info",
+}
+
+
+async def _check_guard(adapter, positions, config, events, notifier) -> None:
+    """Assignment & Event Guard (T28a): detect roll triggers; alert only for now."""
+    global _last_guard  # pylint: disable=global-statement
+    shorts = [
+        p
+        for p in positions
+        if isinstance(p.contract, OptionContract) and p.quantity < 0
+    ]
+    quotes = {}
+    if shorts:
+        try:
+            quotes = {
+                q.contract.key: q
+                for q in await adapter.quotes([p.contract for p in shorts])
+            }
+        except BrokerError as exc:
+            log.warning("guard: no quotes (%s)", exc)
+    signals = assignment_guard.scan(shorts, quotes, utcnow().date(), config, events)
+    _last_guard = [s.to_dict() for s in signals]
+    for sig in signals:
+        log.warning(
+            "GUARD %s %s: %s %s", sig.trigger, sig.key, sig.detail, sig.deadline
+        )
+        _alert(
+            notifier,
+            GUARD_ALERT_LEVEL[sig.severity],
+            f"guard:{sig.trigger}:{sig.key}",
+            f"Roll needed: {sig.key}",
+            f"{sig.trigger.replace('_', ' ')}: {sig.detail}"
+            + (f". Act: {sig.deadline}" if sig.deadline else "")
+            + "\n(Automatic rolling arrives in a later version.)",
+        )
 
 
 MARGIN_ALERT_LEVEL = {
