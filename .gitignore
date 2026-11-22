@@ -69,3 +69,6 @@ logs/
 
 # Auto-trading runtime data (journal, halt file)
 data/trading/
+
+# Deployment secrets
+deploy/gateway.env
