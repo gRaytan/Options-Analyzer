@@ -50,7 +50,7 @@ Requires **Python 3.12**. The pinned pandas version doesn't support 3.13 yet.
 ```bash
 git clone https://github.com/gRaytan/Options-Analyzer.git
 cd Options-Analyzer
-git checkout auto/T07-account            # until the PRs are merged into main
+git checkout auto/T09-chains-quotes      # until the PRs are merged into main
 python3.12 -m venv venv
 source venv/bin/activate                  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
@@ -85,6 +85,15 @@ Account
   Initial margin:        $380,000
   Available funds:       $420,000
   Cash:                  $-5,000
+
+Positions: 3 stock/ETF, 4 option
+  QQQM 2026-12-18 C 240        qty    -1  cost     1.25  price     0.80  American
+  ...
+
+Market data
+  SPY    bid 671.2  ask 671.25  (live)
+  QQQM   bid 251.1  ask 251.14  (live)
+  XSP options (XSP): 48 expiries, 210 strikes, next 2026-11-23
 ```
 
 (Your numbers will differ. If you see `WARNING: no account values received
@@ -99,6 +108,7 @@ yet`, run it again a minute later; IB sends account values shortly after login.)
 | Connects, then drops right away | Another program is using the same client ID. Use `--client-id 5` |
 | Pop-up in Gateway asking to accept a connection | Add `127.0.0.1` to Trusted IPs |
 | Hangs, then times out | A firewall or antivirus is blocking localhost port 4002 |
+| `DELAYED` next to quotes | Paper isn't sharing your live market data (step 1.4), or the subscription is missing (US equity + OPRA options + CBOE indexes) |
 
 Send me the output, whether it's OK or an error, and I'll take it from there.
 

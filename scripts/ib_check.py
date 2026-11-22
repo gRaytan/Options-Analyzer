@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.trading.broker.base import BrokerError  # noqa: E402
 from src.trading.config import load_trading_config  # noqa: E402
-from src.trading.domain import OptionContract  # noqa: E402
+from src.trading.domain import OptionContract, StockContract  # noqa: E402
 from src.trading.broker.ib_adapter import IBAdapter, IBConnectionSettings  # noqa: E402
 
 
@@ -91,6 +91,24 @@ async def main(args) -> int:
         print(f"  ... and {len(options) - 15} more")
     if adapter.unsupported_positions:
         print(f"  Not handled by the bot: {', '.join(adapter.unsupported_positions)}")
+
+    print("\nMarket data")
+    try:
+        for q in await adapter.quotes([StockContract("SPY"), StockContract("QQQM")]):
+            kind = (
+                "DELAYED (check market data subscriptions / paper sharing)"
+                if q.delayed
+                else "live"
+            )
+            print(f"  {q.contract.key:<6} bid {q.bid}  ask {q.ask}  ({kind})")
+        chains = await adapter.option_chain("XSP")
+        for chain in chains:
+            print(
+                f"  XSP options ({chain.trading_class}): {len(chain.expiries)} expiries, "
+                f"{len(chain.strikes)} strikes, next {chain.expiries[0] if chain.expiries else '-'}"
+            )
+    except BrokerError as exc:
+        print(f"  FAILED: {exc}")
     await adapter.disconnect()
     return 0
 

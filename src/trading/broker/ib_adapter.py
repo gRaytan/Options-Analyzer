@@ -5,8 +5,9 @@ This is the only module that imports ``ib_async``. Implemented so far:
 * T06: connect to IB Gateway / TWS, verify the account, reconnect with backoff.
 * T07: account values (net liquidation, excess liquidity, margin, Cushion).
 * T08: positions (stocks and equity / index options).
+* T09: option chains and quotes (live data only, paced).
 
-Remaining data and order methods arrive in T09, T18 and T22.
+Order methods arrive in T18 and T22.
 
 **Account value freshness:** IB pushes account values roughly every
 3 minutes, not in real time. Snapshots carry the time of IB's last update,
@@ -27,10 +28,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Awaitable, Callable, List, Optional
+from typing import Awaitable, Callable, Dict, Iterable, List, Optional
 
 from src.trading.broker.base import (
     EVENT_ACCOUNT,
@@ -38,13 +41,16 @@ from src.trading.broker.base import (
     BrokerAdapter,
     BrokerDisconnected,
     BrokerError,
+    OptionChain,
 )
 from src.trading.domain import (
     AccountSnapshot,
     Contract,
     ExerciseStyle,
+    Greeks,
     OptionContract,
     Position,
+    Quote,
     Right,
     StockContract,
     utcnow,
@@ -74,6 +80,88 @@ class AccountDataUnavailable(BrokerError):
 
 # European-style, cash-settled index option roots (no early assignment).
 EUROPEAN_INDEX_ROOTS = {"SPX", "XSP", "NDX", "XND", "RUT", "MRUT", "VIX", "DJX"}
+# Exchange where IB lists each index (for the underlying contract).
+INDEX_EXCHANGES = {
+    "SPX": "CBOE",
+    "XSP": "CBOE",
+    "VIX": "CBOE",
+    "RUT": "RUSSELL",
+    "MRUT": "RUSSELL",
+    "NDX": "NASDAQ",
+    "XND": "NASDAQ",
+    "DJX": "CBOE",
+}
+
+MARKET_DATA_LIVE = 1
+DELAYED_DATA_TYPES = {3, 4}  # delayed, delayed-frozen
+
+
+class DelayedDataError(BrokerError):
+    """IB served delayed market data; the bot must not trade on it (spec §4.3)."""
+
+
+class RateLimiter:
+    """Simple pacing: at most ``rate`` requests per second (IB allows ~50 msg/s)."""
+
+    def __init__(
+        self, rate: float = 40.0, sleep=asyncio.sleep, monotonic=time.monotonic
+    ):
+        self.interval = 1.0 / rate
+        self._sleep = sleep
+        self._monotonic = monotonic
+        self._next = 0.0
+
+    async def acquire(self, n: int = 1) -> None:
+        now = self._monotonic()
+        start = max(now, self._next)
+        self._next = start + n * self.interval
+        if start > now:
+            await self._sleep(start - now)
+
+
+def _num(value) -> Optional[float]:
+    """IB uses NaN and -1 for 'no value'."""
+    if value is None:
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(value) or value < 0:
+        return None
+    return value
+
+
+def _finite(value) -> bool:
+    return isinstance(value, (int, float)) and not math.isnan(value)
+
+
+def contract_to_ib(contract: Contract):
+    """Domain contract -> unqualified ``ib_async`` contract."""
+    from ib_async import Option, Stock  # pylint: disable=import-outside-toplevel
+
+    if isinstance(contract, StockContract):
+        return Stock(contract.symbol, "SMART", contract.currency)
+    return Option(
+        contract.underlying,
+        contract.expiry.strftime("%Y%m%d"),
+        contract.strike,
+        contract.right.value,
+        "SMART",
+        multiplier=str(contract.multiplier),
+        currency=contract.currency,
+        tradingClass=contract.trading_class or "",
+    )
+
+
+def underlying_to_ib(symbol: str, currency: str = "USD"):
+    """The underlying of an option root: an index for SPX/XSP/..., else a stock/ETF."""
+    from ib_async import Index, Stock  # pylint: disable=import-outside-toplevel
+
+    symbol = symbol.upper()
+    if symbol in INDEX_EXCHANGES:
+        return Index(symbol, INDEX_EXCHANGES[symbol], currency)
+    return Stock(symbol, "SMART", currency)
 
 
 def contract_from_ib(contract) -> Optional[Contract]:
@@ -185,6 +273,9 @@ class IBAdapter(BrokerAdapter):
         self._reconnect_task: Optional[asyncio.Task] = None
         self._account_updated_at: Optional[datetime] = None
         self.unsupported_positions: List[str] = []
+        self._qualified: Dict[str, object] = {}
+        self.pacer = RateLimiter(sleep=sleep)
+        self.quote_batch_size = 50  # stay well under IB's 100 market data lines
         self.ib.disconnectedEvent += self._on_disconnected
         self.ib.accountValueEvent += self._on_account_value
 
@@ -221,6 +312,8 @@ class IBAdapter(BrokerAdapter):
                 f"(IB reports: {', '.join(accounts) or 'none'})"
             )
 
+        # Ask for live data only. Delayed quotes are detected per ticker and refused.
+        self.ib.reqMarketDataType(MARKET_DATA_LIVE)
         self.health.connected = True
         self.health.last_connected_at = self._clock()
         self.health.reconnect_attempts = 0
@@ -407,11 +500,106 @@ class IBAdapter(BrokerAdapter):
         self.unsupported_positions = unsupported
         return result
 
-    async def quote(self, contract):
-        raise NotImplementedError("plan T09")
+    # -- contracts, chains and quotes (T09) ------------------------------------
 
-    async def option_chain(self, underlying):
-        raise NotImplementedError("plan T09")
+    def _require_connection(self) -> None:
+        if not self.is_connected:
+            raise BrokerDisconnected("not connected to IB")
+
+    async def _qualify(self, key: str, ib_contract):
+        cached = self._qualified.get(key)
+        if cached is not None:
+            return cached
+        await self.pacer.acquire()
+        [qualified] = await self.ib.qualifyContractsAsync(ib_contract)
+        if qualified is None or not getattr(qualified, "conId", 0):
+            raise BrokerError(f"IB does not recognize contract {key}")
+        self._qualified[key] = qualified
+        return qualified
+
+    async def option_chain(self, underlying: str) -> List[OptionChain]:
+        """Expiries and strikes per trading class (e.g. SPX and SPXW)."""
+        self._require_connection()
+        und = await self._qualify(
+            f"UND:{underlying.upper()}", underlying_to_ib(underlying)
+        )
+        await self.pacer.acquire()
+        raw = await self.ib.reqSecDefOptParamsAsync(
+            und.symbol, "", und.secType, und.conId
+        )
+        chains = []
+        for chain in raw:
+            if chain.exchange != "SMART":
+                continue  # IB repeats the chain per exchange; SMART is the union
+            expiries = tuple(
+                sorted(
+                    date(int(e[:4]), int(e[4:6]), int(e[6:8]))
+                    for e in chain.expirations
+                )
+            )
+            chains.append(
+                OptionChain(
+                    underlying=underlying.upper(),
+                    trading_class=chain.tradingClass,
+                    multiplier=int(float(chain.multiplier or 100)),
+                    expiries=expiries,
+                    strikes=tuple(sorted(float(k) for k in chain.strikes)),
+                )
+            )
+        return chains
+
+    def _quote_from_ticker(self, contract: Contract, ticker) -> Quote:
+        greeks = None
+        underlying_price = None
+        model = getattr(ticker, "modelGreeks", None)
+        if model is not None and _finite(model.delta):
+            greeks = Greeks(
+                delta=model.delta,
+                gamma=model.gamma or 0.0,
+                theta=model.theta or 0.0,
+                vega=model.vega or 0.0,
+                iv=_num(model.impliedVol),
+            )
+            underlying_price = _num(model.undPrice)
+        ts = ticker.time or self._clock()
+        return Quote(
+            contract=contract,
+            bid=_num(ticker.bid),
+            ask=_num(ticker.ask),
+            ts=ts,
+            last=_num(ticker.last),
+            underlying_price=underlying_price,
+            greeks=greeks,
+            delayed=getattr(ticker, "marketDataType", MARKET_DATA_LIVE)
+            in DELAYED_DATA_TYPES,
+        )
+
+    async def quotes(self, contracts: Iterable[Contract]) -> List[Quote]:
+        """Snapshot quotes with model Greeks, in paced batches.
+
+        Delayed data is returned with ``delayed=True`` (callers must not
+        trade on it). Open interest is not part of snapshots; the scanner
+        (plan T30) requests it with streaming generic tick 101.
+        """
+        self._require_connection()
+        contracts = list(contracts)
+        qualified = [await self._qualify(c.key, contract_to_ib(c)) for c in contracts]
+        result: List[Quote] = []
+        for start in range(0, len(contracts), self.quote_batch_size):
+            batch = qualified[start : start + self.quote_batch_size]
+            await self.pacer.acquire(len(batch))
+            tickers = await self.ib.reqTickersAsync(*batch)
+            by_con = {t.contract.conId: t for t in tickers}
+            for contract, ib_contract in zip(contracts[start:], batch):
+                ticker = by_con.get(ib_contract.conId)
+                if ticker is None:
+                    raise BrokerError(f"no market data returned for {contract.key}")
+                result.append(self._quote_from_ticker(contract, ticker))
+        return result
+
+    async def quote(self, contract: Contract) -> Quote:
+        [result] = await self.quotes([contract])
+        return result
 
     async def what_if(self, order):
         raise NotImplementedError("plan T18")
