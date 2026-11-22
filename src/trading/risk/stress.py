@@ -42,7 +42,7 @@ from src.trading.domain import (
     TradeIntent,
 )
 from src.trading.risk.checks import CheckResult, GateDecision
-from src.trading.risk.limits import Exposure, apply_intent
+from src.trading.risk.limits import Exposure, apply_intent, pair_put_spreads
 from src.trading.risk.margin_type import reg_t_short_option_margin
 
 RATE = 0.04
@@ -93,18 +93,25 @@ def _option_value(c: OptionContract, und: float, iv: float, today: date) -> floa
 def _reg_t_model_margin(
     exposures: Sequence[Exposure], prices: Dict[str, float], values: Dict[str, float]
 ) -> float:
-    """Reg-T-style maintenance: 25% of long stock + uncovered short options."""
+    """Reg-T-style maintenance: 25% of long stock + uncovered short options
+    (+ the width of each put credit spread)."""
     shares: Dict[str, float] = defaultdict(float)
     total = 0.0
     for e in exposures:
         if isinstance(e.contract, StockContract):
             shares[e.underlying] += e.quantity
             total += STOCK_MAINT * abs(e.quantity) * prices[e.underlying]
+    # Put credit spreads: Reg-T margin is the width (the most they can lose).
+    uncovered: Dict[str, float] = {}
+    for e, pairs, left in pair_put_spreads(exposures):
+        c = e.contract
+        total += sum((c.strike - lk) * c.multiplier * n for lk, n in pairs)
+        uncovered[c.key] = left
     for e in exposures:
         c = e.contract
         if not isinstance(c, OptionContract) or e.quantity >= 0:
             continue
-        contracts = abs(e.quantity)
+        contracts = uncovered.get(c.key, abs(e.quantity))
         if c.right is Right.CALL:  # covered by shares, contract by contract
             covered = min(contracts, max(shares[e.underlying], 0) // c.multiplier)
             shares[e.underlying] -= covered * c.multiplier

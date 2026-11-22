@@ -26,6 +26,7 @@ from src.trading.reconcile import expected_from_journal, reconcile, result_to_di
 from src.trading.risk.budget import BudgetTracker
 from src.trading import guard as assignment_guard
 from src.trading import rolls
+from src.trading import spreads
 from src.trading.assignments import handle_assignment
 from src.trading import margin_restoration
 from src.trading.approvals import ApprovalQueue
@@ -199,6 +200,7 @@ async def monitor(
             pass
 
     await _flush_alerts()
+    executor.orders.close()
     await adapter.disconnect()
     journal.close()
     return 0
@@ -471,11 +473,13 @@ async def _act(
                 book.record_close(plan.chain, res.avg_price or 0.0)
 
     # 3. Position manager exits for the bot's own positions (T25).
+    # A spread's short leg closes together with its long leg (T34).
     managed = set(expected_from_journal(journal))
+    pairs = spreads.pair_spreads(positions, managed)
     for decision in PositionManager(config).review(
         positions, quotes, snap, managed, today
     ):
-        await executor.submit(decision.intent)
+        await executor.submit(spreads.as_spread_close(decision.intent, pairs))
 
     # 4. Undo pending assignments (T28c).
     pending = {}
@@ -502,6 +506,7 @@ async def _enter(
         StrategyName.COVERED_CALL,
         StrategyName.INDEX_PUT,
         StrategyName.STOCK_PUT,
+        StrategyName.PUT_SPREAD,
     ]
     if not any(config.enabled_strategies[s].open for s in opening):
         return
@@ -545,6 +550,7 @@ async def _enter(
         today,
         positions=positions,
         nlv=snap.net_liquidation,
+        excess_liquidity=snap.excess_liquidity,
     )
     log.info(
         "scan: %d candidates, %d ready, %d entries",
@@ -590,7 +596,7 @@ async def _check_guard(
     today = utcnow().date()
     signals = assignment_guard.scan(shorts, quotes, today, config, events)
     plans = await _plan_rolls(
-        adapter, shorts, signals, config, events, journal, snap, today
+        adapter, shorts, signals, config, events, journal, snap, today, positions
     )
     _last_guard = [{**s.to_dict(), "plan": plans.get(s.key, "")} for s in signals]
     for sig in signals:
@@ -613,16 +619,33 @@ async def _check_guard(
 MAX_ROLL_PLANS_PER_CYCLE = 3  # each plan quotes a chain: keep IB pacing low
 
 
-async def _plan_rolls(adapter, shorts, signals, config, events, journal, snap, today):
-    """Plan a roll (or close) per triggered position (T28b). Not executed yet."""
+async def _plan_rolls(
+    adapter, shorts, signals, config, events, journal, snap, today, positions=()
+):
+    """Plan a roll (or close) per triggered position (T28b). Not executed yet.
+
+    A put spread's short leg is never rolled alone: the whole spread is
+    closed as one combo instead (T34)."""
+    _last_roll_plans.clear()  # never carry a plan over: signals are per cycle
     if journal is None or snap is None or not signals:
         return {}
     book = rolls.ChainBook(journal)
     by_key = {p.contract.key: p for p in shorts}
+    pairs = spreads.pair_spreads(positions, set(expected_from_journal(journal)))
     plans = {}
-    _last_roll_plans.clear()
     for sig in signals:
         if sig.key in plans or len(plans) >= MAX_ROLL_PLANS_PER_CYCLE:
+            continue
+        if sig.key in pairs:
+            pos = by_key[sig.key]
+            reason = f"put spread: close instead of rolling ({sig.trigger})"
+            chain = book.ensure(pos)
+            intent = spreads.close_intent(
+                pos, pairs[sig.key], reason, today, chain_id=chain["chain_id"]
+            )
+            plan = rolls.RollPlan("close", reason, intent, chain=chain)
+            plans[sig.key] = f"close: {reason}"
+            _last_roll_plans[sig.key] = plan
             continue
         try:
             plan = await rolls.roll_for(

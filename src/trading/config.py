@@ -108,8 +108,24 @@ class EntryConfig(_Strict):
     max_spread_cheap: float = Field(default=0.10, gt=0.0)  # $ cap when mid < $1
     min_open_interest: int = Field(default=500, ge=0)  # stocks; index uses 100
     index_scan_root: str = "XSP"  # index puts are scanned on this root
+    # Index put credit spreads (spec §5.4): used instead of naked index puts
+    # in the spreads-only VIX regime or when Cushion is below spread_cushion_below.
+    spread_short_delta: Tuple[float, float] = (0.10, 0.16)
+    spread_fading_delta: Tuple[float, float] = (0.05, 0.10)  # VIX spike fading
+    spread_max_loss_nlv: float = Field(default=0.01, gt=0.0, le=0.05)  # per position
+    # Credit / width is about the short delta, so 20% (spec v0.4) is unreachable at
+    # delta <= 0.16; 8% keeps out tiny credits, the EV test does the edge filtering.
+    spread_min_credit_width: float = Field(default=0.08, gt=0.0, lt=1.0)
+    spread_cushion_below: float = Field(default=0.50, ge=0.0, le=1.0)
+    spread_max_width: float = Field(default=25.0, gt=0.0)  # $ of strike (XSP)
 
-    @field_validator("cc_delta", "index_put_delta", "stock_put_delta")
+    @field_validator(
+        "cc_delta",
+        "index_put_delta",
+        "stock_put_delta",
+        "spread_short_delta",
+        "spread_fading_delta",
+    )
     @classmethod
     def _delta_ranges(cls, v):
         return _check_range(v)

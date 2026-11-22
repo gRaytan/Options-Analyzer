@@ -8,7 +8,7 @@ always get out; they still pass the sanity checks (T17).
 |---|---|
 | ``el_after`` | IB what-if Excess Liquidity after the trade >= $125k |
 | ``cushion_after`` | EL after / net liquidation >= 40% |
-| ``short_put_notional`` | all short puts: strike x 100 x qty <= 50% NLV |
+| ``short_put_notional`` | all short puts: strike x 100 x qty <= 50% NLV (a put spread counts at its width) |
 | ``index_put_notional`` | index short puts (XSP/SPX...) <= 40% NLV |
 | ``expiry_ladder`` | short-put notional in one expiry <= 35% of the short-put cap |
 | ``per_name`` | delta-dollar exposure per underlying <= 15% NLV, or not increased |
@@ -33,7 +33,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from src.trading.config import RiskConfig, TradingConfig
 from src.trading.domain import (
@@ -96,6 +96,54 @@ class Exposure:
         c = self.contract
         root = (getattr(c, "trading_class", None) or self.underlying).upper()
         return root in INDEX_ROOTS or self.underlying.upper() in INDEX_ROOTS
+
+
+def pair_put_spreads(
+    exposures: Iterable[Exposure],
+) -> List[Tuple[Exposure, List[Tuple[float, float]], float]]:
+    """Each short put with the long puts that cap it: (short, [(long strike, qty)], uncovered qty).
+
+    A long put on the same root and expiry at a lower strike turns a short put
+    into a put credit spread (spec §5.4) that can lose at most the width.
+    Longs pair with the highest short strikes first, highest long first.
+    """
+    groups: Dict[tuple, Dict[str, list]] = defaultdict(lambda: {"s": [], "l": []})
+    for e in exposures:
+        c = e.contract
+        if not isinstance(c, OptionContract) or c.right is not Right.PUT:
+            continue
+        key = ((c.trading_class or c.underlying).upper(), c.expiry, c.multiplier)
+        if e.quantity < 0:
+            groups[key]["s"].append(e)
+        elif e.quantity > 0:
+            groups[key]["l"].append([c.strike, float(e.quantity)])
+    out = []
+    for g in groups.values():
+        longs = sorted(g["l"], key=lambda x: -x[0])
+        for e in sorted(g["s"], key=lambda x: -x.contract.strike):
+            k, left, pairs = e.contract.strike, abs(e.quantity), []
+            for lg in longs:
+                if left <= EPS:
+                    break
+                if lg[0] >= k or lg[1] <= EPS:
+                    continue
+                take = min(left, lg[1])
+                pairs.append((lg[0], take))
+                lg[1] -= take
+                left -= take
+            out.append((e, pairs, left))
+    return out
+
+
+def net_put_notional(exposures: Iterable[Exposure]) -> List[Tuple[Exposure, float]]:
+    """Each short put's notional, net of long puts that cap its loss: a spread
+    counts as ``width x multiplier`` per pair, an unpaired short at its strike."""
+    out = []
+    for e, pairs, left in pair_put_spreads(exposures):
+        k, mult = e.contract.strike, e.multiplier
+        notional = sum((k - lk) * mult * n for lk, n in pairs) + k * mult * left
+        out.append((e, notional))
+    return out
 
 
 def worst_case_delta(contract: OptionContract, quantity: float) -> float:
@@ -271,8 +319,9 @@ def check_limits(
 
     after = apply_intent(ctx.exposures, intent, ctx.quotes)
 
-    # R8: short-put notional caps.
-    put_total = sum(e.put_notional for e in after)
+    # R8: short-put notional caps (spreads count at their width).
+    netted = net_put_notional(after)
+    put_total = sum(n for _, n in netted)
     put_cap = risk.short_put_notional_max * nlv
     checks.append(
         CheckResult(
@@ -281,7 +330,7 @@ def check_limits(
             f"short puts ${put_total:,.0f} (cap ${put_cap:,.0f})",
         )
     )
-    index_total = sum(e.put_notional for e in after if e.is_index)
+    index_total = sum(n for e, n in netted if e.is_index)
     index_cap = risk.index_put_notional_max * nlv
     checks.append(
         CheckResult(
@@ -293,9 +342,8 @@ def check_limits(
 
     # Expiry ladder, measured against the short-put cap.
     by_expiry: Dict[date, float] = defaultdict(float)
-    for e in after:
-        if e.is_short_put:
-            by_expiry[e.contract.expiry] += e.put_notional
+    for e, n in netted:
+        by_expiry[e.contract.expiry] += n
     ladder_cap = risk.expiry_max_share * put_cap
     worst = max(by_expiry.items(), key=lambda kv: kv[1], default=(None, 0.0))
     checks.append(

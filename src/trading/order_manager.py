@@ -144,6 +144,10 @@ class OrderManager:
         self.skip_until: Dict[str, date] = {}
         broker.subscribe(EVENT_FILL, self._on_fill)
 
+    def close(self) -> None:
+        """Stop listening for fills (the journal is about to close)."""
+        self.broker.unsubscribe(EVENT_FILL, self._on_fill)
+
     # -- journaling -----------------------------------------------------------
 
     def _on_fill(self, fill: Fill) -> None:

@@ -74,6 +74,27 @@ class Candidate:
     timing: float = 1.0
     fire: bool = False  # ready to sell now (tracker, T31)
     timing_reasons: tuple = ()
+    # Put credit spreads (T34): the protective long put (same expiry, lower strike).
+    long_contract: Optional[OptionContract] = None
+    long_quote: Optional[Quote] = None
+
+    @property
+    def is_spread(self) -> bool:
+        return self.long_contract is not None
+
+    @property
+    def width(self) -> float:
+        """$ per share between the strikes (0 for a single option)."""
+        if self.long_contract is None:
+            return 0.0
+        return self.contract.strike - self.long_contract.strike
+
+    @property
+    def max_loss(self) -> Optional[float]:
+        """$ per contract a spread can lose at most (None: unlimited/naked)."""
+        if self.long_contract is None:
+            return None
+        return self.width * self.contract.multiplier - self.credit
 
     def to_dict(self) -> dict:
         q = self.quote
@@ -96,6 +117,8 @@ class Candidate:
             "fire": self.fire,
             "timing_reasons": list(self.timing_reasons),
             "dte": self.dte,
+            "long_key": self.long_contract.key if self.long_contract else None,
+            "width": self.width,
         }
 
 
@@ -129,6 +152,8 @@ def delta_band(config: TradingConfig, strategy: StrategyName, symbol: str) -> tu
         return tuple(w.cc_delta) if w and w.cc_delta else tuple(e.cc_delta)
     if strategy is StrategyName.INDEX_PUT:
         return tuple(e.index_put_delta)
+    if strategy is StrategyName.PUT_SPREAD:
+        return tuple(e.spread_short_delta)
     return tuple(e.stock_put_delta)
 
 
@@ -297,6 +322,181 @@ def evaluate(
     )
 
 
+def thin(strikes: Sequence[float], n: int) -> List[float]:
+    """At most ``n`` strikes, keeping order: round ($5) strikes first, then evenly spaced."""
+    strikes = list(strikes)
+    if len(strikes) <= n:
+        return strikes
+    round5 = [k for k in strikes if abs(k / 5 - round(k / 5)) < 1e-9]
+    if len(round5) >= n // 2:
+        strikes = round5
+    if len(strikes) <= n:
+        return strikes
+    step = len(strikes) / n
+    return [strikes[int(i * step)] for i in range(n)]
+
+
+def _spread_filters(
+    short_q: Quote, ind: Optional[Indicators], config: TradingConfig, today: date, band
+) -> tuple:
+    """(dte, None) when the short leg passes the shared entry filters, else (None, reason)."""
+    e = config.entry
+    c = short_q.contract
+    dte = c.days_to_expiry(today)
+    if not e.dte_min <= dte <= e.dte_max:
+        return None, "outside the DTE window"
+    if short_q.greeks is None or short_q.underlying_price is None:
+        return None, "no Greeks"
+    if not band[0] <= abs(short_q.greeks.delta) <= band[1]:
+        return None, "delta outside the band"
+    reason = _liquid(short_q, config, c.underlying, True)
+    if reason:
+        return None, reason
+    if ind is None or ind.iv is None:
+        return None, "no volatility history"
+    if ind.vol_edge is None or ind.vol_edge < e.min_vol_edge:
+        return None, "options not rich vs realized moves"
+    if ind.iv_rank is None or ind.iv_rank < e.ivr_min_index:
+        return None, "IV rank too low"
+    return dte, None
+
+
+def evaluate_spread(
+    short_q: Quote,
+    long_q: Quote,
+    ind: Optional[Indicators],
+    account: AccountSnapshot,
+    config: TradingConfig,
+    today: date,
+    band: Optional[tuple] = None,
+) -> tuple:
+    """A put credit spread (spec §5.4): (Candidate, None) or (None, reason).
+
+    Short leg in the spread delta band; long leg on the same expiry at a
+    lower strike; credit >= ``spread_min_credit_width`` x width; the same
+    credit, fee and expected-value tests as single puts. The crash loss is
+    capped by the width, so the score is EV per $ of (much smaller) risk.
+    """
+    e = config.entry
+    sc, lc = short_q.contract, long_q.contract
+    band = band or tuple(e.spread_short_delta)
+    dte, reason = _spread_filters(short_q, ind, config, today, band)
+    if reason:
+        return None, reason
+    if lc.expiry != sc.expiry or lc.strike >= sc.strike or lc.right is not Right.PUT:
+        return None, "not a put spread"
+    width = sc.strike - lc.strike
+    if width > e.spread_max_width:
+        return None, "spread too wide"
+    if long_q.mid is None or long_q.mid < 0 or long_q.delayed:
+        return None, "no live market"
+    if long_q.spread is not None and long_q.spread > max(
+        e.max_spread_cheap, e.max_spread_pct * long_q.mid
+    ):
+        return None, "spread too wide"
+    mult = sc.multiplier
+    net_mid = short_q.mid - long_q.mid
+    credit = net_mid * mult
+    if credit < e.spread_min_credit_width * width * mult:
+        return None, "credit too small vs the width"
+    order = OrderRequest(
+        "probe",
+        (OrderLeg(sc, Action.SELL, 1), OrderLeg(lc, Action.BUY, 1)),
+        -net_mid,
+        "probe",
+    )
+    fees = estimate_order_fees(
+        order, {sc.key: short_q.mid, lc.key: long_q.mid}, config.fees
+    ).total
+    round_trip = 2 * fees
+    net = credit - round_trip
+    if net < e.min_net_credit_per_contract:
+        return None, "credit too small"
+    if net < e.min_fee_multiple * round_trip:
+        return None, "fees too large vs credit"
+    sigma = max(v for v in (ind.rv20, ind.rv60, 0.0) if v is not None) * RV_SAFETY
+    und = short_q.underlying_price
+    payout = expected_payout(sc, und, sigma, dte) - expected_payout(lc, und, sigma, dte)
+    ev = net - payout * mult
+    if ev <= 0:
+        return None, "no positive expected value"
+    max_loss = width * mult - credit
+    quotes = {sc.key: short_q, lc.key: long_q}
+    legs = [
+        Position(sc, -1, short_q.mid, short_q.mid),
+        Position(lc, 1, long_q.mid, long_q.mid),
+    ]
+    model = StressModel(exposures_from(legs, quotes), quotes, account, today)
+    stress = -model.run(
+        Scenario("budget", -0.20, 0.50, config.risk.stress_margin_multiplier)
+    ).options_pnl
+    stress = min(max(stress, 0.0), max_loss)
+    if stress <= 0:
+        stress = max_loss  # can't be less than nothing at risk
+    if stress <= 0:
+        return None, "no crash loss estimate"
+    liquidity = 1.0 - min(short_q.spread_pct or 0.0, 0.5)
+    score = ev / stress * 365 / dte * liquidity
+    return (
+        Candidate(
+            StrategyName.PUT_SPREAD,
+            sc,
+            short_q,
+            1,
+            credit,
+            net,
+            ev,
+            stress,
+            credit / max_loss * 365 / dte if max_loss > 0 else 0.0,
+            score,
+            dte,
+            long_contract=lc,
+            long_quote=long_q,
+        ),
+        None,
+    )
+
+
+def best_spreads(
+    quotes: Sequence[Quote],
+    ind: Optional[Indicators],
+    account: AccountSnapshot,
+    config: TradingConfig,
+    today: date,
+    regime: str,
+    result: "ScanResult",
+) -> List[Candidate]:
+    """For each short strike, the best-scoring long leg below it."""
+    band = (
+        tuple(config.entry.spread_fading_delta)
+        if regime == "fading"
+        else tuple(config.entry.spread_short_delta)
+    )
+    by_expiry: Dict[date, List[Quote]] = {}
+    for q in quotes:
+        by_expiry.setdefault(q.contract.expiry, []).append(q)
+    out = []
+    for group in by_expiry.values():
+        for sq in group:
+            if sq.greeks is None or not band[0] <= abs(sq.greeks.delta) <= band[1]:
+                result.reject("delta outside the band")
+                continue
+            best, reason = None, "no long leg"
+            for lq in group:
+                if lq.contract.strike >= sq.contract.strike:
+                    continue
+                cand, why = evaluate_spread(sq, lq, ind, account, config, today, band)
+                if cand is None:
+                    reason = why
+                elif best is None or cand.score > best.score:
+                    best = cand
+            if best is None:
+                result.reject(reason)
+            else:
+                out.append(best)
+    return out
+
+
 def candidate_contracts(
     underlying: str,
     right: Right,
@@ -307,8 +507,16 @@ def candidate_contracts(
     dte_max: int,
     trading_class: Optional[str] = None,
     max_strikes: int = 12,
+    sigma: Optional[float] = None,
+    extra_below: float = 0.0,
 ) -> List[OptionContract]:
-    """OTM strikes (calls above, puts below the price) in the DTE window."""
+    """OTM strikes (calls above, puts below the price) in the DTE window.
+
+    With ``sigma`` (implied vol), strikes come from the moneyness window where
+    the entry deltas live (about 0.5 to 2.5 standard moves out, plus
+    ``extra_below`` $ for spread long legs), thinned to ``max_strikes``
+    (round strikes first). Without it: the ``max_strikes`` nearest OTM strikes.
+    """
     chain = None
     for c in chains:
         if trading_class is None or c.trading_class == trading_class:
@@ -324,7 +532,18 @@ def candidate_contracts(
         )
     else:
         strikes = sorted(k for k in chain.strikes if k > underlying_price)
-    strikes = strikes[:max_strikes]
+    if sigma and sigma > 0:
+        near = sigma * math.sqrt(dte_min / 365.0) * 0.5
+        far = sigma * math.sqrt(dte_max / 365.0) * 2.5
+        if right is Right.PUT:
+            lo = underlying_price * (1 - far) - extra_below
+            hi = underlying_price * (1 - near)
+        else:
+            lo = underlying_price * (1 + near)
+            hi = underlying_price * (1 + far)
+        strikes = thin([k for k in strikes if lo <= k <= hi], max_strikes)
+    else:
+        strikes = strikes[:max_strikes]
     return [
         OptionContract(
             underlying,
@@ -388,6 +607,9 @@ async def scan(
     if sw[StrategyName.INDEX_PUT].open:
         root = config.entry.index_scan_root
         work.append((StrategyName.INDEX_PUT, root, Right.PUT, 1, None, root))
+    if sw[StrategyName.PUT_SPREAD].open:
+        root = config.entry.index_scan_root
+        work.append((StrategyName.PUT_SPREAD, root, Right.PUT, 1, None, root))
     if sw[StrategyName.STOCK_PUT].open:
         for sym, w in config.watchlist.items():
             if StrategyName.STOCK_PUT in w.strategies:
@@ -405,8 +627,19 @@ async def scan(
                 if strategy is StrategyName.COVERED_CALL
                 else config.entry.dte_min
             )
+            spread = strategy is StrategyName.PUT_SPREAD
             contracts = candidate_contracts(
-                sym, right, chains, price, today, lo, config.entry.dte_max, tclass
+                sym,
+                right,
+                chains,
+                price,
+                today,
+                lo,
+                config.entry.dte_max,
+                tclass,
+                max_strikes=20 if ind is not None and ind.iv else 12,
+                sigma=ind.iv if ind is not None else None,
+                extra_below=config.entry.spread_max_width if spread else 0.0,
             )
             if not contracts:
                 result.reject("no contracts in the window")
@@ -434,6 +667,9 @@ async def scan(
                 result.reject("strong uptrend: covered calls skipped")
                 continue
         passed = []
+        if strategy is StrategyName.PUT_SPREAD:
+            passed = best_spreads(quotes, ind, account, config, today, regime, result)
+            quotes = []  # handled above
         for q in quotes:
             c = q.contract
             if events is not None and sym.upper() not in INDEX_ROOTS:
