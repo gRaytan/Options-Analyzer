@@ -137,6 +137,11 @@ class BrokerAdapter(abc.ABC):
     async def account_snapshot(self) -> AccountSnapshot:
         ...
 
+    def account_is_stale(self, now: Optional[datetime] = None) -> bool:
+        """Whether account values are too old to trust. Brokers that push
+        values on a delay (IB: about every 3 minutes) override this."""
+        return False
+
     @abc.abstractmethod
     async def positions(self) -> List[Position]:
         ...
