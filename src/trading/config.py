@@ -271,7 +271,24 @@ class TailHedgeConfig(_Strict):
 
 
 class FeesConfig(_Strict):
+    """Fee assumptions (T21). Approximate defaults; calibrated from real fills.
+
+    IBKR Pro tiered US options commission by premium (verify on IB's site):
+    < $0.05: $0.25; $0.05-0.10: $0.50; >= $0.10: $0.65 per contract, $1 minimum
+    per order. Exchange and regulatory fees vary; these are estimates.
+    """
+
     per_contract: float = Field(default=0.65, ge=0.0)
+    per_contract_cheap: float = Field(default=0.50, ge=0.0)  # premium $0.05-0.10
+    per_contract_tiny: float = Field(default=0.25, ge=0.0)  # premium < $0.05
+    min_per_order: float = Field(default=1.00, ge=0.0)
+    exchange_per_contract: float = Field(default=0.20, ge=0.0)  # equity/ETF options
+    index_exchange_per_contract: Dict[str, float] = Field(
+        default_factory=lambda: {"SPX": 0.60, "SPXW": 0.60, "XSP": 0.10}
+    )
+    regulatory_per_contract: float = Field(default=0.05, ge=0.0)  # ORF + OCC + TAF
+    margin_rate_annual: float = Field(default=0.06, ge=0.0, le=0.5)  # on negative cash
+    calibration_min_fills: int = Field(default=10, ge=1)
     tier: str = "ibkr_pro_tiered"
     margin_rate_source: str = "ib_benchmark"
 
