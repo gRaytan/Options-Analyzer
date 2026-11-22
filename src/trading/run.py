@@ -33,6 +33,11 @@ from src.trading.executor import Executor
 from src.trading.mode_policy import connection_read_only, live_allowed
 from src.trading.order_manager import ExecStatus, OrderManager
 from src.trading.position_manager import PositionManager
+from src.trading import entries as entry_rules
+from src.trading.history import HistoryStore
+from src.trading.scanner import scan as run_scan
+from src.trading.tracker import Tracker
+from src.trading.config import StrategyName
 from src.trading.broker.ib_adapter import is_paper_account
 from src.trading.calendars import EventCalendar
 from src.trading.domain import OptionContract
@@ -116,6 +121,7 @@ async def monitor(
 
     budget = BudgetTracker(config, journal)
     executor = _make_executor(adapter, journal, config, halts, notifier, budget)
+    entry_ctx = EntryContext(halts, budget, events, journal)
 
     # Restore the breach latch, so a restart during a breach stays in breach.
     last_margin = journal.latest("margin_events")
@@ -165,6 +171,7 @@ async def monitor(
                 events,
                 config,
                 executor,
+                entry_ctx,
             )
         except Exception as exc:  # pylint: disable=broad-except
             # Spec §6.4: an unhandled engine error halts opening; keep running.
@@ -241,6 +248,7 @@ async def _cycle(
     events=None,
     config=None,
     executor=None,
+    entry_ctx=None,
 ):
     """One monitor pass: account and margin, positions, reconciliation, budget,
     then acting on what was found (T28)."""
@@ -332,10 +340,27 @@ async def _cycle(
                     used["regime"],
                 )
         if executor is not None and config is not None:
-            await _act(executor, journal, config, margin, positions, snap, notifier)
+            await _act(
+                executor, journal, config, margin, positions, snap, notifier, entry_ctx
+            )
     except BrokerError as exc:
         log.warning("no positions: %s", exc)
     return reconcile_state, last_reconcile
+
+
+SCAN_EVERY_S = 15 * 60  # spec §8: the scanner runs every 15 minutes
+
+
+class EntryContext:
+    """What the entry step needs across cycles (T33)."""
+
+    def __init__(self, halts, budget, events, journal, history=None, tracker=None):
+        self.halts = halts
+        self.budget = budget
+        self.events = events
+        self.history = history
+        self.tracker = tracker or Tracker(journal)
+        self.last_scan = None  # datetime of the last scan
 
 
 def _make_executor(adapter, journal, config, halts, notifier, budget) -> Executor:
@@ -379,7 +404,9 @@ def _done(journal, intent_id: str) -> bool:
     )
 
 
-async def _act(executor, journal, config, margin, positions, snap, notifier) -> None:
+async def _act(
+    executor, journal, config, margin, positions, snap, notifier, entry_ctx=None
+) -> None:
     """Act on this cycle's findings, through the mode policy (T28)."""
     if snap is None:
         return
@@ -460,6 +487,74 @@ async def _act(executor, journal, config, margin, positions, snap, notifier) -> 
     for intent_id, intent in pending.items():
         if not _done(journal, intent_id):
             await executor.submit(intent)
+
+    # 5. New entries from the scanner (T33), only when everything allows new risk.
+    if entry_ctx is not None:
+        await _enter(
+            executor, journal, config, margin, positions, snap, entry_ctx, today
+        )
+
+
+async def _enter(
+    executor, journal, config, margin, positions, snap, ctx, today
+) -> None:
+    opening = [
+        StrategyName.COVERED_CALL,
+        StrategyName.INDEX_PUT,
+        StrategyName.STOCK_PUT,
+    ]
+    if not any(config.enabled_strategies[s].open for s in opening):
+        return
+    reading = margin.last
+    budget = ctx.budget.last if ctx.budget is not None else None
+    if reading is None or not reading.allows_opening:
+        return  # margin state must be normal
+    if not ctx.halts.allows_opening():
+        return
+    if not budget or budget.get("multiplier", 0) <= 0:
+        return  # unknown or rising VIX regime: no new risk
+    now = utcnow()
+    if (
+        ctx.last_scan is not None
+        and (now - ctx.last_scan).total_seconds() < SCAN_EVERY_S
+    ):
+        return
+    ctx.last_scan = now
+    if ctx.history is None:
+        cache = os.path.join(
+            os.environ.get("TRADING_CACHE_DIR", "data/trading/cache"), "history"
+        )
+        ctx.history = HistoryStore(executor.broker, cache)
+    result = await run_scan(
+        executor.broker,
+        ctx.history,
+        positions,
+        snap,
+        config,
+        today,
+        events=ctx.events,
+        journal=journal,
+        tracker=ctx.tracker,
+        regime=budget.get("regime", "unknown"),
+    )
+    intents = entry_rules.entry_intents(
+        result,
+        budget,
+        config,
+        journal,
+        today,
+        positions=positions,
+        nlv=snap.net_liquidation,
+    )
+    log.info(
+        "scan: %d candidates, %d ready, %d entries",
+        len(result.candidates),
+        len(result.ready()),
+        len(intents),
+    )
+    for intent in intents:
+        journal.append("intents", intent, key=intent.intent_id)
+        await executor.submit(intent)
 
 
 _last_guard: list = []

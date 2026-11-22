@@ -9,6 +9,7 @@ refreshed at most once per day (after the close the day's bar is final).
 from __future__ import annotations
 
 import json
+import os
 from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, List
@@ -16,18 +17,21 @@ from typing import Callable, List
 from src.trading.broker.base import BrokerAdapter
 from src.trading.domain import Bar, HistoryKind, from_dict, to_dict, utcnow
 
-DEFAULT_CACHE_DIR = Path("data/trading/cache/history")
+
+def default_cache_dir() -> Path:
+    """``$TRADING_CACHE_DIR/history`` (read at call time), default data/trading/cache."""
+    return Path(os.environ.get("TRADING_CACHE_DIR", "data/trading/cache")) / "history"
 
 
 class HistoryStore:
     def __init__(
         self,
         broker: BrokerAdapter,
-        cache_dir: Path | str = DEFAULT_CACHE_DIR,
+        cache_dir: Path | str | None = None,
         clock: Callable[[], datetime] = utcnow,
     ):
         self.broker = broker
-        self.cache_dir = Path(cache_dir)
+        self.cache_dir = Path(cache_dir) if cache_dir else default_cache_dir()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._clock = clock
 
@@ -49,6 +53,8 @@ class HistoryStore:
         if fetched_on == today and bars is not None:
             return list(bars)
         bars = await self.broker.daily_history(symbol, kind, days)
+        if not bars:
+            return []  # never cache an empty answer: retry on the next call
         payload = {"fetched_on": today.isoformat(), "bars": to_dict(tuple(bars))}
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload))
