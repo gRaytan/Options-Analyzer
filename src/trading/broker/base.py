@@ -19,8 +19,10 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from src.trading.domain import (
     AccountSnapshot,
+    Bar,
     Contract,
     Fill,
+    HistoryKind,
     MarginImpact,
     OrderRequest,
     Position,

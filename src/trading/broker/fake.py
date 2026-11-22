@@ -29,6 +29,8 @@ from src.trading.broker.base import (
 )
 from src.trading.domain import (
     AccountSnapshot,
+    Bar,
+    HistoryKind,
     Action,
     Contract,
     Fill,
@@ -78,6 +80,8 @@ class FakeAdapter(BrokerAdapter):
         self._quotes: Dict[str, Quote] = {}
         self._positions: Dict[str, Position] = {}
         self._chains: Dict[str, List[OptionChain]] = {}
+        self._history: Dict[tuple, List[Bar]] = {}
+        self.history_calls = 0
         self._orders: Dict[str, OrderState] = {}
         self._fills: List[Fill] = []
         self._exec_ids = itertools.count(1)
@@ -102,6 +106,9 @@ class FakeAdapter(BrokerAdapter):
 
     def set_chain(self, underlying: str, chains: List[OptionChain]) -> None:
         self._chains[underlying] = chains
+
+    def set_history(self, symbol: str, kind: HistoryKind, bars: List[Bar]) -> None:
+        self._history[(symbol.upper(), kind)] = sorted(bars, key=lambda b: b.day)
 
     def reject_next_order(self, reason: str = "rejected by fake broker") -> None:
         self._reject_next = reason
@@ -180,6 +187,14 @@ class FakeAdapter(BrokerAdapter):
     async def option_chain(self, underlying: str) -> List[OptionChain]:
         self._require_connection()
         return list(self._chains.get(underlying, []))
+
+    async def daily_history(
+        self, symbol: str, kind: HistoryKind, days: int
+    ) -> List[Bar]:
+        self._require_connection()
+        self.history_calls += 1
+        bars = self._history.get((symbol.upper(), kind), [])
+        return bars[-days:] if days else list(bars)
 
     # -- orders ---------------------------------------------------------------
 

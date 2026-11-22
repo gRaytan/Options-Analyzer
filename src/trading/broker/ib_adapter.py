@@ -6,6 +6,7 @@ This is the only module that imports ``ib_async``. Implemented so far:
 * T07: account values (net liquidation, excess liquidity, margin, Cushion).
 * T08: positions (stocks and equity / index options).
 * T09: option chains and quotes (live data only, paced).
+* T10: daily price and volatility history.
 
 Order methods arrive in T18 and T22.
 
@@ -45,9 +46,11 @@ from src.trading.broker.base import (
 )
 from src.trading.domain import (
     AccountSnapshot,
+    Bar,
     Contract,
     ExerciseStyle,
     Greeks,
+    HistoryKind,
     OptionContract,
     Position,
     Quote,
@@ -600,6 +603,47 @@ class IBAdapter(BrokerAdapter):
     async def quote(self, contract: Contract) -> Quote:
         [result] = await self.quotes([contract])
         return result
+
+    # -- history (T10) -----------------------------------------------------------
+
+    async def daily_history(
+        self, symbol: str, kind: HistoryKind, days: int
+    ) -> List[Bar]:
+        """Daily bars (regular trading hours), oldest first.
+
+        ``days`` is in calendar days. IB caps daily requests at a few years
+        per call, which is plenty for IV rank (1 year) and the 200-day MA.
+        """
+        self._require_connection()
+        und = await self._qualify(f"UND:{symbol.upper()}", underlying_to_ib(symbol))
+        duration = f"{max(1, days)} D" if days <= 365 else f"{math.ceil(days / 365)} Y"
+        await self.pacer.acquire()
+        raw = await self.ib.reqHistoricalDataAsync(
+            und,
+            endDateTime="",
+            durationStr=duration,
+            barSizeSetting="1 day",
+            whatToShow=kind.value,
+            useRTH=True,
+            formatDate=1,
+        )
+        bars = []
+        for bar in raw or []:
+            # Daily bars come back as dates; intraday sizes would be datetimes.
+            day = bar.date.date() if isinstance(bar.date, datetime) else bar.date
+            bars.append(
+                Bar(
+                    day=day,
+                    open=float(bar.open),
+                    high=float(bar.high),
+                    low=float(bar.low),
+                    close=float(bar.close),
+                    volume=float(bar.volume)
+                    if _finite(bar.volume) and bar.volume > 0
+                    else 0.0,
+                )
+            )
+        return bars
 
     async def what_if(self, order):
         raise NotImplementedError("plan T18")

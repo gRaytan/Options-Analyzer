@@ -48,6 +48,14 @@ class IntentKind(str, Enum):
     HEDGE = "hedge"
 
 
+class HistoryKind(str, Enum):
+    """What a daily history series measures (IB ``whatToShow``)."""
+
+    PRICE = "TRADES"  # OHLC prices (indexes: index levels)
+    IMPLIED_VOL = "OPTION_IMPLIED_VOLATILITY"  # 30-day ATM implied vol, annualized
+    HISTORICAL_VOL = "HISTORICAL_VOLATILITY"  # 30-day realized vol, annualized
+
+
 class HaltScope(str, Enum):
     OPENING = "opening"  # no new risk; guards and closes continue
     ALL = "all"  # nothing is sent
@@ -201,6 +209,18 @@ class Position:
 
 
 @dataclass(frozen=True)
+class Bar:
+    """One daily bar. For volatility series, values are annualized fractions."""
+
+    day: date
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float = 0.0
+
+
+@dataclass(frozen=True)
 class MarginImpact:
     """Result of an IB what-if order: account margin *after* the order."""
 
@@ -303,6 +323,7 @@ _TYPES = {
         AccountSnapshot,
         Position,
         MarginImpact,
+        Bar,
         OrderLeg,
         TradeIntent,
         OrderRequest,
