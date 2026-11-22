@@ -39,6 +39,7 @@ TABLES: Sequence[str] = (
     "scan_results",
     "halts",
     "config_versions",
+    "reconciliations",
 )
 
 
@@ -61,8 +62,13 @@ def _create_table(table: str) -> List[str]:
 
 # Each migration is a list of SQL statements. Never edit a released migration;
 # append a new one instead.
+_V1_TABLES = TABLES[: TABLES.index("config_versions") + 1]
+
 MIGRATIONS: List[List[str]] = [
-    [stmt for table in TABLES for stmt in _create_table(table)],
+    # v1: the spec §9.1 tables
+    [stmt for table in _V1_TABLES for stmt in _create_table(table)],
+    # v2 (T13): reconciliation results
+    _create_table("reconciliations"),
 ]
 
 

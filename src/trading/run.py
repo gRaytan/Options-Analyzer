@@ -17,7 +17,9 @@ import signal
 from src.trading.broker.base import BrokerError
 from src.trading.broker.ib_adapter import IBAdapter, IBConnectionSettings
 from src.trading.config import load_trading_config
+from src.trading.domain import utcnow
 from src.trading.journal import DEFAULT_JOURNAL_PATH, Journal
+from src.trading.reconcile import expected_from_journal, reconcile, result_to_dict
 from src.trading.status import write_heartbeat
 
 log = logging.getLogger("trading.run")
@@ -47,6 +49,8 @@ async def monitor(
         except NotImplementedError:  # Windows
             pass
 
+    last_reconcile = None
+    reconcile_state = {"reconcile_ok": None, "mismatches": 0, "unmanaged": 0}
     delay = 5.0
     while not stop.is_set():
         try:
@@ -78,9 +82,29 @@ async def monitor(
             journal.append(
                 "positions_snapshot", tuple(positions), key=adapter.account_id
             )
+            result = reconcile(
+                expected_from_journal(journal), positions, utcnow().date()
+            )
+            summary = result_to_dict(result)
+            if summary != last_reconcile:  # journal changes only, not every loop
+                journal.append("reconciliations", summary, key=adapter.account_id)
+                last_reconcile = summary
+            for m in result.mismatches:
+                log.error(
+                    "RECONCILE MISMATCH %s: bot expects %g, IB has %g (%s)",
+                    m.key,
+                    m.expected,
+                    m.actual,
+                    m.hint,
+                )
+            reconcile_state = {
+                "reconcile_ok": result.ok,
+                "mismatches": len(result.mismatches),
+                "unmanaged": len(result.unmanaged),
+            }
         except BrokerError as exc:
             log.warning("no positions: %s", exc)
-        _heartbeat(adapter)
+        _heartbeat(adapter, **reconcile_state)
         if once:
             break
         try:
@@ -93,7 +117,7 @@ async def monitor(
     return 0
 
 
-def _heartbeat(adapter) -> None:
+def _heartbeat(adapter, **extra) -> None:
     health = getattr(adapter, "health", None)
     write_heartbeat(
         HEARTBEAT_FILE,
@@ -102,6 +126,7 @@ def _heartbeat(adapter) -> None:
         live=getattr(adapter, "is_live", False),
         account_stale=adapter.account_is_stale(),
         last_error=getattr(health, "last_error", ""),
+        **extra,
     )
 
 

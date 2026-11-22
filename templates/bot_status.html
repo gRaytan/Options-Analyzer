@@ -89,6 +89,25 @@
 <div class="alert alert-secondary">No account data yet. Start the trading engine (<code>python -m src.trading.run</code>) with IB Gateway running.</div>
 {% endif %}
 
+{% if status.reconcile %}
+{% set r = status.reconcile %}
+{% if r.mismatches %}
+<div class="alert alert-danger">
+    <i class="bi bi-exclamation-octagon-fill me-2"></i><strong>Reconciliation mismatch.</strong>
+    IB's positions don't match the bot's records. Trading must stay halted until you check these:
+    <ul class="mb-0 mt-2">
+    {% for m in r.mismatches %}<li><code>{{ m.key }}</code>: bot expects {{ "{:g}".format(m.expected) }}, IB has {{ "{:g}".format(m.actual) }}. {{ m.hint }}</li>{% endfor %}
+    </ul>
+</div>
+{% else %}
+<div class="alert alert-secondary small">
+    <i class="bi bi-check2-circle me-1 text-profit"></i>Reconciled with IB:
+    {{ r.matched | length }} bot-managed position(s) match;
+    {{ r.unmanaged | length }} position(s) are yours (monitored, not traded by the bot){% if r.expired %}; {{ r.expired | length }} expired{% endif %}.
+</div>
+{% endif %}
+{% endif %}
+
 {% if status.positions %}
 <div class="card mb-4">
     <div class="card-header"><i class="bi bi-list-ul me-2"></i>Positions from IB ({{ status.positions | length }})</div>

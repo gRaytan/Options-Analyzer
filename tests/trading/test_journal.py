@@ -33,7 +33,7 @@ def intent(i="i1"):
     )
 
 
-def test_all_tables_created(journal):
+def test_all_tables_created(journal):  # noqa: D103
     assert journal.schema_version == len(MIGRATIONS)
     for table in TABLES:
         assert journal.count(table) == 0
