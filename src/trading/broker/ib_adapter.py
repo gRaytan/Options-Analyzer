@@ -295,14 +295,16 @@ class IBAdapter(BrokerAdapter):
         ib_factory: Callable[[], object] = _default_ib_factory,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], datetime] = utcnow,
+        allow_live: bool = False,
     ):
         if not account_id:
             raise ValueError("account_id is required (set TRADING_ACCOUNT_ID)")
         super().__init__(account_id, read_only)
         live = not is_paper_account(account_id) or not settings.is_paper_port
-        if live and not read_only:
+        if live and not read_only and not allow_live:
             raise LiveTradingNotAllowed(
-                "live accounts are read-only until mode gating (plan T28) is in place"
+                "live accounts are read-only unless live trading is enabled with both "
+                "keys (live_trading_enabled in trading.json and TRADING_ALLOW_LIVE=yes)"
             )
         self.settings = settings
         self.is_live = live

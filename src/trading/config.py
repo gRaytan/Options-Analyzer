@@ -314,6 +314,12 @@ def _default_strategies() -> Dict[StrategyName, StrategySwitch]:
 
 class TradingConfig(_Strict):
     mode: Mode = Mode.PAPER
+    # Stage 5: entries go out without approval. Off = entries need approval
+    # even in auto mode (Stage 4, "auto-manage"; spec §11).
+    auto_open: bool = False
+    # Key 1 of 2 for live trading; key 2 is TRADING_ALLOW_LIVE=yes in the
+    # environment. Both are needed before any order can reach a live account.
+    live_trading_enabled: bool = False
     account_id: Optional[str] = None
     margin_type: MarginType = MarginType.REG_T
     enabled_strategies: Dict[StrategyName, StrategySwitch] = Field(
