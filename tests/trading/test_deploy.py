@@ -54,12 +54,13 @@ def test_secrets_are_gitignored():
 
 
 def test_monitor_once_journals_snapshot(tmp_path, monkeypatch):
-    monkeypatch.setattr(run, "HEARTBEAT_FILE", str(tmp_path / "hb" / "heartbeat"))
+    monkeypatch.setattr(run, "HEARTBEAT_FILE", str(tmp_path / "hb" / "heartbeat.json"))
     broker = FakeAdapter(account_id="DU123", read_only=True)
     journal = Journal(tmp_path / "journal.db")
     code = asyncio.run(run.monitor(0, once=True, adapter=broker, journal=journal))
     assert code == 0
-    assert (tmp_path / "hb" / "heartbeat").exists()
+    assert (tmp_path / "hb" / "heartbeat.json").exists()
+    assert check_positions_journaled(tmp_path)
     check = Journal(tmp_path / "journal.db")
     [rec] = check.read("account_snapshot")
     assert rec.key == "DU123" and rec.data.net_liquidation == 1_000_000
@@ -71,3 +72,7 @@ def test_monitor_requires_account_id(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)  # no trading.json -> defaults, no account
     journal = Journal(tmp_path / "j.db")
     assert asyncio.run(run.monitor(0, once=True, journal=journal)) == 2
+
+
+def check_positions_journaled(tmp_path):
+    return Journal(tmp_path / "journal.db").latest("positions_snapshot") is not None

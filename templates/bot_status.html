@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+
+{% block title %}Bot Status - Options Analyzer{% endblock %}
+
+{% block content %}
+{% set state_class = {'normal': 'text-profit', 'warning': 'text-warning', 'breach': 'text-loss', 'emergency': 'text-loss', 'unknown': 'text-muted'} %}
+<div class="page-header">
+    <h4><i class="bi bi-robot"></i> Trading Bot</h4>
+    <p class="subtitle">Live status from the trading engine. Read-only; refreshes every 30 seconds.</p>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card h-100"><div class="card-body">
+            <div class="text-muted small">Engine</div>
+            {% if status.engine_running %}
+                <div class="fs-5 text-profit"><i class="bi bi-circle-fill"></i> Running</div>
+            {% elif status.heartbeat_age_s is none %}
+                <div class="fs-5 text-muted"><i class="bi bi-circle"></i> Not started</div>
+            {% else %}
+                <div class="fs-5 text-loss"><i class="bi bi-x-circle-fill"></i> Down</div>
+                <div class="small text-muted">last seen {{ (status.heartbeat_age_s / 60) | round(0) | int }} min ago</div>
+            {% endif %}
+        </div></div>
+    </div>
+    <div class="col-md-3">
+        <div class="card h-100"><div class="card-body">
+            <div class="text-muted small">IB connection</div>
+            {% if status.connected %}
+                <div class="fs-5 text-profit"><i class="bi bi-plug-fill"></i> Connected</div>
+            {% else %}
+                <div class="fs-5 text-loss"><i class="bi bi-plug"></i> Disconnected</div>
+            {% endif %}
+            <div class="small text-muted">
+                {% if status.read_only %}Read-only{% elif status.read_only == false %}Trading enabled{% endif %}
+                {% if status.live %} · LIVE account{% elif status.live == false %} · Paper{% endif %}
+            </div>
+            {% if status.last_error %}<div class="small text-loss mt-1">{{ status.last_error }}</div>{% endif %}
+        </div></div>
+    </div>
+    <div class="col-md-3">
+        <div class="card h-100"><div class="card-body">
+            <div class="text-muted small">Margin state</div>
+            <div class="fs-5 {{ state_class[status.margin_state.value] }}">{{ status.margin_state.value | capitalize }}</div>
+            <div class="small text-muted">
+                {% if status.account_stale %}account data stale{% elif status.account_age_s is not none %}updated {{ (status.account_age_s / 60) | round(1) }} min ago{% endif %}
+            </div>
+        </div></div>
+    </div>
+    <div class="col-md-3">
+        <div class="card h-100"><div class="card-body">
+            <div class="text-muted small">Mode</div>
+            <div class="fs-5">{{ config.mode.value | capitalize }}</div>
+            <div class="small text-muted">Margin type: {{ config.margin_type.value | replace('_', '-') | upper }}</div>
+        </div></div>
+    </div>
+</div>
+
+{% if status.account %}
+{% set a = status.account %}
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-shield-check me-2"></i>Margin vs. limits (spec R1, R9)</div>
+    <div class="card-body p-0">
+        <table class="table mb-0">
+            <thead><tr><th>Measure</th><th class="text-end">Now</th><th class="text-end">New trades need</th><th class="text-end">Auto-close below</th></tr></thead>
+            <tbody>
+                <tr>
+                    <td>Excess liquidity</td>
+                    <td class="text-end {{ 'text-profit' if a.excess_liquidity >= floor.entry_min_excess_liquidity else ('text-warning' if a.excess_liquidity >= floor.excess_liquidity_min else 'text-loss') }}">${{ "{:,.0f}".format(a.excess_liquidity) }}</td>
+                    <td class="text-end">${{ "{:,.0f}".format(floor.entry_min_excess_liquidity) }}</td>
+                    <td class="text-end">${{ "{:,.0f}".format(floor.excess_liquidity_min) }}</td>
+                </tr>
+                <tr>
+                    <td>Cushion (EL ÷ net liquidation)</td>
+                    <td class="text-end {{ 'text-profit' if a.cushion >= floor.cushion_min_new_trade else ('text-warning' if a.cushion >= floor.cushion_breach else 'text-loss') }}">{{ "{:.1%}".format(a.cushion) }}</td>
+                    <td class="text-end">{{ "{:.0%}".format(floor.cushion_min_new_trade) }}</td>
+                    <td class="text-end">{{ "{:.0%}".format(floor.cushion_breach) }}</td>
+                </tr>
+                <tr><td>Net liquidation</td><td class="text-end">${{ "{:,.0f}".format(a.net_liquidation) }}</td><td></td><td></td></tr>
+                <tr><td>Maintenance margin</td><td class="text-end">${{ "{:,.0f}".format(a.maint_margin) }}</td><td></td><td></td></tr>
+                <tr><td>Initial margin</td><td class="text-end">${{ "{:,.0f}".format(a.init_margin) }}</td><td></td><td></td></tr>
+                <tr><td>Available funds</td><td class="text-end">${{ "{:,.0f}".format(a.available_funds) }}</td><td></td><td></td></tr>
+                <tr><td>Cash</td><td class="text-end {{ 'text-loss' if a.cash < 0 else '' }}">{{ '-' if a.cash < 0 else '' }}${{ "{:,.0f}".format(a.cash | abs) }}</td><td></td><td></td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+{% else %}
+<div class="alert alert-secondary">No account data yet. Start the trading engine (<code>python -m src.trading.run</code>) with IB Gateway running.</div>
+{% endif %}
+
+{% if status.positions %}
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-list-ul me-2"></i>Positions from IB ({{ status.positions | length }})</div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+        <table class="table mb-0 sortable-table">
+            <thead><tr><th data-sort="string">Contract</th><th class="text-end" data-sort="number">Qty</th><th class="text-end" data-sort="number">Avg cost</th><th class="text-end" data-sort="number">Price</th><th>Assignable early</th></tr></thead>
+            <tbody>
+            {% for p in status.positions %}
+                <tr>
+                    <td>{{ p.contract.key }}</td>
+                    <td class="text-end {{ 'text-loss' if p.quantity < 0 else '' }}">{{ "{:g}".format(p.quantity) }}</td>
+                    <td class="text-end">{{ "{:,.2f}".format(p.avg_cost) }}</td>
+                    <td class="text-end">{{ "{:,.2f}".format(p.market_price) if p.market_price is not none else "—" }}</td>
+                    <td>{% if p.contract.expiry is defined %}{{ "Yes" if p.contract.can_be_assigned_early else "No (European)" }}{% else %}—{% endif %}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<script>setTimeout(function () { window.location.reload(); }, 30000);</script>
+{% endblock %}
