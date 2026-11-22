@@ -147,15 +147,23 @@ def client(tmp_path, monkeypatch):
     return app.test_client(), tmp_path
 
 
+def token(c):
+    import re
+
+    html = c.get("/bot").get_data(as_text=True)
+    return re.search(r'name="csrf_token" value="([^"]+)"', html).group(1)
+
+
 def test_web_halt_and_resume(client):
     c, tmp_path = client
     assert "Not halted" in c.get("/bot").get_data(as_text=True)
-    c.post("/bot/halt", data={"scope": "all", "reason": "news"})
+    t = token(c)
+    c.post("/bot/halt", data={"scope": "all", "reason": "news", "csrf_token": t})
     html = c.get("/bot").get_data(as_text=True)
     assert "HALTED: everything" in html and "news" in html
-    c.post("/bot/resume", data={})  # no confirmation: still halted
+    c.post("/bot/resume", data={"csrf_token": t})  # no confirmation: still halted
     assert "HALTED" in c.get("/bot").get_data(as_text=True)
-    c.post("/bot/resume", data={"confirm": "yes"})
+    c.post("/bot/resume", data={"confirm": "yes", "csrf_token": t})
     assert "Not halted" in c.get("/bot").get_data(as_text=True)
     assert c.get("/api/bot-status").get_json()["halt"]["active"] is False
 
@@ -164,3 +172,13 @@ def test_web_shows_halt_file_without_journal(client):
     c, tmp_path = client
     (tmp_path / "HALT").write_text("")
     assert "HALTED: no new trades" in c.get("/bot").get_data(as_text=True)
+
+
+def test_web_resume_without_csrf_token_is_refused(client):
+    c, tmp_path = client
+    t = token(c)
+    c.post("/bot/halt", data={"scope": "all", "csrf_token": t})
+    # A forged cross-site form has no token (or a wrong one).
+    c.post("/bot/resume", data={"confirm": "yes"})
+    c.post("/bot/resume", data={"confirm": "yes", "csrf_token": "forged"})
+    assert "HALTED" in c.get("/bot").get_data(as_text=True)

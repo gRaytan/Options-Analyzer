@@ -76,24 +76,44 @@ class MarginMonitor:
         self._pnl_at_refresh: Optional[float] = None
         self.last: Optional[MarginReading] = None
         self._listeners: List[Listener] = []
+        # Breach latch: set on breach/emergency, cleared only by a restore.
+        # It survives "no data" readings and, via restore_state(), restarts.
+        self.latched = False
+
+    def restore_state(self, last_state: Optional[str]) -> None:
+        """Seed the breach latch from the journal after a restart."""
+        if last_state in (MarginState.BREACH.value, MarginState.EMERGENCY.value):
+            self.latched = True
 
     def on_change(self, listener: Listener) -> None:
         """Called as listener(new, previous) whenever the state changes."""
         self._listeners.append(listener)
 
     def update(
-        self, snapshot: Optional[AccountSnapshot], daily_pnl: Optional[float] = None
+        self,
+        snapshot: Optional[AccountSnapshot],
+        daily_pnl: Optional[float] = None,
+        pnl_at_snapshot: Optional[float] = None,
     ) -> MarginReading:
+        """``pnl_at_snapshot``: daily P&L when IB sent the snapshot, if known.
+
+        Without it, the baseline is the P&L when this monitor first sees the
+        snapshot, which can miss up to one check interval of losses.
+        """
         now = self._clock()
         if snapshot is None:
-            reading = MarginReading(
-                MarginState.UNKNOWN, None, None, None, 0.0, True, now, "no account data"
+            state = MarginState.BREACH if self.latched else MarginState.UNKNOWN
+            reason = "no account data" + (
+                "; breach not yet restored" if self.latched else ""
             )
+            reading = MarginReading(state, None, None, None, 0.0, True, now, reason)
             return self._emit(reading)
 
         if snapshot.ts != self._snapshot_ts:  # a fresh IB refresh arrived
             self._snapshot_ts = snapshot.ts
-            self._pnl_at_refresh = daily_pnl
+            self._pnl_at_refresh = (
+                pnl_at_snapshot if pnl_at_snapshot is not None else daily_pnl
+            )
         loss = 0.0
         if daily_pnl is not None and self._pnl_at_refresh is not None:
             loss = min(0.0, daily_pnl - self._pnl_at_refresh)  # gains ignored
@@ -136,16 +156,19 @@ class MarginMonitor:
     def _apply_hysteresis(
         self, state: MarginState, est: AccountSnapshot
     ) -> MarginState:
-        prev = self.last.state if self.last else None
-        if prev not in (MarginState.BREACH, MarginState.EMERGENCY):
-            return state
         if SEVERITY[state] >= SEVERITY[MarginState.BREACH]:
-            return state  # still in (or back to) breach/emergency: take it as is
+            self.latched = True
+            return state  # in (or back to) breach/emergency: take it as is
+        if not self.latched:
+            return state
         restored = (
             est.excess_liquidity >= self.floor.restore_target
             and est.cushion >= self.floor.cushion_restore
         )
-        return state if restored else MarginState.BREACH
+        if restored:
+            self.latched = False
+            return state
+        return MarginState.BREACH
 
     def _emit(self, reading: MarginReading) -> MarginReading:
         previous = self.last

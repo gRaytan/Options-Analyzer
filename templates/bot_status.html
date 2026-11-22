@@ -71,12 +71,14 @@
             {% endif %}
         </div>
         <form method="post" action="/bot/halt" class="d-flex gap-2 align-items-center">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input type="text" name="reason" class="form-control form-control-sm" placeholder="Reason (optional)" style="width: 14rem;">
             <button class="btn btn-sm btn-outline-warning" name="scope" value="opening" type="submit">Halt new trades</button>
             <button class="btn btn-sm btn-danger" name="scope" value="all" type="submit">Halt everything</button>
         </form>
         {% if h.active %}
         <form method="post" action="/bot/resume" class="d-flex gap-2 align-items-center">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <label class="small"><input type="checkbox" name="confirm" value="yes"> I checked the reason</label>
             <button class="btn btn-sm btn-success" type="submit">Resume</button>
         </form>

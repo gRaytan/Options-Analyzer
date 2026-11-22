@@ -60,7 +60,7 @@ def failed(decision):
 def test_good_opening_order_passes():
     d = sanity_checks(order_for(SELL_PUT, -1.05), SELL_PUT, ctx())
     assert d.approved, d.summary()
-    assert len(d.checks) == 6
+    assert len(d.checks) == 7
 
 
 @pytest.mark.parametrize(

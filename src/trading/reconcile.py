@@ -17,9 +17,9 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
-from src.trading.domain import Fill, OptionContract, Position, StockContract
+from src.trading.domain import Fill, OptionContract, Position, Right, StockContract
 from src.trading.journal import Journal
 
 QTY_TOLERANCE = 1e-9
@@ -67,11 +67,35 @@ def expected_from_journal(journal: Journal) -> Dict[str, Tuple[object, float]]:
     return expected_from_fills(record.data for record in journal.read("fills"))
 
 
+def _assigned_at_expiry(
+    contract: OptionContract,
+    exp_qty: float,
+    actual_qty: Dict[str, float],
+    previous: Optional[Dict[str, float]],
+) -> bool:
+    """Did shares move the way an assignment/exercise of this option would?
+
+    Physically settled options that vanish at expiry either expired worthless
+    or were assigned. Assignment shows up as a share change in the underlying
+    since the previous snapshot: short put / long call -> shares up;
+    short call / long put -> shares down.
+    """
+    if contract.cash_settled or previous is None:
+        return False
+    und = contract.underlying
+    change = actual_qty.get(und, 0.0) - previous.get(und, 0.0)
+    receives_shares = (contract.right is Right.PUT) == (exp_qty < 0)
+    return change > QTY_TOLERANCE if receives_shares else change < -QTY_TOLERANCE
+
+
 def reconcile(
     expected: Dict[str, Tuple[object, float]],
     actual: Iterable[Position],
     today: date,
+    previous: Optional[Dict[str, float]] = None,
 ) -> ReconcileResult:
+    """``previous``: contract key -> quantity from the last snapshot, used to
+    tell an expiry from an assignment at expiry (validation finding 4)."""
     actual_qty: Dict[str, float] = defaultdict(float)
     for pos in actual:
         actual_qty[pos.contract.key] += pos.quantity
@@ -103,7 +127,12 @@ def reconcile(
             and isinstance(contract, OptionContract)
             and contract.expiry < today
         ):
-            expired.append(key)
+            if _assigned_at_expiry(contract, exp_qty, actual_qty, previous):
+                mismatches.append(
+                    Mismatch(key, exp_qty, act_qty, "assigned or exercised at expiry")
+                )
+            else:
+                expired.append(key)
         else:
             hint = ""
             if (

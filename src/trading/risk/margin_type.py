@@ -66,7 +66,12 @@ def classify_margin_type(
     premium: float,
     contracts: int = 1,
 ) -> MarginTypeResult:
-    measured = impact.init_margin_after - account.init_margin
+    # Prefer IB's own change figure: the account snapshot can be ~3 min old,
+    # and stock margin moves with the market in the meantime.
+    if impact.init_margin_change is not None:
+        measured = impact.init_margin_change
+    else:
+        measured = impact.init_margin_after - account.init_margin
     expected = reg_t_short_option_margin(option, underlying, premium) * contracts
     ratio = measured / expected if expected > 0 else 0.0
     if 0.65 <= ratio <= 1.35:

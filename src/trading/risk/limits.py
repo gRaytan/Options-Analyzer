@@ -98,6 +98,19 @@ class Exposure:
         return root in INDEX_ROOTS or self.underlying.upper() in INDEX_ROOTS
 
 
+def worst_case_delta(contract: OptionContract, quantity: float) -> float:
+    """Delta to assume when an option has no quote.
+
+    The caps here limit **long** market exposure (a crash hurts it), so an
+    unknown delta takes the value that adds the most long exposure:
+    long calls +1, short puts -1 (short x -1 = long), and 0 for short calls
+    and long puts, whose hedging effect isn't counted without a quote.
+    """
+    if contract.right is Right.CALL:
+        return 1.0 if quantity > 0 else 0.0
+    return -1.0 if quantity < 0 else 0.0
+
+
 def exposures_from(
     positions: Iterable[Position], quotes: Dict[str, Quote]
 ) -> List[Exposure]:
@@ -106,6 +119,7 @@ def exposures_from(
     Stocks use their market price. Options need a quote with Greeks; an option
     without a delta is counted at delta 1 (worst case) so it can't hide risk.
     """
+    positions = list(positions)
     stock_prices: Dict[str, float] = {}
     for pos in positions:
         if isinstance(pos.contract, StockContract) and pos.market_price:
@@ -117,11 +131,10 @@ def exposures_from(
             out.append(Exposure(c, pos.quantity, 1.0, pos.market_price or pos.avg_cost))
             continue
         q = quotes.get(c.key)
-        delta = (
-            q.greeks.delta
-            if q and q.greeks
-            else (1.0 if c.right is Right.CALL else -1.0)
-        )
+        if q and q.greeks:
+            delta = q.greeks.delta
+        else:
+            delta = worst_case_delta(c, pos.quantity)
         und = (
             q.underlying_price if q and q.underlying_price else None
         ) or stock_prices.get(c.underlying, c.strike)
@@ -144,7 +157,13 @@ def apply_intent(
                 old.contract, old.quantity + change, old.delta, old.underlying_price
             )
         else:
-            [new] = exposures_from([Position(leg.contract, change, 0.0)], quotes)
+            price = None
+            q = quotes.get(key)
+            if q is not None:
+                price = q.mid if q.mid is not None else q.last
+            [new] = exposures_from(
+                [Position(leg.contract, change, price or 0.0, price)], quotes
+            )
             by_key[key] = len(after)
             after.append(new)
     return after
