@@ -49,3 +49,11 @@ In `deploy/gateway.env`, set `TRADING_MODE=live` and the live username and passw
 The image tag is pinned. To update it, choose a newer tag from
 `ghcr.io/gnzsnz/ib-gateway` that's at least two weeks old, change it in
 `docker-compose.yml`, and redeploy outside market hours.
+
+## Alerts (email and phone)
+Add any of these to `.env` on the server (see `.env.example`), then run `docker compose up -d`:
+
+- **Telegram (push to your phone, free):** message @BotFather in Telegram and create a bot to get a token. Then send your bot any message, and open `https://api.telegram.org/bot<TOKEN>/getUpdates` to find your chat ID. Set `ALERT_TELEGRAM_TOKEN` and `ALERT_TELEGRAM_CHAT_ID`.
+- **Email (SMTP):** set `ALERT_SMTP_HOST`, `ALERT_SMTP_PORT`, `ALERT_SMTP_USER`, `ALERT_SMTP_PASSWORD`, `ALERT_EMAIL_FROM` and `ALERT_EMAIL_TO`. For Gmail, use an app password, not your account password.
+
+What you'll get: **critical** alerts for margin breach or emergency and for any halt; **warnings** for margin warning, IB unreachable (often the weekly 2FA) and risk budget exceeded. By default info alerts go to the log only; set `alerts.min_level` in `data/config/trading.json` to change that. The same alert repeats at most every 15 minutes unless it gets worse.

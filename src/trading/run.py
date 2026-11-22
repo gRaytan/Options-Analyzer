@@ -21,6 +21,7 @@ from src.trading.domain import HaltScope, utcnow
 from src.trading.journal import DEFAULT_JOURNAL_PATH, Journal
 from src.trading.kill_switch import DEFAULT_HALT_FILE, HaltManager
 from src.trading.margin_monitor import MarginMonitor, MarginReading
+from src.trading.notifier import Notifier
 from src.trading.reconcile import expected_from_journal, reconcile, result_to_dict
 from src.trading.risk.budget import BudgetTracker
 from src.trading.status import write_heartbeat
@@ -30,8 +31,35 @@ log = logging.getLogger("trading.run")
 HEARTBEAT_FILE = "data/trading/heartbeat.json"
 
 
+_pending_alerts: set = set()
+
+
+def _alert(notifier, level: str, key: str, title: str, message: str) -> None:
+    """Send an alert without blocking the engine (fire-and-forget task)."""
+    if notifier is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        notifier.notify(level, key, title, message)
+        return
+    task = loop.create_task(notifier.anotify(level, key, title, message))
+    _pending_alerts.add(task)
+    task.add_done_callback(_pending_alerts.discard)
+
+
+async def _flush_alerts() -> None:
+    if _pending_alerts:
+        await asyncio.gather(*list(_pending_alerts), return_exceptions=True)
+
+
 async def monitor(
-    interval_s: float, once: bool = False, adapter=None, journal=None, halt_file=None
+    interval_s: float,
+    once: bool = False,
+    adapter=None,
+    journal=None,
+    halt_file=None,
+    notifier=None,
 ) -> int:
     """Run the read-only monitor loop. ``adapter``/``journal`` are injectable for tests."""
     config = load_trading_config()
@@ -44,13 +72,17 @@ async def monitor(
         )
     if journal is None:
         journal = Journal(os.environ.get("TRADING_JOURNAL", str(DEFAULT_JOURNAL_PATH)))
+    if notifier is None:
+        notifier = Notifier(config.alerts)
     halts = HaltManager(
         journal,
         halt_file or os.environ.get("TRADING_HALT_FILE", str(DEFAULT_HALT_FILE)),
     )
     margin = MarginMonitor(config.margin_floor)
     margin.on_change(
-        lambda new, old: _on_margin_change(journal, adapter.account_id, new, old)
+        lambda new, old: _on_margin_change(
+            journal, adapter.account_id, new, old, notifier
+        )
     )
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -70,12 +102,23 @@ async def monitor(
     last_reconcile = None
     reconcile_state = {"reconcile_ok": None, "mismatches": 0, "unmanaged": 0}
     delay = 5.0
+    failures = 0
     while not stop.is_set():
         try:
             await adapter.connect()
             break
         except BrokerError as exc:
+            failures += 1
             log.warning("connect failed (%s); retrying in %.0fs", exc, delay)
+            if failures == 4:  # 5 + 10 + 20 s of retries: about half a minute
+                _alert(
+                    notifier,
+                    "warning",
+                    "ib-connect",
+                    "Cannot reach IB",
+                    f"The engine can't connect to IB Gateway: {exc}. "
+                    "Check that Gateway is running and logged in (weekly 2FA).",
+                )
             # Keep the heartbeat going: "engine running, IB disconnected".
             _heartbeat(adapter, connect_error=str(exc))
             try:
@@ -86,14 +129,23 @@ async def monitor(
 
     while not stop.is_set():
         try:
-            await _ensure_connected(adapter, halts)
+            await _ensure_connected(adapter, halts, notifier)
             reconcile_state, last_reconcile = await _cycle(
-                adapter, journal, halts, margin, last_reconcile, reconcile_state, budget
+                adapter,
+                journal,
+                halts,
+                margin,
+                last_reconcile,
+                reconcile_state,
+                budget,
+                notifier,
             )
         except Exception as exc:  # pylint: disable=broad-except
             # Spec §6.4: an unhandled engine error halts opening; keep running.
             log.exception("engine cycle failed")
-            _trigger_once(halts, f"engine error: {type(exc).__name__}: {exc}")
+            _trigger_once(
+                halts, f"engine error: {type(exc).__name__}: {exc}", notifier=notifier
+            )
         halt = halts.state()
         reading = margin.last
         _heartbeat(
@@ -112,23 +164,32 @@ async def monitor(
         except asyncio.TimeoutError:
             pass
 
+    await _flush_alerts()
     await adapter.disconnect()
     journal.close()
     return 0
 
 
-def _trigger_once(halts, reason: str, scope=None) -> None:
+def _trigger_once(halts, reason: str, scope=None, notifier=None) -> None:
     """Trigger a halt unless the same reason is already recorded (no log flood)."""
     state = halts.state()
     if state.active and reason in state.reason:
         return
     if scope is None:
-        halts.trigger(reason)
+        new = halts.trigger(reason)
     else:
-        halts.trigger(reason, scope)
+        new = halts.trigger(reason, scope)
+    what = "everything" if new.scope is HaltScope.ALL else "new trades"
+    _alert(
+        notifier,
+        "critical",
+        f"halt:{reason[:60]}",
+        f"Bot halted ({what})",
+        f"{reason}\n\nCheck the Bot Status page; only you can resume.",
+    )
 
 
-async def _ensure_connected(adapter, halts) -> None:
+async def _ensure_connected(adapter, halts, notifier=None) -> None:
     """Reconnect if the adapter's own reconnect loop has given up."""
     if adapter.is_connected or getattr(adapter, "reconnecting", False):
         return
@@ -138,11 +199,18 @@ async def _ensure_connected(adapter, halts) -> None:
     except BrokerError as exc:
         log.warning("still disconnected: %s", exc)
         if type(exc).__name__ == "AccountMismatch":
-            _trigger_once(halts, f"account mismatch: {exc}")
+            _trigger_once(halts, f"account mismatch: {exc}", notifier=notifier)
 
 
 async def _cycle(
-    adapter, journal, halts, margin, last_reconcile, reconcile_state, budget=None
+    adapter,
+    journal,
+    halts,
+    margin,
+    last_reconcile,
+    reconcile_state,
+    budget=None,
+    notifier=None,
 ):
     """One monitor pass: account and margin, positions, reconciliation, budget."""
     snap = None
@@ -186,7 +254,9 @@ async def _cycle(
         if result.should_halt:
             # Spec §6.4: a reconciliation mismatch halts all trading.
             keys = ", ".join(m.key for m in result.mismatches)
-            _trigger_once(halts, f"reconcile mismatch: {keys}", HaltScope.ALL)
+            _trigger_once(
+                halts, f"reconcile mismatch: {keys}", HaltScope.ALL, notifier=notifier
+            )
         reconcile_state = {
             "reconcile_ok": result.ok,
             "mismatches": len(result.mismatches),
@@ -195,6 +265,15 @@ async def _cycle(
         if budget is not None:
             used = await budget.update(adapter, positions, snap)
             if used and used["over_budget"]:
+                _alert(
+                    notifier,
+                    "warning",
+                    "budget",
+                    "Risk budget exceeded",
+                    f"Options loss in a -20%/IV+50% crash: ${used['used']:,.0f} "
+                    f"vs budget ${used['budget']:,.0f} (regime {used['regime']}). "
+                    "No new risk until it's back under budget.",
+                )
                 log.warning(
                     "RISK BUDGET exceeded: options loss $%.0f in -20%%/IV+50%% vs budget $%.0f (%s)",
                     used["used"],
@@ -206,14 +285,33 @@ async def _cycle(
     return reconcile_state, last_reconcile
 
 
-def _on_margin_change(journal, account_id, new: MarginReading, old) -> None:
-    """Journal and log every margin state change (alerts are sent in T20)."""
+MARGIN_ALERT_LEVEL = {
+    "emergency": "critical",
+    "breach": "critical",
+    "warning": "warning",
+    "unknown": "warning",
+    "normal": "info",
+}
+
+
+def _on_margin_change(
+    journal, account_id, new: MarginReading, old, notifier=None
+) -> None:
+    """Journal, log and alert every margin state change."""
     journal.append("margin_events", new.to_dict(), key=account_id, ts=new.ts)
     previous = old.state.value if old else "start"
     message = (
         f"MARGIN {previous} -> {new.state.value}: EL ${new.excess_liquidity or 0:,.0f}, "
         f"cushion {(new.cushion or 0):.1%}" + (f" ({new.reason})" if new.reason else "")
     )
+    if old is not None or new.state.value != "normal":  # no alert for a normal start
+        _alert(
+            notifier,
+            MARGIN_ALERT_LEVEL[new.state.value],
+            f"margin:{new.state.value}",
+            f"Margin {new.state.value}",
+            message,
+        )
     if new.state.value in ("breach", "emergency"):
         log.error(message)
     elif new.state.value == "normal":

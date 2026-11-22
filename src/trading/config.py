@@ -276,6 +276,21 @@ class FeesConfig(_Strict):
     margin_rate_source: str = "ib_benchmark"
 
 
+class AlertsConfig(_Strict):
+    """Alert routing (T20). Credentials come from the environment, never here."""
+
+    min_level: str = "warning"  # info | warning | critical
+    repeat_minutes: int = Field(default=15, ge=0)  # same alert at most this often
+    max_per_hour: int = Field(default=30, gt=0)
+
+    @field_validator("min_level")
+    @classmethod
+    def _level(cls, v):
+        if v not in {"info", "warning", "critical"}:
+            raise ValueError("min_level must be info, warning or critical")
+        return v
+
+
 def _default_strategies() -> Dict[StrategyName, StrategySwitch]:
     return {name: StrategySwitch() for name in StrategyName}
 
@@ -297,6 +312,7 @@ class TradingConfig(_Strict):
     regime: RegimeConfig = RegimeConfig()
     tail_hedge: TailHedgeConfig = TailHedgeConfig()
     fees: FeesConfig = FeesConfig()
+    alerts: AlertsConfig = AlertsConfig()
 
     @field_validator("watchlist")
     @classmethod
