@@ -98,12 +98,16 @@
                         <td>
                             {% for flag in pr.flags %}
                             <span class="badge bg-{{ 'danger' if flag.severity == 'high' else 'warning text-dark' }} flag-badge">
-                                {{ flag.flag_type.replace('_', ' ')[:15] }}
+                                {{ flag.flag_type.replace('_', ' ')[:22] }}
                             </span>
                             {% endfor %}
                         </td>
                         <td>
-                            {% if 'HIGH_DELTA_SHORT_CALL' in opt.flags %}
+                            {% if 'EX_DIVIDEND_ASSIGNMENT_RISK' in opt.flags %}
+                            <span class="badge bg-danger">Roll Before Ex-Div</span>
+                            {% elif 'PIN_RISK' in opt.flags %}
+                            <span class="badge bg-danger">Roll or Close Today</span>
+                            {% elif 'HIGH_DELTA_SHORT_CALL' in opt.flags or 'HIGH_DELTA_SHORT_PUT' in opt.flags %}
                             <span class="badge bg-danger">Roll or Close</span>
                             {% elif 'LARGE_LOSS' in opt.flags %}
                             <span class="badge bg-warning text-dark">Review Position</span>
