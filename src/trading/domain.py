@@ -228,6 +228,8 @@ class MarginImpact:
     init_margin_after: float
     maint_margin_after: float
     commission: Optional[float] = None
+    # IB's own "change" figure, computed at the same moment as "after".
+    init_margin_change: Optional[float] = None
 
     @property
     def excess_liquidity_after(self) -> float:

@@ -154,6 +154,38 @@ def check_no_flip(order: OrderRequest, ctx: OrderContext) -> CheckResult:
     return CheckResult("no_flip", True)
 
 
+def check_reduces_position(intent: TradeIntent, ctx: OrderContext) -> CheckResult:
+    """Closes and risk-reducing intents must actually reduce held positions.
+
+    They skip the opening halt and the §6.1 limits, so this is what stops a
+    mislabeled "close" from opening new risk (validation finding 1).
+    Rolls are checked separately: their opening leg passes the limits.
+    """
+    if intent.kind is not IntentKind.CLOSE and not intent.risk_reducing:
+        return CheckResult("reduces_position", True, "not a close")
+    if intent.kind is IntentKind.ROLL:
+        return CheckResult(
+            "reduces_position", True, "roll: opening leg checked by limits"
+        )
+    for leg in intent.legs:
+        held = ctx.positions.get(leg.contract.key, 0.0)
+        change = leg.action.sign * leg.quantity
+        if not held or (held > 0) == (change > 0):
+            return CheckResult(
+                "reduces_position",
+                False,
+                f"{leg.contract.key}: a close must reduce a held position "
+                f"(held {held:+g}, order {change:+g})",
+            )
+        if abs(change) > abs(held) + PRICE_EPSILON:
+            return CheckResult(
+                "reduces_position",
+                False,
+                f"{leg.contract.key}: closes {abs(change):g}, only {abs(held):g} held",
+            )
+    return CheckResult("reduces_position", True)
+
+
 def check_no_duplicate(order: OrderRequest, ctx: OrderContext) -> CheckResult:
     busy = sorted({leg.contract.key for leg in order.legs} & ctx.working_keys)
     if busy:
@@ -174,6 +206,7 @@ def sanity_checks(
             check_quotes_live(order, ctx),
             check_price_in_market(order, ctx),
             check_no_flip(order, ctx),
+            check_reduces_position(intent, ctx),
             check_no_duplicate(order, ctx),
         )
     )

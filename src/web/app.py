@@ -1,5 +1,6 @@
 """Flask web application for Options Analyzer."""
 import os
+import secrets
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, session
 from werkzeug.utils import secure_filename
 
@@ -23,7 +24,8 @@ def create_app(config=None):
                 template_folder='../../templates',
                 static_folder='../../static')
 
-    app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
+    # A random key when none is configured: never a guessable default.
+    app.secret_key = os.environ.get('SECRET_KEY') or secrets.token_hex(32)
     app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
     # Initialize storage
@@ -592,9 +594,26 @@ def create_app(config=None):
             halt_file=halt_file(),
         )
 
+    def csrf_token():
+        """Per-session token for the bot's POST forms (validation finding 7)."""
+        if '_csrf' not in session:
+            session['_csrf'] = secrets.token_urlsafe(32)
+        return session['_csrf']
+
+    app.jinja_env.globals['csrf_token'] = csrf_token
+
+    def csrf_ok():
+        sent = request.form.get('csrf_token', '')
+        expected = session.get('_csrf', '')
+        return bool(expected) and secrets.compare_digest(sent, expected)
+
     @app.route('/bot/halt', methods=['POST'])
     def bot_halt():
         """Kill switch from the UI (spec §6.4)."""
+        if not csrf_ok():
+            # Halting is the safe direction, but a forged request still isn't trusted.
+            flash("Form expired; please try again.", 'danger')
+            return redirect(url_for('bot'))
         scope = HaltScope.ALL if request.form.get('scope') == 'all' else HaltScope.OPENING
         reason = (request.form.get('reason') or 'manual halt from web UI').strip()[:200]
         with Journal(journal_path()) as journal:
@@ -604,6 +623,9 @@ def create_app(config=None):
 
     @app.route('/bot/resume', methods=['POST'])
     def bot_resume():
+        if not csrf_ok():
+            flash("Form expired; please try again.", 'danger')
+            return redirect(url_for('bot'))
         if request.form.get('confirm') != 'yes':
             flash("Tick the confirmation box to resume.", 'danger')
             return redirect(url_for('bot'))

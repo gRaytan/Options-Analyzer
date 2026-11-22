@@ -18,8 +18,12 @@ against :data:`ACCOUNT_STALE_AFTER_S`.
 
 Safety rules enforced here, independent of the rest of the engine:
 
-* The connection is **read-only by default**. ``ib_async`` is told to
-  connect read-only too, so even a bug elsewhere can't send an order.
+* The adapter is **read-only by default**: ``place_order`` refuses unless it
+  was created with ``read_only=False``. Note that ``ib_async``'s own
+  ``readonly`` flag does **not** block orders (it only skips fetching open
+  orders at startup), so the order guards are this adapter's check and IB
+  Gateway's "Read-Only API" setting, which blocks orders at IB's side.
+  Code must place orders only through this adapter, never via ``adapter.ib``.
 * A **live** account (live port, or an account ID not starting with ``DU``)
   can only be opened read-only until mode gating (T28) exists.
 * The connection is refused if the configured account isn't one of the
@@ -64,8 +68,10 @@ from src.trading.domain import (
 
 log = logging.getLogger(__name__)
 
-PAPER_PORTS = {4002, 7497}  # IB Gateway paper, TWS paper
-LIVE_PORTS = {4001, 7496}  # IB Gateway live, TWS live
+# IB Gateway / TWS ports, plus the gnzsnz/ib-gateway Docker relays (4004 paper, 4003 live).
+PAPER_PORTS = {4002, 7497, 4004}
+LIVE_PORTS = {4001, 7496, 4003}
+WHAT_IF_TIMEOUT_S = 15.0
 
 # Account tag -> AccountSnapshot field. These are IB's "current" values.
 ACCOUNT_TAGS = {
@@ -299,6 +305,7 @@ class IBAdapter(BrokerAdapter):
         self._reconnect_task: Optional[asyncio.Task] = None
         self._account_updated_at: Optional[datetime] = None
         self._pnl = None  # ib_async PnL object, live after connect
+        self._pnl_at_account_update: Optional[float] = None
         self.unsupported_positions: List[str] = []
         self._qualified: Dict[str, object] = {}
         self.pacer = RateLimiter(sleep=sleep)
@@ -409,6 +416,10 @@ class IBAdapter(BrokerAdapter):
                 )
                 delay = min(delay * 2, self.settings.reconnect_max_s)
 
+    @property
+    def reconnecting(self) -> bool:
+        return self._reconnect_task is not None and not self._reconnect_task.done()
+
     async def wait_reconnected(self) -> None:
         """Wait for a pending reconnect (used by tests and the supervisor)."""
         if self._reconnect_task is not None:
@@ -462,6 +473,10 @@ class IBAdapter(BrokerAdapter):
         value = getattr(self._pnl, "dailyPnL", None)
         return float(value) if _finite(value) else None
 
+    def pnl_at_account_update(self) -> Optional[float]:
+        """Daily P&L at the moment IB last updated account values."""
+        return self._pnl_at_account_update
+
     def account_age_seconds(self, now: Optional[datetime] = None) -> Optional[float]:
         """Seconds since IB last updated an account value (None if never)."""
         if self._account_updated_at is None:
@@ -476,6 +491,7 @@ class IBAdapter(BrokerAdapter):
         if value.account != self.account_id or value.tag not in ACCOUNT_TAGS:
             return
         self._account_updated_at = self._clock()
+        self._pnl_at_account_update = self.daily_pnl()
         try:
             snapshot = self._build_snapshot()
         except AccountDataUnavailable:
@@ -734,7 +750,18 @@ class IBAdapter(BrokerAdapter):
         self._require_connection()
         ib_contract, ib_order = await self.build_ib_order(order, what_if=True)
         await self.pacer.acquire()
-        state = await self.ib.whatIfOrderAsync(ib_contract, ib_order)
+        try:
+            # ib_async treats some IB errors (e.g. 321) as warnings and never
+            # completes the request, so bound the wait.
+            state = await asyncio.wait_for(
+                self.ib.whatIfOrderAsync(ib_contract, ib_order), WHAT_IF_TIMEOUT_S
+            )
+        except asyncio.TimeoutError:
+            raise BrokerError(
+                f"IB gave no what-if answer within {WHAT_IF_TIMEOUT_S:.0f}s for "
+                f"{order.order_ref}. If IB Gateway has 'Read-Only API' enabled, IB "
+                "rejects what-if orders; margin checks need it disabled (Stage 3+)."
+            ) from None
         if (
             state is None
             or _num_or_none(getattr(state, "equityWithLoanAfter", None)) is None
@@ -748,6 +775,7 @@ class IBAdapter(BrokerAdapter):
             init_margin_after=_ib_float(state.initMarginAfter),
             maint_margin_after=_ib_float(state.maintMarginAfter),
             commission=_num_or_none(state.commission),
+            init_margin_change=_num_or_none(getattr(state, "initMarginChange", None)),
         )
 
     async def place_order(self, order):

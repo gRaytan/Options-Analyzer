@@ -59,6 +59,11 @@ async def monitor(
         except NotImplementedError:  # Windows
             pass
 
+    # Restore the breach latch, so a restart during a breach stays in breach.
+    last_margin = journal.latest("margin_events")
+    if last_margin is not None:
+        margin.restore_state(last_margin.data.get("state"))
+
     last_reconcile = None
     reconcile_state = {"reconcile_ok": None, "mismatches": 0, "unmanaged": 0}
     delay = 5.0
@@ -68,6 +73,8 @@ async def monitor(
             break
         except BrokerError as exc:
             log.warning("connect failed (%s); retrying in %.0fs", exc, delay)
+            # Keep the heartbeat going: "engine running, IB disconnected".
+            _heartbeat(adapter, connect_error=str(exc))
             try:
                 await asyncio.wait_for(stop.wait(), timeout=delay)
             except asyncio.TimeoutError:
@@ -76,13 +83,14 @@ async def monitor(
 
     while not stop.is_set():
         try:
+            await _ensure_connected(adapter, halts)
             reconcile_state, last_reconcile = await _cycle(
                 adapter, journal, halts, margin, last_reconcile, reconcile_state
             )
         except Exception as exc:  # pylint: disable=broad-except
             # Spec §6.4: an unhandled engine error halts opening; keep running.
             log.exception("engine cycle failed")
-            halts.trigger(f"engine error: {type(exc).__name__}: {exc}")
+            _trigger_once(halts, f"engine error: {type(exc).__name__}: {exc}")
         halt = halts.state()
         reading = margin.last
         _heartbeat(
@@ -105,6 +113,30 @@ async def monitor(
     return 0
 
 
+def _trigger_once(halts, reason: str, scope=None) -> None:
+    """Trigger a halt unless the same reason is already recorded (no log flood)."""
+    state = halts.state()
+    if state.active and reason in state.reason:
+        return
+    if scope is None:
+        halts.trigger(reason)
+    else:
+        halts.trigger(reason, scope)
+
+
+async def _ensure_connected(adapter, halts) -> None:
+    """Reconnect if the adapter's own reconnect loop has given up."""
+    if adapter.is_connected or getattr(adapter, "reconnecting", False):
+        return
+    try:
+        await adapter.connect()
+        log.info("reconnected to the broker")
+    except BrokerError as exc:
+        log.warning("still disconnected: %s", exc)
+        if type(exc).__name__ == "AccountMismatch":
+            _trigger_once(halts, f"account mismatch: {exc}")
+
+
 async def _cycle(adapter, journal, halts, margin, last_reconcile, reconcile_state):
     """One monitor pass: account and margin, positions, reconciliation."""
     snap = None
@@ -120,11 +152,19 @@ async def _cycle(adapter, journal, halts, margin, last_reconcile, reconcile_stat
         )
     except BrokerError as exc:
         log.warning("no account snapshot: %s", exc)
-    margin.update(snap, adapter.daily_pnl())
+    margin.update(snap, adapter.daily_pnl(), adapter.pnl_at_account_update())
     try:
         positions = await adapter.positions()
+        prev_record = journal.latest("positions_snapshot")
+        previous = (
+            {p.contract.key: p.quantity for p in prev_record.data}
+            if prev_record
+            else None
+        )
         journal.append("positions_snapshot", tuple(positions), key=adapter.account_id)
-        result = reconcile(expected_from_journal(journal), positions, utcnow().date())
+        result = reconcile(
+            expected_from_journal(journal), positions, utcnow().date(), previous
+        )
         summary = result_to_dict(result)
         if summary != last_reconcile:  # journal changes only, not every loop
             journal.append("reconciliations", summary, key=adapter.account_id)
@@ -140,8 +180,7 @@ async def _cycle(adapter, journal, halts, margin, last_reconcile, reconcile_stat
         if result.should_halt:
             # Spec §6.4: a reconciliation mismatch halts all trading.
             keys = ", ".join(m.key for m in result.mismatches)
-            if not (halts.state().active and keys in halts.state().reason):
-                halts.trigger(f"reconcile mismatch: {keys}", HaltScope.ALL)
+            _trigger_once(halts, f"reconcile mismatch: {keys}", HaltScope.ALL)
         reconcile_state = {
             "reconcile_ok": result.ok,
             "mismatches": len(result.mismatches),

@@ -107,6 +107,7 @@ class SymbolEvents:
     earnings: Optional[date] = None
     dividend: Optional[Dividend] = None
     earnings_known: bool = False  # True if the source answered (even "no earnings")
+    dividend_known: bool = False  # True if the *next* ex-date (or "none") is known
 
 
 Provider = Callable[[str], SymbolEvents]
@@ -127,18 +128,29 @@ def yfinance_provider(symbol: str) -> SymbolEvents:
     elif isinstance(raw, date):
         earnings = raw
     dividend = None
+    dividend_known = False
     ex_date = cal.get("Ex-Dividend Date")
-    if isinstance(ex_date, date):
-        divs = ticker.dividends
-        amount = float(divs.iloc[-1]) if divs is not None and len(divs) else 0.0
-        dividend = Dividend(ex_date, amount)
-    return SymbolEvents(earnings, dividend, earnings_known=earnings is not None)
+    divs = ticker.dividends
+    pays_dividends = divs is not None and len(divs) > 0
+    if isinstance(ex_date, date) and ex_date >= date.today():
+        amount = float(divs.iloc[-1]) if pays_dividends else 0.0
+        dividend, dividend_known = Dividend(ex_date, amount), True
+    elif not pays_dividends:
+        dividend_known = True  # no dividend history: no dividend expected
+    # Otherwise Yahoo only has the *last* (past) ex-date: next one unknown.
+    return SymbolEvents(
+        earnings,
+        dividend,
+        earnings_known=earnings is not None,
+        dividend_known=dividend_known,
+    )
 
 
 def _to_dict(ev: SymbolEvents) -> dict:
     return {
         "earnings": ev.earnings.isoformat() if ev.earnings else None,
         "earnings_known": ev.earnings_known,
+        "dividend_known": ev.dividend_known,
         "dividend": (
             {"ex_date": ev.dividend.ex_date.isoformat(), "amount": ev.dividend.amount}
             if ev.dividend
@@ -155,6 +167,7 @@ def _from_dict(d: dict) -> SymbolEvents:
         if div
         else None,
         earnings_known=bool(d.get("earnings_known", d.get("earnings") is not None)),
+        dividend_known=bool(d.get("dividend_known", d.get("dividend") is not None)),
     )
 
 
@@ -195,7 +208,9 @@ class EventCalendar:
         symbol = symbol.upper()
         override = self._overrides().get(symbol)
         if override is not None:
-            return _from_dict({"earnings_known": True, **override})
+            return _from_dict(
+                {"earnings_known": True, "dividend_known": True, **override}
+            )
         now = self._clock()
         today = now.date().isoformat()
         cached = self._cache.get(symbol)
@@ -237,10 +252,29 @@ class EventCalendar:
             return None if not ev.earnings_known else False
         return today <= ev.earnings <= expiry
 
+    def ex_dividend_risk(
+        self, symbol: str, expiry: date, today: date
+    ) -> Optional[bool]:
+        """True if an ex-date falls between today and expiry; ``None`` if unknown.
+
+        Like earnings, unknown is not "no dividend": callers (the covered-call
+        assignment guard) must treat ``None`` as "might have a dividend".
+        """
+        if symbol.upper() in INDEXES:
+            return False
+        ev = self.events(symbol)
+        if ev.dividend is not None and today <= ev.dividend.ex_date <= expiry:
+            return True
+        return False if ev.dividend_known else None
+
     def ex_dividend_before(
         self, symbol: str, expiry: date, today: date
     ) -> Optional[Dividend]:
-        """The dividend whose ex-date falls between today and expiry, if any."""
+        """The dividend whose ex-date falls between today and expiry, if known.
+
+        ``None`` means "none known", which may also be "unknown". Use
+        :meth:`ex_dividend_risk` for decisions.
+        """
         if symbol.upper() in INDEXES:
             return None  # cash-settled indexes: no dividend assignment risk
         div = self.events(symbol).dividend
