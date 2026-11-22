@@ -1,0 +1,3 @@
+{
+  "_comment": "Manual corrections for earnings / ex-dividend dates. These override the automatic source. Example: \"AAPL\": {\"earnings\": \"2027-01-28\", \"dividend\": {\"ex_date\": \"2027-02-09\", \"amount\": 0.27}}"
+}
