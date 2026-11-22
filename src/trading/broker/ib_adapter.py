@@ -275,6 +275,7 @@ class IBAdapter(BrokerAdapter):
         self._closing = False
         self._reconnect_task: Optional[asyncio.Task] = None
         self._account_updated_at: Optional[datetime] = None
+        self._pnl = None  # ib_async PnL object, live after connect
         self.unsupported_positions: List[str] = []
         self._qualified: Dict[str, object] = {}
         self.pacer = RateLimiter(sleep=sleep)
@@ -317,6 +318,8 @@ class IBAdapter(BrokerAdapter):
 
         # Ask for live data only. Delayed quotes are detected per ticker and refused.
         self.ib.reqMarketDataType(MARKET_DATA_LIVE)
+        # Real-time daily P&L (about 1 s updates) for the margin estimate (T16).
+        self._pnl = self.ib.reqPnL(self.account_id)
         self.health.connected = True
         self.health.last_connected_at = self._clock()
         self.health.reconnect_attempts = 0
@@ -431,6 +434,10 @@ class IBAdapter(BrokerAdapter):
         if not self.is_connected:
             raise BrokerDisconnected("not connected to IB")
         return self._build_snapshot()
+
+    def daily_pnl(self) -> Optional[float]:
+        value = getattr(self._pnl, "dailyPnL", None)
+        return float(value) if _finite(value) else None
 
     def account_age_seconds(self, now: Optional[datetime] = None) -> Optional[float]:
         """Seconds since IB last updated an account value (None if never)."""

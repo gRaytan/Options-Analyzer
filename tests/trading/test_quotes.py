@@ -41,6 +41,12 @@ class QuoteIB:
     def reqMarketDataType(self, t):
         self.market_data_type = t
 
+    def reqPnL(self, account, modelCode=""):
+        from ib_async.objects import PnL
+
+        self.pnl = PnL(account=account)
+        return self.pnl
+
     def managedAccounts(self):
         return ["DU123"]
 

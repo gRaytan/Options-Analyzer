@@ -65,6 +65,8 @@ class BotStatus:
     positions_at: Optional[datetime] = None
     reconcile: Optional[dict] = None  # latest reconciliation result (plain dict)
     halt: HaltState = field(default_factory=lambda: HaltState(False))
+    margin_reason: str = ""
+    estimated_excess_liquidity: Optional[float] = None
 
     def to_json(self) -> dict:
         acct = self.account
@@ -77,6 +79,8 @@ class BotStatus:
             "account_stale": self.account_stale,
             "last_error": self.last_error,
             "margin_state": self.margin_state.value,
+            "margin_reason": self.margin_reason,
+            "estimated_excess_liquidity": self.estimated_excess_liquidity,
             "reconcile": self.reconcile,
             "halt": {
                 "active": self.halt.active,
@@ -130,6 +134,7 @@ def load_bot_status(
     now = now or utcnow()
     status = BotStatus()
 
+    engine_margin: dict = {}
     hb_path = Path(heartbeat_path)
     try:
         heartbeat = json.loads(hb_path.read_text())
@@ -142,8 +147,12 @@ def load_bot_status(
         status.live = heartbeat.get("live")
         status.account_stale = heartbeat.get("account_stale")
         status.last_error = heartbeat.get("last_error", "")
+        if status.engine_running and isinstance(heartbeat.get("margin"), dict):
+            engine_margin = heartbeat["margin"]
     except (OSError, ValueError, KeyError):
-        pass  # never started, or unreadable: engine shown as not running
+        engine_margin = (
+            None  # never started, or unreadable: engine shown as not running
+        )
 
     if Path(journal_path).exists():
         journal = Journal(journal_path)
@@ -165,6 +174,12 @@ def load_bot_status(
     elif Path(halt_file).exists():
         status.halt = file_halt_state(halt_file)
     status.margin_state = classify_margin(status.account, floor)
+    if engine_margin:
+        # The running engine's state includes hysteresis and the P&L estimate.
+        status.margin_state = MarginState(engine_margin["state"])
+        status.margin_reason = engine_margin.get("reason", "")
+        status.estimated_excess_liquidity = engine_margin.get("excess_liquidity")
+        return status
     # Spec §6.5: account data older than 240 s counts as at least Warning.
     if (
         status.account_age_s is not None

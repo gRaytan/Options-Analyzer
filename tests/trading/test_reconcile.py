@@ -95,7 +95,7 @@ def test_bot_shares_must_remain_but_owner_extra_is_fine():
 
 def test_result_to_dict_and_journal_migration(tmp_path):
     journal = Journal(tmp_path / "j.db")
-    assert journal.schema_version == len(MIGRATIONS) == 2
+    assert journal.schema_version == len(MIGRATIONS) >= 2
     journal.append("fills", fill(PUT, Action.SELL, 1))
     exp = expected_from_journal(journal)
     summary = result_to_dict(reconcile(exp, [], TODAY))
@@ -103,7 +103,7 @@ def test_result_to_dict_and_journal_migration(tmp_path):
     assert journal.latest("reconciliations").data["mismatches"][0]["key"] == PUT.key
 
 
-def test_v1_journal_upgrades_to_v2(tmp_path):
+def test_v1_journal_upgrades_to_latest(tmp_path):
     import sqlite3
 
     from src.trading import journal as journal_mod
@@ -117,7 +117,7 @@ def test_v1_journal_upgrades_to_v2(tmp_path):
     conn.commit()
     conn.close()
     with Journal(path) as j:
-        assert j.schema_version == 2
+        assert j.schema_version == len(journal_mod.MIGRATIONS)
         j.append("reconciliations", {"ok": True})
 
 

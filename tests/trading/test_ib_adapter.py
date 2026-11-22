@@ -48,6 +48,12 @@ class FakeIB:
     def reqMarketDataType(self, data_type):
         self.market_data_type = data_type
 
+    def reqPnL(self, account, modelCode=""):
+        from ib_async.objects import PnL
+
+        self.pnl = PnL(account=account)
+        return self.pnl
+
     def managedAccounts(self):
         return self.accounts
 
