@@ -8,8 +8,9 @@ This is the only module that imports ``ib_async``. Implemented so far:
 * T09: option chains and quotes (live data only, paced).
 * T10: daily price and volatility history.
 * T18b: what-if margin for single-leg and combo orders (nothing is placed).
-
-Placing orders arrives in T22.
+* T22b: placing, modifying and cancelling orders; fills and order status.
+  Only possible when created with ``read_only=False`` (paper accounts only
+  until mode gating, T28).
 
 **Account value freshness:** IB pushes account values roughly every
 3 minutes, not in real time. Snapshots carry the time of IB's last update,
@@ -42,8 +43,13 @@ from datetime import date, datetime
 from typing import Awaitable, Callable, Dict, Iterable, List, Optional
 
 from src.trading.broker.base import (
+    OrderRejected,
     EVENT_ACCOUNT,
     EVENT_CONNECTION,
+    EVENT_FILL,
+    EVENT_ORDER,
+    OrderState,
+    OrderStatus,
     BrokerAdapter,
     BrokerDisconnected,
     BrokerError,
@@ -51,8 +57,11 @@ from src.trading.broker.base import (
 )
 from src.trading.domain import (
     AccountSnapshot,
+    Action,
     Bar,
     Contract,
+    Fill,
+    OrderLeg,
     MarginImpact,
     OrderRequest,
     ExerciseStyle,
@@ -312,6 +321,10 @@ class IBAdapter(BrokerAdapter):
         self.quote_batch_size = 50  # stay well under IB's 100 market data lines
         self.ib.disconnectedEvent += self._on_disconnected
         self.ib.accountValueEvent += self._on_account_value
+        if hasattr(self.ib, "orderStatusEvent"):
+            self.ib.orderStatusEvent += self._on_order_status
+            self.ib.commissionReportEvent += self._on_commission_report
+        self._orders: Dict[str, tuple] = {}  # orderRef -> (OrderRequest, ib Trade)
 
     # -- connection -------------------------------------------------------------
 
@@ -778,15 +791,179 @@ class IBAdapter(BrokerAdapter):
             init_margin_change=_num_or_none(getattr(state, "initMarginChange", None)),
         )
 
-    async def place_order(self, order):
+    # -- orders (T22b) -------------------------------------------------------------
+
+    _IB_STATUS = {
+        "Filled": OrderStatus.FILLED,
+        "Cancelled": OrderStatus.CANCELLED,
+        "ApiCancelled": OrderStatus.CANCELLED,
+        "Inactive": OrderStatus.REJECTED,
+    }
+
+    def _state(self, request: OrderRequest, trade) -> OrderState:
+        st = trade.orderStatus
+        filled = int(st.filled or 0)
+        status = self._IB_STATUS.get(st.status)
+        if status is None:
+            status = OrderStatus.PARTIAL if filled > 0 else OrderStatus.WORKING
+        raw_avg = _num_or_none(st.avgFillPrice) if filled else None
+        avg = None
+        if raw_avg is not None:
+            sells_single_leg = (
+                len(request.legs) == 1 and request.legs[0].action is Action.SELL
+            )
+            avg = -raw_avg if sells_single_leg else raw_avg  # credits are negative
+        reason = ""
+        if status is OrderStatus.REJECTED:
+            reason = "; ".join(
+                e.message for e in getattr(trade, "log", []) if e.message
+            )[-300:]
+        return OrderState(request, status, filled, avg, reason)
+
+    def _lookup(self, order_ref: str):
+        if order_ref not in self._orders:
+            raise BrokerError(f"unknown order {order_ref}")
+        return self._orders[order_ref]
+
+    async def place_order(self, order: OrderRequest) -> OrderState:
         self._check_can_trade()
-        raise NotImplementedError("plan T22")
+        self._require_connection()
+        if order.order_ref in self._orders:
+            request, trade = self._orders[order.order_ref]
+            if trade.orderStatus.status not in (
+                "Filled",
+                "Cancelled",
+                "ApiCancelled",
+                "Inactive",
+            ):
+                raise OrderRejected(f"duplicate working order {order.order_ref}")
+        ib_contract, ib_order = await self.build_ib_order(order)
+        await self.pacer.acquire()
+        trade = self.ib.placeOrder(ib_contract, ib_order)
+        self._orders[order.order_ref] = (order, trade)
+        log.info(
+            "placed %s @ %.2f (IB order %s)",
+            order.order_ref,
+            order.limit_price,
+            ib_order.orderId,
+        )
+        return self._state(order, trade)
 
-    async def cancel_order(self, order_ref):
-        raise NotImplementedError("plan T22")
+    async def modify_order(self, order_ref: str, limit_price: float) -> OrderState:
+        self._check_can_trade()
+        self._require_connection()
+        request, trade = self._lookup(order_ref)
+        new_request = OrderRequest(
+            request.intent_id, request.legs, limit_price, request.order_ref, request.tif
+        )
+        single = len(request.legs) == 1
+        trade.order.lmtPrice = round(abs(limit_price) if single else limit_price, 2)
+        await self.pacer.acquire()
+        self.ib.placeOrder(trade.contract, trade.order)  # same orderId = modify
+        self._orders[order_ref] = (new_request, trade)
+        return self._state(new_request, trade)
 
-    async def open_orders(self):
-        raise NotImplementedError("plan T22")
+    async def cancel_order(self, order_ref: str) -> OrderState:
+        self._require_connection()
+        request, trade = self._lookup(order_ref)
+        if trade.orderStatus.status not in (
+            "Filled",
+            "Cancelled",
+            "ApiCancelled",
+            "Inactive",
+        ):
+            await self.pacer.acquire()
+            self.ib.cancelOrder(trade.order)
+        return self._state(request, trade)
 
-    async def executions(self, since=None):
-        raise NotImplementedError("plan T22")
+    def _request_for_trade(self, trade) -> OrderRequest:
+        """Rebuild an OrderRequest for an IB order this process didn't place
+        (e.g. after a restart), so idempotency and duplicate checks still see it."""
+        ref = trade.order.orderRef
+        contract = contract_from_ib(trade.contract)
+        if contract is not None:
+            legs = (
+                OrderLeg(
+                    contract, Action(trade.order.action), int(trade.order.totalQuantity)
+                ),
+            )
+        else:  # a BAG: map leg conIds back through the qualification cache
+            by_con = {q.conId: k for k, q in self._qualified.items()}
+            legs = []
+            for cl in getattr(trade.contract, "comboLegs", []) or []:
+                key = by_con.get(cl.conId)
+                leg_contract = contract_from_ib(self._qualified[key]) if key else None
+                if leg_contract is None:
+                    leg_contract = StockContract(
+                        trade.contract.symbol
+                    )  # unknown leg: block the name
+                legs.append(
+                    OrderLeg(
+                        leg_contract, Action(cl.action), int(trade.order.totalQuantity)
+                    )
+                )
+            legs = tuple(legs) or (
+                OrderLeg(StockContract(trade.contract.symbol), Action.BUY, 1),
+            )
+        return OrderRequest(ref, legs, float(trade.order.lmtPrice or 0.0), ref)
+
+    async def open_orders(self) -> List[OrderState]:
+        self._require_connection()
+        out = []
+        for trade in self.ib.openTrades():
+            ref = getattr(trade.order, "orderRef", "")
+            if not ref or (
+                trade.order.account and trade.order.account != self.account_id
+            ):
+                continue
+            request = (
+                self._orders[ref][0]
+                if ref in self._orders
+                else self._request_for_trade(trade)
+            )
+            state = self._state(request, trade)
+            if not state.status.is_done:
+                out.append(state)
+        return out
+
+    def _fill_from_ib(self, ib_fill) -> Optional[Fill]:
+        if getattr(ib_fill.contract, "secType", "") == "BAG":
+            return None  # combos report each leg separately; skip the summary
+        contract = contract_from_ib(ib_fill.contract)
+        if contract is None:
+            return None
+        ex = ib_fill.execution
+        if getattr(ex, "acctNumber", self.account_id) not in ("", self.account_id):
+            return None
+        report = ib_fill.commissionReport
+        commission = _num_or_none(getattr(report, "commission", None)) or 0.0
+        return Fill(
+            exec_id=ex.execId,
+            order_ref=ex.orderRef or "",
+            contract=contract,
+            action=Action.BUY if ex.side == "BOT" else Action.SELL,
+            quantity=int(ex.shares),
+            price=float(ex.price),
+            ts=ex.time or ib_fill.time or self._clock(),
+            commission=commission,
+        )
+
+    async def executions(self, since: Optional[datetime] = None) -> List[Fill]:
+        self._require_connection()
+        out = []
+        for ib_fill in self.ib.fills():
+            fill = self._fill_from_ib(ib_fill)
+            if fill is not None and (since is None or fill.ts >= since):
+                out.append(fill)
+        return out
+
+    def _on_order_status(self, trade) -> None:
+        ref = getattr(trade.order, "orderRef", "")
+        if ref in self._orders:
+            self._publish(EVENT_ORDER, self._state(self._orders[ref][0], trade))
+
+    def _on_commission_report(self, trade, ib_fill, report) -> None:
+        # Published once the commission is known, so journaled fills carry it.
+        fill = self._fill_from_ib(ib_fill)
+        if fill is not None:
+            self._publish(EVENT_FILL, fill)
