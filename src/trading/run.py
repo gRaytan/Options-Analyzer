@@ -18,10 +18,11 @@ from src.trading.broker.base import BrokerError
 from src.trading.broker.ib_adapter import IBAdapter, IBConnectionSettings
 from src.trading.config import load_trading_config
 from src.trading.journal import DEFAULT_JOURNAL_PATH, Journal
+from src.trading.status import write_heartbeat
 
 log = logging.getLogger("trading.run")
 
-HEARTBEAT_FILE = "data/trading/heartbeat"
+HEARTBEAT_FILE = "data/trading/heartbeat.json"
 
 
 async def monitor(
@@ -72,7 +73,14 @@ async def monitor(
             )
         except BrokerError as exc:
             log.warning("no account snapshot: %s", exc)
-        _touch_heartbeat()
+        try:
+            positions = await adapter.positions()
+            journal.append(
+                "positions_snapshot", tuple(positions), key=adapter.account_id
+            )
+        except BrokerError as exc:
+            log.warning("no positions: %s", exc)
+        _heartbeat(adapter)
         if once:
             break
         try:
@@ -85,10 +93,16 @@ async def monitor(
     return 0
 
 
-def _touch_heartbeat() -> None:
-    os.makedirs(os.path.dirname(HEARTBEAT_FILE), exist_ok=True)
-    with open(HEARTBEAT_FILE, "w", encoding="utf-8") as fh:
-        fh.write("ok\n")
+def _heartbeat(adapter) -> None:
+    health = getattr(adapter, "health", None)
+    write_heartbeat(
+        HEARTBEAT_FILE,
+        connected=adapter.is_connected,
+        read_only=adapter.read_only,
+        live=getattr(adapter, "is_live", False),
+        account_stale=adapter.account_is_stale(),
+        last_error=getattr(health, "last_error", ""),
+    )
 
 
 def main() -> None:

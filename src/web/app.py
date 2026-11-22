@@ -10,6 +10,9 @@ from src.analysis.greeks import calculate_portfolio_greeks
 from src.analysis.margin import calculate_portfolio_margin
 from src.analysis.risk import analyze_portfolio_risk
 from src.models.portfolio import Portfolio
+from src.trading.config import load_trading_config
+from src.trading.journal import DEFAULT_JOURNAL_PATH
+from src.trading.status import load_bot_status
 
 
 def create_app(config=None):
@@ -571,6 +574,30 @@ def create_app(config=None):
                              portfolio_margins=portfolio_margins,
                              portfolios=app.portfolios,
                              portfolio_filter=session.get('portfolio_filter', 'all'))
+
+    def bot_status():
+        config = load_trading_config()
+        return config, load_bot_status(
+            os.environ.get('TRADING_JOURNAL', str(DEFAULT_JOURNAL_PATH)),
+            os.environ.get('TRADING_HEARTBEAT', 'data/trading/heartbeat.json'),
+            config.margin_floor,
+        )
+
+    @app.route('/bot')
+    def bot():
+        """Trading bot status (read-only; data written by the engine)."""
+        config, status = bot_status()
+        return render_template('bot_status.html',
+                             status=status,
+                             config=config,
+                             floor=config.margin_floor,
+                             portfolios=app.portfolios,
+                             portfolio_filter=session.get('portfolio_filter', 'all'))
+
+    @app.route('/api/bot-status')
+    def api_bot_status():
+        _, status = bot_status()
+        return jsonify(status.to_json())
 
     @app.route('/recommendations')
     def recommendations():

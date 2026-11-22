@@ -37,7 +37,7 @@ services:
       - ./data:/app/data
     healthcheck:
       # The engine touches this file every loop; stale for 5 min = unhealthy.
-      test: ["CMD-SHELL", "find /app/data/trading/heartbeat -mmin -5 | grep -q ."]
+      test: ["CMD-SHELL", "find /app/data/trading/heartbeat.json -mmin -5 | grep -q ."]
       interval: 60s
       timeout: 5s
       retries: 3
