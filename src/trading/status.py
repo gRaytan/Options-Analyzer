@@ -60,6 +60,7 @@ class BotStatus:
     margin_state: MarginState = MarginState.UNKNOWN
     positions: List[Position] = field(default_factory=list)
     positions_at: Optional[datetime] = None
+    reconcile: Optional[dict] = None  # latest reconciliation result (plain dict)
 
     def to_json(self) -> dict:
         acct = self.account
@@ -72,6 +73,7 @@ class BotStatus:
             "account_stale": self.account_stale,
             "last_error": self.last_error,
             "margin_state": self.margin_state.value,
+            "reconcile": self.reconcile,
             "account_age_s": self.account_age_s,
             "account": None
             if acct is None
@@ -138,6 +140,9 @@ def load_bot_status(
             if acct is not None:
                 status.account = acct.data
                 status.account_age_s = (now - acct.data.ts).total_seconds()
+            rec = journal.latest("reconciliations")
+            if rec is not None:
+                status.reconcile = rec.data
             pos = journal.latest("positions_snapshot")
             if pos is not None:
                 status.positions = list(pos.data)

@@ -156,3 +156,32 @@ def test_bot_status_api(client):
 
 def test_nav_has_bot_link(client):
     assert 'href="/bot"' in client.get("/bot").get_data(as_text=True)
+
+
+def test_bot_page_shows_reconcile_mismatch(tmp_path, monkeypatch):
+    from src.web.app import create_app
+
+    journal_path, hb = populated(tmp_path)
+    j = Journal(journal_path)
+    j.append(
+        "reconciliations",
+        {
+            "ok": False,
+            "matched": [],
+            "unmanaged": ["QQQM"],
+            "expired": [],
+            "mismatches": [
+                {
+                    "key": "XSP 2026-12-31 P 550",
+                    "expected": -1,
+                    "actual": 0,
+                    "hint": "gone",
+                }
+            ],
+        },
+    )
+    j.close()
+    monkeypatch.setenv("TRADING_JOURNAL", str(journal_path))
+    monkeypatch.setenv("TRADING_HEARTBEAT", str(hb))
+    html = create_app().test_client().get("/bot").get_data(as_text=True)
+    assert "Reconciliation mismatch" in html and "XSP 2026-12-31 P 550" in html
