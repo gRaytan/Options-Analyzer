@@ -41,6 +41,7 @@ TABLES: Sequence[str] = (
     "config_versions",
     "reconciliations",
     "margin_events",
+    "approvals",
 )
 
 
@@ -72,6 +73,8 @@ MIGRATIONS: List[List[str]] = [
     _create_table("reconciliations"),
     # v3 (T16): margin state changes
     _create_table("margin_events"),
+    # v4 (T27): approval requests and decisions
+    _create_table("approvals"),
 ]
 
 
