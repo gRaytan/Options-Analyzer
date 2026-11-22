@@ -135,6 +135,7 @@ class Quote:
     underlying_price: Optional[float] = None
     greeks: Optional[Greeks] = None
     open_interest: Optional[int] = None
+    delayed: bool = False  # True when the broker served delayed data
 
     @property
     def mid(self) -> Optional[float]:

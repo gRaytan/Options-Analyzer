@@ -59,6 +59,9 @@ class PositionsIB:
     async def connectAsync(self, *a, **k):
         self.connected = True
 
+    def reqMarketDataType(self, data_type):
+        self.market_data_type = data_type
+
     def managedAccounts(self):
         return ["DU123"]
 

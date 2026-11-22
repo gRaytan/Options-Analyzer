@@ -45,6 +45,9 @@ class FakeIB:
             raise ConnectionRefusedError("refused")
         self.connected = True
 
+    def reqMarketDataType(self, data_type):
+        self.market_data_type = data_type
+
     def managedAccounts(self):
         return self.accounts
 
