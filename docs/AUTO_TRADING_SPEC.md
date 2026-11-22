@@ -186,7 +186,7 @@ New UI pages: **Bot Status, Opportunities, Pending Approvals, Order Log, Risk Bu
 | Client IDs | `1` engine (the only one that places orders), `2` web UI (read-only), `3+` scripts. |
 | Read-only first | IB's "Read-Only API" setting stays **on** in Stages 0–2. That's a broker-side guarantee that no order can be placed. |
 | Data | `reqPositions`, `reqAccountSummary` (`NetLiquidation`, `ExcessLiquidity`, `MaintMarginReq`, `InitMarginReq`, `AvailableFunds`, `Cushion`), `reqPnL`, `reqSecDefOptParams`, `reqMktData` (generic ticks 100/101/104/106), `reqExecutions`, `reqHistoricalData`. |
-| Pre-trade margin | `whatIfOrder` for every opening order and roll. |
+| Pre-trade margin | `whatIfOrder` for every opening order and roll, with a 15 s timeout. **IB likely rejects what-if orders while Read-Only API is on** (error 321, which `ib_async` treats as a warning). If so, pre-trade margin checks start in Stage 3. In Stages 0–2 the bot opens nothing anyway, and the owner reads the margin type in Client Portal (account settings). |
 | Margin-type check | At startup, compare `whatIfOrder` margin on a reference short put with the Reg-T and PM formulas, and refuse to trade if the result doesn't match `margin_type` in config. |
 | Market data | Live only. On delayed data the bot runs read-only. |
 | Reconnect | Backoff 1s → 60s. On reconnect: reload positions, orders and executions, and reconcile before acting. |
