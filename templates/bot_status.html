@@ -119,6 +119,27 @@
 <div class="alert alert-secondary">No account data yet. Start the trading engine (<code>python -m src.trading.run</code>) with IB Gateway running.</div>
 {% endif %}
 
+{% if status.guard %}
+<div class="card mb-4" style="border-left: 4px solid var(--accent-red);">
+    <div class="card-header"><i class="bi bi-arrow-repeat me-2"></i>Assignment &amp; event guard: {{ status.guard | length }} roll trigger(s)</div>
+    <div class="card-body p-0">
+        <table class="table mb-0">
+            <thead><tr><th>Position</th><th>Trigger</th><th>Detail</th><th>Act by</th></tr></thead>
+            <tbody>
+            {% for g in status.guard %}
+                <tr>
+                    <td>{{ g.key }}</td>
+                    <td class="{{ 'text-loss' if g.severity in ('critical', 'high') else 'text-warning' }}">{{ g.trigger | replace('_', ' ') }}</td>
+                    <td>{{ g.detail }}</td>
+                    <td>{{ g.deadline or '—' }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
 {% if status.budget %}
 {% set b = status.budget %}
 {% set pct = (100 * b.used / b.budget) if b.budget else 100 %}
