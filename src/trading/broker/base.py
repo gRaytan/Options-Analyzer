@@ -176,6 +176,10 @@ class BrokerAdapter(abc.ABC):
     async def place_order(self, order: OrderRequest) -> OrderState:
         """Place a limit order. Must call ``_check_can_trade()`` first."""
 
+    async def modify_order(self, order_ref: str, limit_price: float) -> OrderState:
+        """Change a working order's limit price (the pricing ladder, T22)."""
+        raise NotImplementedError(f"{type(self).__name__} cannot modify orders")
+
     @abc.abstractmethod
     async def cancel_order(self, order_ref: str) -> OrderState:
         ...
