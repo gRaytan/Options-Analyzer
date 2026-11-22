@@ -212,6 +212,7 @@ class RiskConfig(_Strict):
     options_daily_loss_halt: float = Field(default=0.015, gt=0.0, le=1.0)
     options_dd_reduce: float = Field(default=0.05, gt=0.0, le=1.0)
     options_dd_halt: float = Field(default=0.08, gt=0.0, le=1.0)
+    options_dd_recover: float = Field(default=0.02, ge=0.0, le=1.0)
     max_orders_per_day: int = Field(default=5, ge=0)
     max_contracts_per_order: int = Field(default=10, gt=0)
     max_contracts_spx: int = Field(default=5, gt=0)

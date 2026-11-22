@@ -158,6 +158,10 @@ class BrokerAdapter(abc.ABC):
     async def quote(self, contract: Contract) -> Quote:
         ...
 
+    async def quotes(self, contracts) -> List[Quote]:
+        """Quotes for several contracts. Adapters with batching override this."""
+        return [await self.quote(c) for c in contracts]
+
     @abc.abstractmethod
     async def option_chain(self, underlying: str) -> List[OptionChain]:
         ...
