@@ -17,7 +17,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.trading.broker.base import BrokerError  # noqa: E402
 from src.trading.config import load_trading_config  # noqa: E402
-from src.trading.domain import OptionContract, StockContract  # noqa: E402
+from src.trading.domain import (  # noqa: E402
+    Action,
+    OptionContract,
+    OrderLeg,
+    OrderRequest,
+    Right,
+    StockContract,
+)
+from src.trading.risk.margin_type import classify_margin_type  # noqa: E402
 from src.trading.broker.ib_adapter import IBAdapter, IBConnectionSettings  # noqa: E402
 
 
@@ -109,7 +117,56 @@ async def main(args) -> int:
             )
     except BrokerError as exc:
         print(f"  FAILED: {exc}")
+
+    print("\nMargin type (what-if on 1 SPY put ~10% OTM; nothing is placed)")
+    try:
+        await check_margin_type(adapter, snap)
+    except BrokerError as exc:
+        print(f"  FAILED: {exc}")
     await adapter.disconnect()
+
+
+async def check_margin_type(adapter, snap) -> None:
+    from datetime import date as _date  # local: keep the script's imports short
+
+    if snap is None:
+        print("  skipped: no account values")
+        return
+    [spy] = await adapter.quotes([StockContract("SPY")])
+    price = spy.mid or spy.last
+    chain = next(
+        c for c in await adapter.option_chain("SPY") if c.trading_class == "SPY"
+    )
+    today = _date.today()
+    expiry = min(
+        (e for e in chain.expiries if 30 <= (e - today).days <= 60), default=None
+    )
+    if expiry is None or price is None:
+        print("  skipped: no SPY price or 30-60 day expiry")
+        return
+    strike = min(chain.strikes, key=lambda k: abs(k - 0.9 * price))
+    put = OptionContract("SPY", expiry, strike, Right.PUT, trading_class="SPY")
+    [quote] = await adapter.quotes([put])
+    premium = quote.mid or 0.0
+    order = OrderRequest(
+        "margin-check",
+        (OrderLeg(put, Action.SELL, 1),),
+        -max(premium, 0.01),
+        "margin-check",
+    )
+    impact = await adapter.what_if(order)
+    result = classify_margin_type(snap, impact, put, price, premium)
+    configured = load_trading_config().margin_type
+    print(f"  {put.key}: {result.summary}")
+    if result.detected is None:
+        print(f"  Could not tell; keeping configured '{configured.value}'.")
+    elif result.detected is configured:
+        print(f"  OK: matches configured '{configured.value}'.")
+    else:
+        print(
+            f"  MISMATCH: config says '{configured.value}', IB behaves like "
+            f"'{result.detected.value}'. Update margin_type in data/config/trading.json."
+        )
     return 0
 
 

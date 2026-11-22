@@ -7,8 +7,9 @@ This is the only module that imports ``ib_async``. Implemented so far:
 * T08: positions (stocks and equity / index options).
 * T09: option chains and quotes (live data only, paced).
 * T10: daily price and volatility history.
+* T18b: what-if margin for single-leg and combo orders (nothing is placed).
 
-Order methods arrive in T18 and T22.
+Placing orders arrives in T22.
 
 **Account value freshness:** IB pushes account values roughly every
 3 minutes, not in real time. Snapshots carry the time of IB's last update,
@@ -48,6 +49,8 @@ from src.trading.domain import (
     AccountSnapshot,
     Bar,
     Contract,
+    MarginImpact,
+    OrderRequest,
     ExerciseStyle,
     Greeks,
     HistoryKind,
@@ -133,6 +136,26 @@ def _num(value) -> Optional[float]:
     if math.isnan(value) or value < 0:
         return None
     return value
+
+
+UNSET_DOUBLE = 1.7976931348623157e308  # IB's "no value" for doubles
+
+
+def _num_or_none(value) -> Optional[float]:
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(value) or value >= UNSET_DOUBLE:
+        return None
+    return value
+
+
+def _ib_float(value) -> float:
+    number = _num_or_none(value)
+    if number is None:
+        raise BrokerError(f"IB what-if field is missing: {value!r}")
+    return number
 
 
 def _finite(value) -> bool:
@@ -652,8 +675,80 @@ class IBAdapter(BrokerAdapter):
             )
         return bars
 
-    async def what_if(self, order):
-        raise NotImplementedError("plan T18")
+    # -- what-if margin (T18b) ---------------------------------------------------
+
+    async def build_ib_order(self, order: OrderRequest, what_if: bool = False):
+        """(ib contract, ib order) for a domain order. Used by what-if and, in T22, placing.
+
+        * Single leg: the leg's action, price = ``abs(limit_price)``.
+        * Combo / roll: a BAG of SMART legs, bought at the **net** limit
+          (positive = debit, negative = credit), as IB expects for combos.
+        """
+        from ib_async import (
+            Bag,
+            ComboLeg,
+            LimitOrder,
+        )  # pylint: disable=import-outside-toplevel
+
+        qualified = [
+            await self._qualify(leg.contract.key, contract_to_ib(leg.contract))
+            for leg in order.legs
+        ]
+        if len(order.legs) == 1:
+            [leg] = order.legs
+            ib_contract = qualified[0]
+            ib_order = LimitOrder(
+                leg.action.value, leg.quantity, round(abs(order.limit_price), 2)
+            )
+        else:
+            quantities = {leg.quantity for leg in order.legs}
+            if len(quantities) != 1:
+                raise BrokerError("combos must have equal leg quantities")
+            ib_contract = Bag(
+                symbol=qualified[0].symbol,
+                exchange="SMART",
+                currency=qualified[0].currency or "USD",
+                comboLegs=[
+                    ComboLeg(
+                        conId=q.conId,
+                        ratio=1,
+                        action=leg.action.value,
+                        exchange="SMART",
+                    )
+                    for q, leg in zip(qualified, order.legs)
+                ],
+            )
+            ib_order = LimitOrder("BUY", quantities.pop(), round(order.limit_price, 2))
+        ib_order.orderRef = order.order_ref
+        ib_order.tif = order.tif
+        ib_order.account = self.account_id
+        ib_order.whatIf = what_if
+        return ib_contract, ib_order
+
+    async def what_if(self, order: OrderRequest) -> MarginImpact:
+        """Account margin after the order, from IB, without placing it.
+
+        Allowed on read-only connections: IB evaluates what-if orders without
+        executing them.
+        """
+        self._require_connection()
+        ib_contract, ib_order = await self.build_ib_order(order, what_if=True)
+        await self.pacer.acquire()
+        state = await self.ib.whatIfOrderAsync(ib_contract, ib_order)
+        if (
+            state is None
+            or _num_or_none(getattr(state, "equityWithLoanAfter", None)) is None
+        ):
+            warning = getattr(state, "warningText", "") if state is not None else ""
+            raise BrokerError(
+                f"IB returned no what-if result for {order.order_ref} {warning}".strip()
+            )
+        return MarginImpact(
+            equity_with_loan_after=_ib_float(state.equityWithLoanAfter),
+            init_margin_after=_ib_float(state.initMarginAfter),
+            maint_margin_after=_ib_float(state.maintMarginAfter),
+            commission=_num_or_none(state.commission),
+        )
 
     async def place_order(self, order):
         self._check_can_trade()
