@@ -10,7 +10,7 @@ richer than usual:
 | The underlying stretched the right way: >= 1 ATR in 1-3 days, or within 0.5 ATR of the 20-day extreme | up (high) | down (low) | +0.10 |
 | Today's best score in the top quartile of its own 20-day history | yes | yes | +0.10 |
 | ... in the bottom quartile | yes | yes | -0.10 |
-| VIX spike fading (regime ``fading``) | no | index puts | +0.20 |
+| VIX spike fading (regime ``fading``) | no | index puts and put spreads | +0.20 |
 
 The multiplier is clamped to 0.8-1.3 and scales the candidate's score.
 A candidate is **ready to sell** when its multiplier is >= ``FIRE_AT`` (1.1),
@@ -118,7 +118,10 @@ class Tracker:
             elif best_score_today <= q[0]:
                 mult -= 0.10
                 reasons.append("premium in the bottom quartile of 20 days")
-        if strategy is StrategyName.INDEX_PUT and regime == "fading":
+        if (
+            strategy in (StrategyName.INDEX_PUT, StrategyName.PUT_SPREAD)
+            and regime == "fading"
+        ):
             mult += 0.20
             reasons.append("VIX spike fading")
         return Timing(max(LOW, min(HIGH, mult)), tuple(reasons))

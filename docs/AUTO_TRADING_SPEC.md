@@ -241,8 +241,10 @@ All numbers are **defaults** in `data/config/trading.json` (§10).
 
 ### 5.4 Index put credit spreads
 - Used **instead of naked index puts** when (a) Cushion is 40–50%, so naked margin is too expensive, or (b) VIX > 30 (§6.6). That gives defined risk when risk matters most.
-- Short leg delta 0.10–0.16; width set so max loss ≤ 1% of NLV per spread position; credit ≥ 20% of width.
-- Always one combo order. Same exit, roll, and guard rules as §5.2.
+- Short leg delta 0.10–0.16 (0.05–0.10 when the VIX spike is fading, §6.6); long leg on the same expiry, at most $25 lower (XSP).
+- Sized so the spread's max loss ≤ **1% of NLV** per position, within the free risk budget and the caps. In the put caps (§6.1) a spread counts at its **width**, not its strike.
+- Credit ≥ **8% of the width**. (v0.4 said 20%, which isn't reachable: a spread's credit/width is roughly its short delta, so ≤ 16% here. The expected-value test (§5.9) does the real edge filtering.)
+- Always one combo order. Exits (§5.8) decide on the short leg and close **the whole spread** as one combo. A guard roll trigger (§5.11) **closes** the spread instead of rolling only the short leg, which would leave a naked put. Margin restoration (§6.5) may still buy back the short leg alone.
 
 ### 5.5 (removed in v0.4: iron condors, see §1.3)
 

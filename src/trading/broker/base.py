@@ -11,6 +11,7 @@ The interface is ``async`` because ``ib_async`` is asyncio-based.
 from __future__ import annotations
 
 import abc
+import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -81,6 +82,8 @@ class OptionChain:
 
 
 # Event names published by adapters.
+_log = logging.getLogger("trading.broker")
+
 EVENT_FILL = "fill"  # payload: Fill
 EVENT_ORDER = "order"  # payload: OrderState
 EVENT_ACCOUNT = "account"  # payload: AccountSnapshot
@@ -108,9 +111,18 @@ class BrokerAdapter(abc.ABC):
             raise ValueError(f"unknown event {event!r}")
         self._subscribers[event].append(callback)
 
+    def unsubscribe(self, event: str, callback: Callback) -> None:
+        if callback in self._subscribers[event]:
+            self._subscribers[event].remove(callback)
+
     def _publish(self, event: str, payload: object) -> None:
+        # One failing subscriber must not stop the others (or the broker's own
+        # bookkeeping, e.g. the second leg of a combo fill).
         for callback in list(self._subscribers[event]):
-            callback(payload)
+            try:
+                callback(payload)
+            except Exception:  # pylint: disable=broad-except
+                _log.exception("%s subscriber failed", event)
 
     def _check_can_trade(self) -> None:
         if self.read_only:
