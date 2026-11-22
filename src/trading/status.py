@@ -16,10 +16,13 @@ from pathlib import Path
 from typing import List, Optional
 
 from src.trading.config import MarginFloorConfig
-from src.trading.domain import AccountSnapshot, Position, utcnow
+from src.trading.domain import AccountSnapshot, HaltState, Position, utcnow
 from src.trading.journal import Journal
+from src.trading.kill_switch import DEFAULT_HALT_FILE, HaltManager, file_halt_state
 
 ENGINE_DOWN_AFTER_S = 300  # heartbeat older than this = engine not running
+# Matches IBAdapter's ACCOUNT_STALE_AFTER_S: IB refreshes account values ~every 3 min.
+ACCOUNT_STALE_AFTER_S = 240
 
 
 class MarginState(str, Enum):
@@ -61,6 +64,7 @@ class BotStatus:
     positions: List[Position] = field(default_factory=list)
     positions_at: Optional[datetime] = None
     reconcile: Optional[dict] = None  # latest reconciliation result (plain dict)
+    halt: HaltState = field(default_factory=lambda: HaltState(False))
 
     def to_json(self) -> dict:
         acct = self.account
@@ -74,6 +78,13 @@ class BotStatus:
             "last_error": self.last_error,
             "margin_state": self.margin_state.value,
             "reconcile": self.reconcile,
+            "halt": {
+                "active": self.halt.active,
+                "scope": self.halt.scope.value if self.halt.active else None,
+                "reason": self.halt.reason,
+                "set_by": self.halt.set_by,
+                "set_at": self.halt.set_at.isoformat() if self.halt.set_at else None,
+            },
             "account_age_s": self.account_age_s,
             "account": None
             if acct is None
@@ -114,6 +125,7 @@ def load_bot_status(
     heartbeat_path: Path | str,
     floor: MarginFloorConfig,
     now: Optional[datetime] = None,
+    halt_file: Path | str = DEFAULT_HALT_FILE,
 ) -> BotStatus:
     now = now or utcnow()
     status = BotStatus()
@@ -147,7 +159,18 @@ def load_bot_status(
             if pos is not None:
                 status.positions = list(pos.data)
                 status.positions_at = pos.ts
+            status.halt = HaltManager(journal, halt_file).state()
         finally:
             journal.close()
+    elif Path(halt_file).exists():
+        status.halt = file_halt_state(halt_file)
     status.margin_state = classify_margin(status.account, floor)
+    # Spec §6.5: account data older than 240 s counts as at least Warning.
+    if (
+        status.account_age_s is not None
+        and status.account_age_s > ACCOUNT_STALE_AFTER_S
+    ):
+        status.account_stale = True
+        if status.margin_state is MarginState.NORMAL:
+            status.margin_state = MarginState.WARNING
     return status

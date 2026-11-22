@@ -11,7 +11,9 @@ from src.analysis.margin import calculate_portfolio_margin
 from src.analysis.risk import analyze_portfolio_risk
 from src.models.portfolio import Portfolio
 from src.trading.config import load_trading_config
-from src.trading.journal import DEFAULT_JOURNAL_PATH
+from src.trading.domain import HaltScope
+from src.trading.journal import DEFAULT_JOURNAL_PATH, Journal
+from src.trading.kill_switch import DEFAULT_HALT_FILE, HaltManager
 from src.trading.status import load_bot_status
 
 
@@ -575,13 +577,40 @@ def create_app(config=None):
                              portfolios=app.portfolios,
                              portfolio_filter=session.get('portfolio_filter', 'all'))
 
+    def journal_path():
+        return os.environ.get('TRADING_JOURNAL', str(DEFAULT_JOURNAL_PATH))
+
+    def halt_file():
+        return os.environ.get('TRADING_HALT_FILE', str(DEFAULT_HALT_FILE))
+
     def bot_status():
         config = load_trading_config()
         return config, load_bot_status(
-            os.environ.get('TRADING_JOURNAL', str(DEFAULT_JOURNAL_PATH)),
+            journal_path(),
             os.environ.get('TRADING_HEARTBEAT', 'data/trading/heartbeat.json'),
             config.margin_floor,
+            halt_file=halt_file(),
         )
+
+    @app.route('/bot/halt', methods=['POST'])
+    def bot_halt():
+        """Kill switch from the UI (spec §6.4)."""
+        scope = HaltScope.ALL if request.form.get('scope') == 'all' else HaltScope.OPENING
+        reason = (request.form.get('reason') or 'manual halt from web UI').strip()[:200]
+        with Journal(journal_path()) as journal:
+            HaltManager(journal, halt_file()).halt(reason, scope, by='web-ui')
+        flash(f"Bot halted ({scope.value}).", 'warning')
+        return redirect(url_for('bot'))
+
+    @app.route('/bot/resume', methods=['POST'])
+    def bot_resume():
+        if request.form.get('confirm') != 'yes':
+            flash("Tick the confirmation box to resume.", 'danger')
+            return redirect(url_for('bot'))
+        with Journal(journal_path()) as journal:
+            HaltManager(journal, halt_file()).resume(by='web-ui', note=request.form.get('note', ''))
+        flash("Halt cleared.", 'success')
+        return redirect(url_for('bot'))
 
     @app.route('/bot')
     def bot():

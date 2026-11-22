@@ -185,3 +185,11 @@ def test_bot_page_shows_reconcile_mismatch(tmp_path, monkeypatch):
     monkeypatch.setenv("TRADING_HEARTBEAT", str(hb))
     html = create_app().test_client().get("/bot").get_data(as_text=True)
     assert "Reconciliation mismatch" in html and "XSP 2026-12-31 P 550" in html
+
+
+def test_old_account_data_is_at_least_warning(tmp_path):
+    paths = populated(tmp_path)  # snapshot is 2 min old: fresh
+    assert load_bot_status(*paths, FLOOR, NOW).margin_state is MarginState.NORMAL
+    later = NOW + timedelta(minutes=10)
+    status = load_bot_status(*paths, FLOOR, later)
+    assert status.margin_state is MarginState.WARNING and status.account_stale
