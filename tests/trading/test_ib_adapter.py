@@ -341,3 +341,9 @@ def test_usd_preferred_over_other_currencies_without_base():
         ib.push(tag, value)
     ib.push("ExcessLiquidity", "123", currency="EUR")
     assert asyncio.run(adapter.account_snapshot()).excess_liquidity == 450_000
+
+
+def test_status_and_adapter_staleness_thresholds_agree():
+    from src.trading import status
+
+    assert status.ACCOUNT_STALE_AFTER_S == ACCOUNT_STALE_AFTER_S

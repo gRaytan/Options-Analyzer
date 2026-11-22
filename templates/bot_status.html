@@ -56,6 +56,33 @@
     </div>
 </div>
 
+{% set h = status.halt %}
+<div class="card mb-4" style="border-left: 4px solid {{ 'var(--accent-red)' if h.active else 'var(--accent-green)' }};">
+    <div class="card-body d-flex flex-wrap align-items-center gap-3">
+        <div class="me-auto">
+            {% if h.active %}
+                <div class="fs-5 text-loss"><i class="bi bi-sign-stop-fill me-1"></i>HALTED: {{ 'everything' if h.scope.value == 'all' else 'no new trades' }}</div>
+                <div class="small text-muted">{{ h.reason }}{% if h.set_by %} · by {{ h.set_by }}{% endif %}{% if h.set_at %} · {{ h.set_at.strftime('%Y-%m-%d %H:%M UTC') }}{% endif %}</div>
+                {% if h.scope.value != 'all' %}<div class="small text-muted">Closes, rolls and margin restoration still run.</div>{% endif %}
+            {% else %}
+                <div class="fs-5 text-profit"><i class="bi bi-play-circle-fill me-1"></i>Not halted</div>
+                <div class="small text-muted">Kill switch: stop new trades, or stop everything.</div>
+            {% endif %}
+        </div>
+        <form method="post" action="/bot/halt" class="d-flex gap-2 align-items-center">
+            <input type="text" name="reason" class="form-control form-control-sm" placeholder="Reason (optional)" style="width: 14rem;">
+            <button class="btn btn-sm btn-outline-warning" name="scope" value="opening" type="submit">Halt new trades</button>
+            <button class="btn btn-sm btn-danger" name="scope" value="all" type="submit">Halt everything</button>
+        </form>
+        {% if h.active %}
+        <form method="post" action="/bot/resume" class="d-flex gap-2 align-items-center">
+            <label class="small"><input type="checkbox" name="confirm" value="yes"> I checked the reason</label>
+            <button class="btn btn-sm btn-success" type="submit">Resume</button>
+        </form>
+        {% endif %}
+    </div>
+</div>
+
 {% if status.account %}
 {% set a = status.account %}
 <div class="card mb-4">

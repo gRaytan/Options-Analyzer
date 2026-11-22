@@ -17,8 +17,9 @@ import signal
 from src.trading.broker.base import BrokerError
 from src.trading.broker.ib_adapter import IBAdapter, IBConnectionSettings
 from src.trading.config import load_trading_config
-from src.trading.domain import utcnow
+from src.trading.domain import HaltScope, utcnow
 from src.trading.journal import DEFAULT_JOURNAL_PATH, Journal
+from src.trading.kill_switch import DEFAULT_HALT_FILE, HaltManager
 from src.trading.reconcile import expected_from_journal, reconcile, result_to_dict
 from src.trading.status import write_heartbeat
 
@@ -28,7 +29,7 @@ HEARTBEAT_FILE = "data/trading/heartbeat.json"
 
 
 async def monitor(
-    interval_s: float, once: bool = False, adapter=None, journal=None
+    interval_s: float, once: bool = False, adapter=None, journal=None, halt_file=None
 ) -> int:
     """Run the read-only monitor loop. ``adapter``/``journal`` are injectable for tests."""
     if adapter is None:
@@ -41,6 +42,10 @@ async def monitor(
         )
     if journal is None:
         journal = Journal(os.environ.get("TRADING_JOURNAL", str(DEFAULT_JOURNAL_PATH)))
+    halts = HaltManager(
+        journal,
+        halt_file or os.environ.get("TRADING_HALT_FILE", str(DEFAULT_HALT_FILE)),
+    )
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -66,45 +71,21 @@ async def monitor(
 
     while not stop.is_set():
         try:
-            snap = await adapter.account_snapshot()
-            journal.append("account_snapshot", snap, key=snap.account_id)
-            log.info(
-                "NLV $%.0f  EL $%.0f  cushion %.1f%%%s",
-                snap.net_liquidation,
-                snap.excess_liquidity,
-                snap.cushion * 100,
-                "  (stale)" if adapter.account_is_stale() else "",
+            reconcile_state, last_reconcile = await _cycle(
+                adapter, journal, halts, last_reconcile, reconcile_state
             )
-        except BrokerError as exc:
-            log.warning("no account snapshot: %s", exc)
-        try:
-            positions = await adapter.positions()
-            journal.append(
-                "positions_snapshot", tuple(positions), key=adapter.account_id
-            )
-            result = reconcile(
-                expected_from_journal(journal), positions, utcnow().date()
-            )
-            summary = result_to_dict(result)
-            if summary != last_reconcile:  # journal changes only, not every loop
-                journal.append("reconciliations", summary, key=adapter.account_id)
-                last_reconcile = summary
-            for m in result.mismatches:
-                log.error(
-                    "RECONCILE MISMATCH %s: bot expects %g, IB has %g (%s)",
-                    m.key,
-                    m.expected,
-                    m.actual,
-                    m.hint,
-                )
-            reconcile_state = {
-                "reconcile_ok": result.ok,
-                "mismatches": len(result.mismatches),
-                "unmanaged": len(result.unmanaged),
-            }
-        except BrokerError as exc:
-            log.warning("no positions: %s", exc)
-        _heartbeat(adapter, **reconcile_state)
+        except Exception as exc:  # pylint: disable=broad-except
+            # Spec §6.4: an unhandled engine error halts opening; keep running.
+            log.exception("engine cycle failed")
+            halts.trigger(f"engine error: {type(exc).__name__}: {exc}")
+        halt = halts.state()
+        _heartbeat(
+            adapter,
+            halted=halt.active,
+            halt_scope=halt.scope.value if halt.active else None,
+            halt_reason=halt.reason if halt.active else "",
+            **reconcile_state,
+        )
         if once:
             break
         try:
@@ -115,6 +96,51 @@ async def monitor(
     await adapter.disconnect()
     journal.close()
     return 0
+
+
+async def _cycle(adapter, journal, halts, last_reconcile, reconcile_state):
+    """One monitor pass: account, positions, reconciliation."""
+    try:
+        snap = await adapter.account_snapshot()
+        journal.append("account_snapshot", snap, key=snap.account_id)
+        log.info(
+            "NLV $%.0f  EL $%.0f  cushion %.1f%%%s",
+            snap.net_liquidation,
+            snap.excess_liquidity,
+            snap.cushion * 100,
+            "  (stale)" if adapter.account_is_stale() else "",
+        )
+    except BrokerError as exc:
+        log.warning("no account snapshot: %s", exc)
+    try:
+        positions = await adapter.positions()
+        journal.append("positions_snapshot", tuple(positions), key=adapter.account_id)
+        result = reconcile(expected_from_journal(journal), positions, utcnow().date())
+        summary = result_to_dict(result)
+        if summary != last_reconcile:  # journal changes only, not every loop
+            journal.append("reconciliations", summary, key=adapter.account_id)
+            last_reconcile = summary
+        for m in result.mismatches:
+            log.error(
+                "RECONCILE MISMATCH %s: bot expects %g, IB has %g (%s)",
+                m.key,
+                m.expected,
+                m.actual,
+                m.hint,
+            )
+        if result.should_halt:
+            # Spec §6.4: a reconciliation mismatch halts all trading.
+            keys = ", ".join(m.key for m in result.mismatches)
+            if not (halts.state().active and keys in halts.state().reason):
+                halts.trigger(f"reconcile mismatch: {keys}", HaltScope.ALL)
+        reconcile_state = {
+            "reconcile_ok": result.ok,
+            "mismatches": len(result.mismatches),
+            "unmanaged": len(result.unmanaged),
+        }
+    except BrokerError as exc:
+        log.warning("no positions: %s", exc)
+    return reconcile_state, last_reconcile
 
 
 def _heartbeat(adapter, **extra) -> None:
