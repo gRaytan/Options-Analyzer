@@ -158,7 +158,10 @@ def test_f4_assignment_at_expiry_detected():
     previous = {AAPL_PUT.key: -2, "AAPL": 0}
     now = [Position(StockContract("AAPL"), 200, 200.0)]
     result = reconcile(exp, now, date(2026, 11, 23), previous)
-    assert result.should_halt and "expiry" in result.mismatches[0].hint
+    # Detected (finding 4) and, since T28c, explained as an assignment to handle.
+    assert not result.should_halt
+    [a] = result.assignments
+    assert a.option_key == AAPL_PUT.key and a.contracts == 2 and a.shares == 200
 
 
 def test_f4_worthless_expiry_still_explained():

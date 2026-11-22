@@ -34,11 +34,22 @@ class Mismatch:
 
 
 @dataclass(frozen=True)
+class Assignment:
+    """A short option assigned (fully or partly), matched to a share move."""
+
+    option_key: str
+    contract: OptionContract
+    contracts: int  # contracts assigned
+    shares: float  # signed share change it caused (+ put, - call)
+
+
+@dataclass(frozen=True)
 class ReconcileResult:
     matched: Tuple[str, ...] = ()
     unmanaged: Tuple[str, ...] = ()
     expired: Tuple[str, ...] = ()
     mismatches: Tuple[Mismatch, ...] = field(default_factory=tuple)
+    assignments: Tuple[Assignment, ...] = field(default_factory=tuple)
 
     @property
     def ok(self) -> bool:
@@ -147,6 +158,10 @@ def reconcile(
                 hint = "quantity differs from the bot's fills"
             mismatches.append(Mismatch(key, exp_qty, act_qty, hint))
 
+    assignments, mismatches = _explain_assignments(
+        mismatches, expected, actual_qty, previous
+    )
+
     for key in sorted(actual_qty):
         if key not in expected and abs(actual_qty[key]) > QTY_TOLERANCE:
             unmanaged.append(key)
@@ -156,7 +171,47 @@ def reconcile(
         unmanaged=tuple(unmanaged),
         expired=tuple(expired),
         mismatches=tuple(mismatches),
+        assignments=tuple(assignments),
     )
+
+
+def _explain_assignments(mismatches, expected, actual_qty, previous):
+    """Turn short-option shortfalls into assignments when shares moved to match.
+
+    Per underlying, the expected share move is the sum over its shortfalls
+    (short put: +100 per contract assigned; short call: -100). If the actual
+    move since the previous snapshot equals it exactly, they are assignments
+    (plan T28c); otherwise they stay unexplained mismatches.
+    """
+    if previous is None:
+        return [], mismatches
+    by_und: Dict[str, List[Tuple[Mismatch, OptionContract, int]]] = defaultdict(list)
+    for m in mismatches:
+        contract = expected.get(m.key, (None, 0))[0]
+        if (
+            isinstance(contract, OptionContract)
+            and not contract.cash_settled
+            and m.expected < 0
+            and abs(m.actual) < abs(m.expected)
+        ):
+            gone = int(round(abs(m.expected) - abs(m.actual)))
+            by_und[contract.underlying].append((m, contract, gone))
+    assignments: List[Assignment] = []
+    explained = set()
+    for und, items in by_und.items():
+        expected_move = sum(
+            gone * c.multiplier * (1 if c.right is Right.PUT else -1)
+            for _, c, gone in items
+        )
+        actual_move = actual_qty.get(und, 0.0) - previous.get(und, 0.0)
+        if expected_move and abs(actual_move - expected_move) <= QTY_TOLERANCE:
+            for m, c, gone in items:
+                sign = 1 if c.right is Right.PUT else -1
+                assignments.append(
+                    Assignment(m.key, c, gone, sign * gone * c.multiplier)
+                )
+                explained.add(m.key)
+    return assignments, [m for m in mismatches if m.key not in explained]
 
 
 def result_to_dict(result: ReconcileResult) -> dict:
@@ -169,5 +224,9 @@ def result_to_dict(result: ReconcileResult) -> dict:
         "mismatches": [
             {"key": m.key, "expected": m.expected, "actual": m.actual, "hint": m.hint}
             for m in result.mismatches
+        ],
+        "assignments": [
+            {"key": a.option_key, "contracts": a.contracts, "shares": a.shares}
+            for a in result.assignments
         ],
     }

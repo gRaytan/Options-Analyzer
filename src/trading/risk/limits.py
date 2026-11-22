@@ -209,6 +209,35 @@ def _cap_check(name, before, after, cap_dollars, label) -> CheckResult:
     return CheckResult(name, True)
 
 
+def _concentration_checks(
+    ctx, after, risk: RiskConfig, nlv: float
+) -> List[CheckResult]:
+    """Per-name and per-sector delta-dollar caps; block increases above the cap."""
+
+    def name_of(e: Exposure) -> str:
+        return "SPX" if e.is_index else e.underlying.upper()
+
+    def sector_of(e: Exposure) -> str:
+        return "index" if e.is_index else ctx.sectors.get(name_of(e), name_of(e))
+
+    return [
+        _cap_check(
+            "per_name",
+            _group_dollars(ctx.exposures, name_of),
+            _group_dollars(after, name_of),
+            risk.per_name_max * nlv,
+            "per-name",
+        ),
+        _cap_check(
+            "per_sector",
+            _group_dollars(ctx.exposures, sector_of),
+            _group_dollars(after, sector_of),
+            risk.per_sector_max * nlv,
+            "per-sector",
+        ),
+    ]
+
+
 def check_limits(
     intent: TradeIntent, ctx: LimitContext, floor, risk: RiskConfig
 ) -> GateDecision:
@@ -277,29 +306,16 @@ def check_limits(
         )
     )
 
+    restores = bool(intent.details.get("restore_assignment"))
+
     # Concentration: per name and per sector (delta-dollars), block increases above cap.
-    name_of = lambda e: "SPX" if e.is_index else e.underlying.upper()  # noqa: E731
-    checks.append(
-        _cap_check(
-            "per_name",
-            _group_dollars(ctx.exposures, name_of),
-            _group_dollars(after, name_of),
-            risk.per_name_max * nlv,
-            "per-name",
-        )
-    )
-    sector_of = (
-        lambda e: "index" if e.is_index else ctx.sectors.get(name_of(e), name_of(e))
-    )  # noqa: E731
-    checks.append(
-        _cap_check(
-            "per_sector",
-            _group_dollars(ctx.exposures, sector_of),
-            _group_dollars(after, sector_of),
-            risk.per_sector_max * nlv,
-            "per-sector",
-        )
-    )
+    # A rebuy after a call assignment restores the previous holding: not a new
+    # concentration (T28c), so it skips these caps; margin checks above still apply.
+    if restores:
+        checks.append(CheckResult("per_name", True, "restores pre-assignment shares"))
+        checks.append(CheckResult("per_sector", True, "restores pre-assignment shares"))
+    else:
+        checks.extend(_concentration_checks(ctx, after, risk, nlv))
 
     # Options-only beta-weighted delta (stocks excluded: you're fully invested by design).
     def options_beta_dollars(items):

@@ -26,6 +26,7 @@ from src.trading.reconcile import expected_from_journal, reconcile, result_to_di
 from src.trading.risk.budget import BudgetTracker
 from src.trading import guard as assignment_guard
 from src.trading import rolls
+from src.trading.assignments import handle_assignment
 from src.trading.calendars import EventCalendar
 from src.trading.domain import OptionContract
 from src.trading.status import write_heartbeat
@@ -265,6 +266,21 @@ async def _cycle(
                 m.actual,
                 m.hint,
             )
+        for a in result.assignments:
+            # T28c: an assignment that happened anyway. Journal it, plan the undo.
+            outcome = handle_assignment(
+                a, journal, config or load_trading_config(), utcnow().date()
+            )
+            if outcome.intent is not None:
+                journal.append("intents", outcome.intent, key=outcome.intent.intent_id)
+            log.error("ASSIGNMENT %s", outcome.message)
+            _alert(
+                notifier,
+                "critical",
+                f"assignment:{a.option_key}",
+                "Option assigned",
+                outcome.message + "\n(Orders are sent once mode gating is enabled.)",
+            )
         if result.should_halt:
             # Spec §6.4: a reconciliation mismatch halts all trading.
             keys = ", ".join(m.key for m in result.mismatches)
@@ -275,6 +291,7 @@ async def _cycle(
             "reconcile_ok": result.ok,
             "mismatches": len(result.mismatches),
             "unmanaged": len(result.unmanaged),
+            "assignments": len(result.assignments),
         }
         if config is not None:
             await _check_guard(
