@@ -137,6 +137,10 @@ class BrokerAdapter(abc.ABC):
     async def account_snapshot(self) -> AccountSnapshot:
         ...
 
+    def daily_pnl(self) -> Optional[float]:
+        """Today's account P&L from a real-time stream, if the broker has one."""
+        return None
+
     def account_is_stale(self, now: Optional[datetime] = None) -> bool:
         """Whether account values are too old to trust. Brokers that push
         values on a delay (IB: about every 3 minutes) override this."""

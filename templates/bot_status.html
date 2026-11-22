@@ -44,6 +44,7 @@
             <div class="fs-5 {{ state_class[status.margin_state.value] }}">{{ status.margin_state.value | capitalize }}</div>
             <div class="small text-muted">
                 {% if status.account_stale %}account data stale{% elif status.account_age_s is not none %}updated {{ (status.account_age_s / 60) | round(1) }} min ago{% endif %}
+                {% if status.margin_reason %}<br>{{ status.margin_reason }}{% endif %}
             </div>
         </div></div>
     </div>

@@ -20,6 +20,7 @@ from src.trading.config import load_trading_config
 from src.trading.domain import HaltScope, utcnow
 from src.trading.journal import DEFAULT_JOURNAL_PATH, Journal
 from src.trading.kill_switch import DEFAULT_HALT_FILE, HaltManager
+from src.trading.margin_monitor import MarginMonitor, MarginReading
 from src.trading.reconcile import expected_from_journal, reconcile, result_to_dict
 from src.trading.status import write_heartbeat
 
@@ -32,8 +33,8 @@ async def monitor(
     interval_s: float, once: bool = False, adapter=None, journal=None, halt_file=None
 ) -> int:
     """Run the read-only monitor loop. ``adapter``/``journal`` are injectable for tests."""
+    config = load_trading_config()
     if adapter is None:
-        config = load_trading_config()
         if not config.account_id:
             log.error("TRADING_ACCOUNT_ID is not set")
             return 2
@@ -45,6 +46,10 @@ async def monitor(
     halts = HaltManager(
         journal,
         halt_file or os.environ.get("TRADING_HALT_FILE", str(DEFAULT_HALT_FILE)),
+    )
+    margin = MarginMonitor(config.margin_floor)
+    margin.on_change(
+        lambda new, old: _on_margin_change(journal, adapter.account_id, new, old)
     )
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -72,15 +77,17 @@ async def monitor(
     while not stop.is_set():
         try:
             reconcile_state, last_reconcile = await _cycle(
-                adapter, journal, halts, last_reconcile, reconcile_state
+                adapter, journal, halts, margin, last_reconcile, reconcile_state
             )
         except Exception as exc:  # pylint: disable=broad-except
             # Spec §6.4: an unhandled engine error halts opening; keep running.
             log.exception("engine cycle failed")
             halts.trigger(f"engine error: {type(exc).__name__}: {exc}")
         halt = halts.state()
+        reading = margin.last
         _heartbeat(
             adapter,
+            margin=reading.to_dict() if reading else None,
             halted=halt.active,
             halt_scope=halt.scope.value if halt.active else None,
             halt_reason=halt.reason if halt.active else "",
@@ -98,8 +105,9 @@ async def monitor(
     return 0
 
 
-async def _cycle(adapter, journal, halts, last_reconcile, reconcile_state):
-    """One monitor pass: account, positions, reconciliation."""
+async def _cycle(adapter, journal, halts, margin, last_reconcile, reconcile_state):
+    """One monitor pass: account and margin, positions, reconciliation."""
+    snap = None
     try:
         snap = await adapter.account_snapshot()
         journal.append("account_snapshot", snap, key=snap.account_id)
@@ -112,6 +120,7 @@ async def _cycle(adapter, journal, halts, last_reconcile, reconcile_state):
         )
     except BrokerError as exc:
         log.warning("no account snapshot: %s", exc)
+    margin.update(snap, adapter.daily_pnl())
     try:
         positions = await adapter.positions()
         journal.append("positions_snapshot", tuple(positions), key=adapter.account_id)
@@ -141,6 +150,22 @@ async def _cycle(adapter, journal, halts, last_reconcile, reconcile_state):
     except BrokerError as exc:
         log.warning("no positions: %s", exc)
     return reconcile_state, last_reconcile
+
+
+def _on_margin_change(journal, account_id, new: MarginReading, old) -> None:
+    """Journal and log every margin state change (alerts are sent in T20)."""
+    journal.append("margin_events", new.to_dict(), key=account_id, ts=new.ts)
+    previous = old.state.value if old else "start"
+    message = (
+        f"MARGIN {previous} -> {new.state.value}: EL ${new.excess_liquidity or 0:,.0f}, "
+        f"cushion {(new.cushion or 0):.1%}" + (f" ({new.reason})" if new.reason else "")
+    )
+    if new.state.value in ("breach", "emergency"):
+        log.error(message)
+    elif new.state.value == "normal":
+        log.info(message)
+    else:
+        log.warning(message)
 
 
 def _heartbeat(adapter, **extra) -> None:

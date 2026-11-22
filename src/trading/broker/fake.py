@@ -89,6 +89,7 @@ class FakeAdapter(BrokerAdapter):
         self.commission_per_contract = commission_per_contract
         self.what_if_fn = what_if_fn
         self.auto_fill = True
+        self.pnl: Optional[float] = None  # scripted daily P&L
 
     # -- scripting helpers ----------------------------------------------------
 
@@ -109,6 +110,9 @@ class FakeAdapter(BrokerAdapter):
 
     def set_history(self, symbol: str, kind: HistoryKind, bars: List[Bar]) -> None:
         self._history[(symbol.upper(), kind)] = sorted(bars, key=lambda b: b.day)
+
+    def daily_pnl(self) -> Optional[float]:
+        return self.pnl
 
     def reject_next_order(self, reason: str = "rejected by fake broker") -> None:
         self._reject_next = reason
