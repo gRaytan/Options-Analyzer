@@ -392,10 +392,10 @@ A pure function of (intent, portfolio, market, config), unit-tested exhaustively
 | **EL in the §6.2 scenario** (stocks + options + hedge, margin ×1.5) | ≥ **$100,000** |
 | **Options-book stress loss** (§6.2) | ≤ the **risk budget**: 10% of NLV, scaled by regime (§6.6) |
 | **Total short-put notional** | ≤ **50% of NLV** |
-| **Per-name combined exposure**: stock value + short-put notional × delta-adjusted, − covered-call delta | ≤ **15% of NLV** (the existing stock weights may already exceed this; the rule then blocks **adding** to the name) |
+| **Per-name combined exposure** in delta-dollars (stock value + option delta × 100 × qty × underlying price; short puts add, covered calls subtract) | ≤ **15% of NLV**, or not increased: existing holdings may already exceed it, so the rule blocks **adding** to the name and still allows covered calls |
 | Index put notional (XSP/SPX) | ≤ 40% of NLV (within the 50% total) |
 | Per-sector combined exposure | ≤ 35% of NLV, same rule as per-name |
-| **Expiry ladder**: short-put notional in any one expiration | ≤ **35%** of total short-put notional |
+| **Expiry ladder**: short-put notional in any one expiration | ≤ **35% of the short-put cap** (= 17.5% NLV with the 50% cap). Measured against the cap, not the current total, which would block the first put |
 | **Options-book beta-weighted delta** (excluding stocks) | ≤ +0.35 × NLV in SPY-dollar terms |
 | Max contracts per order | 10 (index: 5 SPXW / 20 XSP) |
 | Max new opening orders per day | 5 |
