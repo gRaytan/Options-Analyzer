@@ -130,7 +130,9 @@ class OrderManager:
         step_s: float = 60.0,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         step_overrides: Optional[Dict[str, float]] = None,
+        allow_live: bool = False,
     ):
+        self.allow_live = allow_live
         self.broker = broker
         self.journal = journal
         self.step_s = step_s
@@ -166,8 +168,8 @@ class OrderManager:
     def _guard(self, intent: TradeIntent) -> Optional[str]:
         if self.broker.read_only:
             return "broker connection is read-only"
-        if getattr(self.broker, "is_live", False):
-            return "live trading is disabled until mode gating (T28)"
+        if getattr(self.broker, "is_live", False) and not self.allow_live:
+            return "live trading is not enabled (needs both keys; see mode_policy)"
         skip = self.skip_until.get(intent.intent_id)
         if skip and utcnow().date() <= skip:
             return f"skipped for today after {MAX_FAILED_CYCLES} unfilled cycles"
