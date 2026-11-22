@@ -66,6 +66,7 @@ class BotStatus:
     reconcile: Optional[dict] = None  # latest reconciliation result (plain dict)
     halt: HaltState = field(default_factory=lambda: HaltState(False))
     margin_reason: str = ""
+    budget: Optional[dict] = None  # live risk budget from the engine (T19b)
     estimated_excess_liquidity: Optional[float] = None
 
     def to_json(self) -> dict:
@@ -80,6 +81,7 @@ class BotStatus:
             "last_error": self.last_error,
             "margin_state": self.margin_state.value,
             "margin_reason": self.margin_reason,
+            "budget": self.budget,
             "estimated_excess_liquidity": self.estimated_excess_liquidity,
             "reconcile": self.reconcile,
             "halt": {
@@ -147,6 +149,8 @@ def load_bot_status(
         status.live = heartbeat.get("live")
         status.account_stale = heartbeat.get("account_stale")
         status.last_error = heartbeat.get("last_error", "")
+        if status.engine_running and isinstance(heartbeat.get("budget"), dict):
+            status.budget = heartbeat["budget"]
         if status.engine_running and isinstance(heartbeat.get("margin"), dict):
             engine_margin = heartbeat["margin"]
     except (OSError, ValueError, KeyError):

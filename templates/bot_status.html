@@ -119,6 +119,27 @@
 <div class="alert alert-secondary">No account data yet. Start the trading engine (<code>python -m src.trading.run</code>) with IB Gateway running.</div>
 {% endif %}
 
+{% if status.budget %}
+{% set b = status.budget %}
+{% set pct = (100 * b.used / b.budget) if b.budget else 100 %}
+<div class="card mb-4">
+    <div class="card-header d-flex align-items-center">
+        <i class="bi bi-speedometer2 me-2"></i>Risk budget (spec §6.2, §6.6)
+        <span class="ms-auto small text-muted">Regime: <strong>{{ b.regime }}</strong>{% if b.vix %} · VIX {{ "%.1f"|format(b.vix) }}{% endif %} · multiplier {{ "%.1f"|format(b.multiplier) }}{% if b.spreads_only %} · spreads only{% endif %}</span>
+    </div>
+    <div class="card-body">
+        <div class="d-flex justify-content-between small mb-1">
+            <span>Options loss in a −20% / IV +50% crash: <strong>${{ "{:,.0f}".format(b.used) }}</strong></span>
+            <span>Budget ${{ "{:,.0f}".format(b.budget) }} · free ${{ "{:,.0f}".format(b.free) }}</span>
+        </div>
+        <div class="progress" style="height: 10px;">
+            <div class="progress-bar {{ 'bg-danger' if b.over_budget else ('bg-warning' if pct > 80 else 'bg-success') }}" style="width: {{ [pct, 100] | min }}%"></div>
+        </div>
+        <div class="small text-muted mt-2">{{ b.regime_detail }}{% if b.budget == 0 %} · no new risk in this regime{% endif %}</div>
+    </div>
+</div>
+{% endif %}
+
 {% if status.reconcile %}
 {% set r = status.reconcile %}
 {% if r.mismatches %}

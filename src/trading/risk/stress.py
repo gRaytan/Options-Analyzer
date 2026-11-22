@@ -86,7 +86,8 @@ class ScenarioResult:
 def _option_value(c: OptionContract, und: float, iv: float, today: date) -> float:
     t = max((c.expiry - today).days / 365.0, MIN_T)
     flag = "c" if c.right is Right.CALL else "p"
-    return black_scholes(flag, max(und, 0.01), c.strike, t, RATE, max(iv, 0.01))
+    # float(): py_vollib returns numpy scalars, which don't serialize to JSON.
+    return float(black_scholes(flag, max(und, 0.01), c.strike, t, RATE, max(iv, 0.01)))
 
 
 def _reg_t_model_margin(

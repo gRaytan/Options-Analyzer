@@ -22,6 +22,7 @@ from src.trading.journal import DEFAULT_JOURNAL_PATH, Journal
 from src.trading.kill_switch import DEFAULT_HALT_FILE, HaltManager
 from src.trading.margin_monitor import MarginMonitor, MarginReading
 from src.trading.reconcile import expected_from_journal, reconcile, result_to_dict
+from src.trading.risk.budget import BudgetTracker
 from src.trading.status import write_heartbeat
 
 log = logging.getLogger("trading.run")
@@ -59,6 +60,8 @@ async def monitor(
         except NotImplementedError:  # Windows
             pass
 
+    budget = BudgetTracker(config, journal)
+
     # Restore the breach latch, so a restart during a breach stays in breach.
     last_margin = journal.latest("margin_events")
     if last_margin is not None:
@@ -85,7 +88,7 @@ async def monitor(
         try:
             await _ensure_connected(adapter, halts)
             reconcile_state, last_reconcile = await _cycle(
-                adapter, journal, halts, margin, last_reconcile, reconcile_state
+                adapter, journal, halts, margin, last_reconcile, reconcile_state, budget
             )
         except Exception as exc:  # pylint: disable=broad-except
             # Spec §6.4: an unhandled engine error halts opening; keep running.
@@ -96,6 +99,7 @@ async def monitor(
         _heartbeat(
             adapter,
             margin=reading.to_dict() if reading else None,
+            budget=budget.last,
             halted=halt.active,
             halt_scope=halt.scope.value if halt.active else None,
             halt_reason=halt.reason if halt.active else "",
@@ -137,8 +141,10 @@ async def _ensure_connected(adapter, halts) -> None:
             _trigger_once(halts, f"account mismatch: {exc}")
 
 
-async def _cycle(adapter, journal, halts, margin, last_reconcile, reconcile_state):
-    """One monitor pass: account and margin, positions, reconciliation."""
+async def _cycle(
+    adapter, journal, halts, margin, last_reconcile, reconcile_state, budget=None
+):
+    """One monitor pass: account and margin, positions, reconciliation, budget."""
     snap = None
     try:
         snap = await adapter.account_snapshot()
@@ -186,6 +192,15 @@ async def _cycle(adapter, journal, halts, margin, last_reconcile, reconcile_stat
             "mismatches": len(result.mismatches),
             "unmanaged": len(result.unmanaged),
         }
+        if budget is not None:
+            used = await budget.update(adapter, positions, snap)
+            if used and used["over_budget"]:
+                log.warning(
+                    "RISK BUDGET exceeded: options loss $%.0f in -20%%/IV+50%% vs budget $%.0f (%s)",
+                    used["used"],
+                    used["budget"],
+                    used["regime"],
+                )
     except BrokerError as exc:
         log.warning("no positions: %s", exc)
     return reconcile_state, last_reconcile
