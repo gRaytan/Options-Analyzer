@@ -169,3 +169,59 @@ def test_engine_reports_guard_signals(tmp_path, monkeypatch):
     beat = json.loads(hb.read_text())
     assert [g["trigger"] for g in beat["guard"]] == ["early_roll"]
     assert any(a.title.startswith("Roll needed") for a in rec.alerts)
+
+
+def test_engine_plans_a_roll_for_a_triggered_position(tmp_path, monkeypatch):
+    from src.trading.broker.base import OptionChain
+
+    hb = tmp_path / "hb.json"
+    monkeypatch.setattr(run, "HEARTBEAT_FILE", str(hb))
+    broker = FakeAdapter(account_id="DU1", read_only=True)
+    old = OptionContract(
+        "XSP",
+        TODAY + timedelta(days=10),
+        600,
+        Right.PUT,
+        style=ExerciseStyle.EUROPEAN,
+        cash_settled=True,
+        trading_class="XSP",
+    )
+    later = TODAY + timedelta(days=40)
+    broker.set_chain(
+        "XSP", [OptionChain("XSP", "XSP", 100, (old.expiry, later), (590.0, 600.0))]
+    )
+    broker.set_position(old, -1, 3.0)
+    broker.set_quote(
+        Quote(old, 3.9, 4.1, NOW, underlying_price=605, greeks=Greeks(-0.42, iv=0.2))
+    )
+    for k, mid in ((590.0, 4.6), (600.0, 7.0)):
+        c = OptionContract(
+            "XSP",
+            later,
+            k,
+            Right.PUT,
+            style=ExerciseStyle.EUROPEAN,
+            cash_settled=True,
+            trading_class="XSP",
+        )
+        broker.set_quote(
+            Quote(
+                c,
+                mid - 0.1,
+                mid + 0.1,
+                NOW,
+                underlying_price=605,
+                greeks=Greeks(-0.4, iv=0.2),
+            )
+        )
+    asyncio.run(
+        run.monitor(
+            0,
+            once=True,
+            adapter=broker,
+            journal=Journal(tmp_path / "j.db"),
+            halt_file=tmp_path / "H",
+        )
+    )
+    [g] = json.loads(hb.read_text())["guard"]
+    assert g["plan"].startswith("roll: roll to XSP") and "590" in g["plan"]

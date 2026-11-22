@@ -124,7 +124,7 @@
     <div class="card-header"><i class="bi bi-arrow-repeat me-2"></i>Assignment &amp; event guard: {{ status.guard | length }} roll trigger(s)</div>
     <div class="card-body p-0">
         <table class="table mb-0">
-            <thead><tr><th>Position</th><th>Trigger</th><th>Detail</th><th>Act by</th></tr></thead>
+            <thead><tr><th>Position</th><th>Trigger</th><th>Detail</th><th>Act by</th><th>Plan</th></tr></thead>
             <tbody>
             {% for g in status.guard %}
                 <tr>
@@ -132,6 +132,7 @@
                     <td class="{{ 'text-loss' if g.severity in ('critical', 'high') else 'text-warning' }}">{{ g.trigger | replace('_', ' ') }}</td>
                     <td>{{ g.detail }}</td>
                     <td>{{ g.deadline or '—' }}</td>
+                    <td class="small">{{ g.plan or '—' }}</td>
                 </tr>
             {% endfor %}
             </tbody>
