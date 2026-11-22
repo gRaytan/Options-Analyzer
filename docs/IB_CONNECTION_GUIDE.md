@@ -137,6 +137,12 @@ python scripts/backtest_data.py fetch --source ib --account DU1234567
 That saves about 18 years of SPY, QQQ, QQQM and SPX daily bars under
 `data/backtest/`.
 
+**Run the backtest** (no IB connection needed once the bars are saved):
+```bash
+python scripts/backtest.py            # full history, plus 2020 and 2022 on their own
+```
+Reports go to `data/backtest/reports/` (Markdown, JSON and a daily CSV). Send me the `.md` files.
+
 **Calibration (a few times over the first weeks):**
 1. During market hours, record a live XSP chain:
    ```bash

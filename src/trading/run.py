@@ -79,11 +79,14 @@ async def monitor(
     halt_file=None,
     notifier=None,
     events=None,
+    config=None,
+    order_sleep=None,
 ) -> int:
-    """Run the read-only monitor loop. ``adapter``/``journal`` are injectable for tests."""
+    """Run the read-only monitor loop. ``adapter``/``journal`` are injectable for
+    tests; ``config`` and ``order_sleep`` (the order ladder's wait) for backtests."""
     global _last_guard  # pylint: disable=global-statement
     _last_guard = []
-    config = load_trading_config()
+    config = config if config is not None else load_trading_config()
     if adapter is None and events is None:
         events = EventCalendar()  # production: earnings / ex-dividend dates
     if adapter is None:
@@ -121,7 +124,9 @@ async def monitor(
             pass
 
     budget = BudgetTracker(config, journal)
-    executor = _make_executor(adapter, journal, config, halts, notifier, budget)
+    executor = _make_executor(
+        adapter, journal, config, halts, notifier, budget, sleep=order_sleep
+    )
     entry_ctx = EntryContext(halts, budget, events, journal)
 
     # Restore the breach latch, so a restart during a breach stays in breach.
@@ -365,10 +370,13 @@ class EntryContext:
         self.last_scan = None  # datetime of the last scan
 
 
-def _make_executor(adapter, journal, config, halts, notifier, budget) -> Executor:
+def _make_executor(
+    adapter, journal, config, halts, notifier, budget, sleep=None
+) -> Executor:
     steps = {s: e.order_step_s for s, e in config.watchlist.items() if e.order_step_s}
+    kw = {"sleep": sleep} if sleep is not None else {}
     orders = OrderManager(
-        adapter, journal, step_overrides=steps, allow_live=live_allowed(config)
+        adapter, journal, step_overrides=steps, allow_live=live_allowed(config), **kw
     )
 
     def on_request(data: dict) -> None:
@@ -464,6 +472,15 @@ async def _act(
     book = rolls.ChainBook(journal)
     for plan in list(_last_roll_plans.values()):
         res = await executor.submit(plan.intent)
+        if (
+            res is not None
+            and res.status is ExecStatus.REJECTED
+            and plan.action == "roll"
+        ):
+            # The roll itself was refused (e.g. the new leg would break a cap):
+            # don't stay in the risky position, close it instead (T37 finding).
+            plan = rolls.close_instead(plan, f"roll rejected: {res.detail}", today)
+            res = await executor.submit(plan.intent)
         if res is not None and res.status is ExecStatus.FILLED:
             if plan.action == "roll":
                 book.record_roll(

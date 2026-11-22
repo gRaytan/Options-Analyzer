@@ -380,5 +380,18 @@ def from_dict(data: Any) -> Any:
     return data
 
 
+_CLOCK_OVERRIDE = None  # backtests only (T37): a simulated "now"
+
+
 def utcnow() -> datetime:
+    """The engine's single source of time. A backtest can replace it with
+    :func:`set_clock`; everything that reads the time goes through here."""
+    if _CLOCK_OVERRIDE is not None:
+        return _CLOCK_OVERRIDE()
     return datetime.now(timezone.utc)
+
+
+def set_clock(clock=None) -> None:
+    """Simulate time (``clock() -> aware datetime``); ``None`` restores real time."""
+    global _CLOCK_OVERRIDE  # pylint: disable=global-statement
+    _CLOCK_OVERRIDE = clock
