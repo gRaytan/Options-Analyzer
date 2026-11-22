@@ -95,6 +95,12 @@ class FakeAdapter(BrokerAdapter):
 
     def set_quote(self, quote: Quote) -> None:
         self._quotes[quote.contract.key] = quote
+        # Like an exchange: a resting order fills when the market reaches it.
+        for state in list(self._orders.values()):
+            if not state.status.is_done and any(
+                leg.contract.key == quote.contract.key for leg in state.order.legs
+            ):
+                self._maybe_fill(state)
 
     def set_account(self, **changes) -> None:
         self._account = replace(self._account, ts=self._clock(), **changes)
@@ -223,15 +229,31 @@ class FakeAdapter(BrokerAdapter):
                 OrderState(order, OrderStatus.REJECTED, reason=reason)
             )
         state = self._set_order(OrderState(order, OrderStatus.WORKING))
-        if self.auto_fill:
-            natural = self._natural_price(order)
-            # Prices are net debits per unit: a credit is negative. An order is
-            # marketable when it is willing to pay at least the natural price.
-            if natural is not None and order.limit_price >= natural - 1e-9:
-                state = self.fill_order(
-                    order.order_ref, order.legs[0].quantity, order.limit_price
-                )
+        return self._maybe_fill(state)
+
+    def _maybe_fill(self, state: OrderState) -> OrderState:
+        if not self.auto_fill or state.status.is_done:
+            return state
+        order = state.order
+        natural = self._natural_price(order)
+        # Prices are net debits per unit: a credit is negative. An order is
+        # marketable when it is willing to pay at least the natural price.
+        if natural is not None and order.limit_price >= natural - 1e-9:
+            state = self.fill_order(order.order_ref, state.remaining, order.limit_price)
         return state
+
+    async def modify_order(self, order_ref: str, limit_price: float) -> OrderState:
+        self._check_can_trade()
+        self._require_connection()
+        state = self._orders.get(order_ref)
+        if state is None:
+            raise BrokerError(f"unknown order {order_ref}")
+        if state.status.is_done:
+            return state
+        state = self._set_order(
+            replace(state, order=replace(state.order, limit_price=limit_price))
+        )
+        return self._maybe_fill(state)
 
     async def cancel_order(self, order_ref: str) -> OrderState:
         self._require_connection()
