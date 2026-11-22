@@ -14,6 +14,7 @@ from src.models.portfolio import Portfolio
 from src.trading.config import load_trading_config
 from src.trading.domain import HaltScope
 from src.trading.journal import DEFAULT_JOURNAL_PATH, Journal
+from src.trading.approvals import ApprovalError, ApprovalQueue
 from src.trading.kill_switch import DEFAULT_HALT_FILE, HaltManager
 from src.trading.status import load_bot_status
 
@@ -645,6 +646,38 @@ def create_app(config=None):
                              floor=config.margin_floor,
                              portfolios=app.portfolios,
                              portfolio_filter=session.get('portfolio_filter', 'all'))
+
+    @app.route('/bot/approvals')
+    def bot_approvals():
+        """Stage 3: approve or reject each opening trade (spec §11)."""
+        pending, recent = [], []
+        if os.path.exists(journal_path()):
+            with Journal(journal_path()) as journal:
+                queue = ApprovalQueue(journal)
+                pending, recent = queue.pending(), queue.recent()
+        return render_template('bot_approvals.html',
+                               pending=pending, recent=recent,
+                               portfolios=app.portfolios,
+                               portfolio_filter=session.get('portfolio_filter', 'all'))
+
+    @app.route('/bot/approvals/<intent_id>', methods=['POST'])
+    def bot_approval_decision(intent_id):
+        if not csrf_ok():
+            flash("Form expired; please try again.", 'danger')
+            return redirect(url_for('bot_approvals'))
+        decision = request.form.get('decision')
+        with Journal(journal_path()) as journal:
+            queue = ApprovalQueue(journal)
+            try:
+                if decision == 'approve':
+                    queue.approve(intent_id, by='web-ui', note=request.form.get('note', ''))
+                    flash("Approved. The bot will send the order.", 'success')
+                elif decision == 'reject':
+                    queue.reject(intent_id, by='web-ui', note=request.form.get('note', ''))
+                    flash("Rejected. Nothing will be sent.", 'warning')
+            except ApprovalError as exc:
+                flash(str(exc), 'danger')
+        return redirect(url_for('bot_approvals'))
 
     @app.route('/api/bot-status')
     def api_bot_status():
