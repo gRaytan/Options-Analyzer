@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import Dict, Iterable, List, Optional, Sequence
 
@@ -70,6 +70,10 @@ class Candidate:
     annual_yield: float  # premium / capital x 365 / DTE
     score: float
     dte: int
+    raw_score: float = 0.0  # before the timing multiplier
+    timing: float = 1.0
+    fire: bool = False  # ready to sell now (tracker, T31)
+    timing_reasons: tuple = ()
 
     def to_dict(self) -> dict:
         q = self.quote
@@ -87,6 +91,10 @@ class Candidate:
             "stress_loss": self.stress_loss,
             "annual_yield": self.annual_yield,
             "score": self.score,
+            "raw_score": self.raw_score or self.score,
+            "timing": self.timing,
+            "fire": self.fire,
+            "timing_reasons": list(self.timing_reasons),
             "dte": self.dte,
         }
 
@@ -101,6 +109,10 @@ class ScanResult:
 
     def best(self, n: int = 10) -> List[Candidate]:
         return sorted(self.candidates, key=lambda c: -c.score)[:n]
+
+    def ready(self) -> List[Candidate]:
+        """Candidates the tracker says to sell now, best first."""
+        return [c for c in self.best(len(self.candidates)) if c.fire]
 
 
 # -- helpers --------------------------------------------------------------------
@@ -352,11 +364,13 @@ async def scan(
     today: date,
     events=None,
     journal=None,
-    timing=None,
+    tracker=None,
+    regime: str = "unknown",
 ) -> ScanResult:
     """Run all three queues and return the passing candidates (best first via .best()).
 
-    ``timing(candidate_key) -> float`` is the tracker's multiplier (T31); 1.0 if absent.
+    With a ``tracker`` (T31), each underlying's candidates get its timing
+    multiplier and a ``fire`` flag; without one, nothing is marked ready.
     """
     result = ScanResult()
     work = []  # (strategy, symbol, right, contracts, cost_basis, trading_class)
@@ -419,20 +433,42 @@ async def scan(
             if ind.strong_uptrend(closes):
                 result.reject("strong uptrend: covered calls skipped")
                 continue
+        passed = []
         for q in quotes:
             c = q.contract
             if events is not None and sym.upper() not in INDEX_ROOTS:
                 if events.earnings_before(sym, c.expiry, today) is not False:
                     result.reject("earnings before expiry (or unknown)")
                     continue
-            mult = timing(c.key) if timing else 1.0
             cand, reason = evaluate(
-                strategy, c, q, ind, account, config, today, lots, cost_basis, mult
+                strategy, c, q, ind, account, config, today, lots, cost_basis
             )
             if cand is None:
                 result.reject(reason)
             else:
-                result.candidates.append(cand)
+                passed.append(cand)
+        if passed and tracker is not None:
+            from src.trading.domain import (
+                HistoryKind,
+            )  # pylint: disable=import-outside-toplevel
+
+            bars = await history.daily(sym, HistoryKind.PRICE, 365)
+            best_raw = max(c.score for c in passed)
+            t = tracker.timing(strategy, sym, ind, bars, regime, best_raw, today)
+            passed = [
+                replace(
+                    c,
+                    raw_score=c.score,
+                    score=c.score * t.multiplier,
+                    timing=t.multiplier,
+                    fire=t.fire,
+                    timing_reasons=t.reasons,
+                )
+                for c in passed
+            ]
+        else:
+            passed = [replace(c, raw_score=c.score) for c in passed]
+        result.candidates.extend(passed)
     if journal is not None:
         journal.append(
             "scan_results",
