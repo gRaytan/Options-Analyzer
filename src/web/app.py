@@ -9,7 +9,7 @@ from src.data.price_fetcher import update_portfolio_prices
 from src.data.storage import DataStorage
 from src.analysis.greeks import calculate_portfolio_greeks
 from src.analysis.margin import calculate_portfolio_margin
-from src.analysis.risk import analyze_portfolio_risk
+from src.analysis.risk import HIGH_RISK_FLAGS, analyze_portfolio_risk
 from src.models.portfolio import Portfolio
 from src.trading.config import load_trading_config
 from src.trading.domain import HaltScope
@@ -33,6 +33,7 @@ def create_app(config=None):
 
     # Store in app context - now supports multiple portfolios
     app.storage = storage
+    app.jinja_env.globals['HIGH_RISK_FLAGS'] = HIGH_RISK_FLAGS
     app.portfolios = {}  # Dict of portfolio_id -> portfolio
     app.risk_analyses = {}  # Dict of portfolio_id -> risk_analysis
 
@@ -369,7 +370,7 @@ def create_app(config=None):
             options = [o for o in options if o.is_put]
 
         if filter_risk == 'high':
-            options = [o for o in options if 'HIGH_DELTA_SHORT_CALL' in o.flags or 'LARGE_LOSS' in o.flags]
+            options = [o for o in options if HIGH_RISK_FLAGS.intersection(o.flags)]
         elif filter_risk == 'flagged':
             options = [o for o in options if o.flags]
 

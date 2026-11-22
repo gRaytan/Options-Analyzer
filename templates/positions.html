@@ -66,7 +66,7 @@
                 </thead>
                 <tbody>
                     {% for opt in options %}
-                    <tr class="{{ 'table-danger' if 'HIGH_DELTA_SHORT_CALL' in opt.flags or 'LARGE_LOSS' in opt.flags else '' }}">
+                    <tr class="{{ 'table-danger' if HIGH_RISK_FLAGS.intersection(opt.flags) else '' }}">
                         <td>
                             <span class="badge {{ 'badge-call' if opt.is_call else 'badge-put' }}">
                                 {{ 'CALL' if opt.is_call else 'PUT' }}
