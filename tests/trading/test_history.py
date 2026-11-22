@@ -169,3 +169,12 @@ def test_corrupt_cache_refetches(setup):
 def test_fake_history_limits_days(setup):
     broker, _, _, _ = setup
     assert len(asyncio.run(broker.daily_history("QQQM", HistoryKind.PRICE, 3))) == 3
+
+
+def test_empty_answer_is_not_cached(setup):
+    broker, store, _, tmp_path = setup
+    assert asyncio.run(store.daily("NODATA", HistoryKind.PRICE)) == []
+    broker.set_history("NODATA", HistoryKind.PRICE, bars(3))
+    assert (
+        len(asyncio.run(store.daily("NODATA", HistoryKind.PRICE))) == 3
+    )  # fetched again
