@@ -3,20 +3,12 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 from datetime import date
 from collections import defaultdict
-from .position import (
-    OptionPosition,
-    StockPosition,
-    Trade,
-    Dividend,
-    BondInterest,
-    CashTransaction,
-)
+from .position import OptionPosition, StockPosition, Trade, Dividend, BondInterest, CashTransaction
 
 
 @dataclass
 class PortfolioGreeks:
     """Aggregated portfolio Greeks."""
-
     delta: float = 0.0
     gamma: float = 0.0
     theta: float = 0.0
@@ -26,7 +18,6 @@ class PortfolioGreeks:
 @dataclass
 class Portfolio:
     """Portfolio containing all positions and summary metrics."""
-
     options: List[OptionPosition] = field(default_factory=list)
     stocks: List[StockPosition] = field(default_factory=list)
     trades: List[Trade] = field(default_factory=list)
@@ -55,43 +46,43 @@ class Portfolio:
     available_funds: float = 0.0
     gross_position_value: float = 0.0
     net_liquidation_value: float = 0.0
-
+    
     @property
     def total_positions(self) -> int:
         return len(self.options) + len(self.stocks)
-
+    
     @property
     def total_option_positions(self) -> int:
         return len(self.options)
-
+    
     @property
     def total_stock_positions(self) -> int:
         return len(self.stocks)
-
+    
     @property
     def options_market_value(self) -> float:
         return sum(opt.market_value for opt in self.options)
-
+    
     @property
     def stocks_market_value(self) -> float:
         return sum(stock.market_value for stock in self.stocks)
-
+    
     @property
     def total_market_value(self) -> float:
         return self.options_market_value + self.stocks_market_value
-
+    
     @property
     def options_unrealized_pnl(self) -> float:
         return sum(opt.unrealized_pnl for opt in self.options)
-
+    
     @property
     def stocks_unrealized_pnl(self) -> float:
         return sum(stock.unrealized_pnl for stock in self.stocks)
-
+    
     @property
     def total_unrealized_pnl(self) -> float:
         return self.options_unrealized_pnl + self.stocks_unrealized_pnl
-
+    
     @property
     def total_margin_requirement(self) -> float:
         return sum(opt.margin_requirement for opt in self.options)
@@ -122,48 +113,48 @@ class Portfolio:
             theta=sum(opt.theta * opt.quantity for opt in self.options),
             vega=sum(opt.vega * opt.quantity for opt in self.options),
         )
-
+    
     @property
     def short_options(self) -> List[OptionPosition]:
         """Get all short option positions."""
         return [opt for opt in self.options if opt.is_short]
-
+    
     @property
     def long_options(self) -> List[OptionPosition]:
         """Get all long option positions."""
         return [opt for opt in self.options if not opt.is_short]
-
+    
     @property
     def short_calls(self) -> List[OptionPosition]:
         """Get all short call positions."""
         return [opt for opt in self.options if opt.is_short and opt.is_call]
-
+    
     @property
     def short_puts(self) -> List[OptionPosition]:
         """Get all short put positions."""
         return [opt for opt in self.options if opt.is_short and opt.is_put]
-
+    
     @property
     def flagged_positions(self) -> List[OptionPosition]:
         """Get all positions with risk flags."""
         return [opt for opt in self.options if opt.flags]
-
+    
     def get_underlying_price(self, symbol: str) -> Optional[float]:
         """Get underlying price from stock positions if available."""
         for stock in self.stocks:
             if stock.symbol == symbol:
                 return stock.current_price
         return None
-
+    
     def get_options_by_underlying(self, underlying: str) -> List[OptionPosition]:
         """Get all options for a specific underlying."""
         return [opt for opt in self.options if opt.underlying == underlying]
-
+    
     def get_options_expiring_soon(self, days: int = 7) -> List[OptionPosition]:
         """Get options expiring within specified days."""
         return [opt for opt in self.options if opt.days_to_expiration <= days]
 
-    def merge(self, other: "Portfolio") -> None:
+    def merge(self, other: 'Portfolio') -> None:
         """Merge another portfolio into this one.
 
         - Positions are replaced (uses latest file's positions)
@@ -176,7 +167,8 @@ class Portfolio:
 
         # Merge trades, deduplicating by (symbol, date, quantity, price)
         existing_trades = {
-            (t.symbol, t.trade_date, t.quantity, t.price): t for t in self.trades
+            (t.symbol, t.trade_date, t.quantity, t.price): t
+            for t in self.trades
         }
         for trade in other.trades:
             key = (trade.symbol, trade.trade_date, trade.quantity, trade.price)
@@ -197,9 +189,7 @@ class Portfolio:
         # Combine statement periods
         if other.statement_period:
             if self.statement_period:
-                self.statement_period = (
-                    f"{self.statement_period}, {other.statement_period}"
-                )
+                self.statement_period = f"{self.statement_period}, {other.statement_period}"
             else:
                 self.statement_period = other.statement_period
 
@@ -213,7 +203,8 @@ class Portfolio:
 
         # Merge dividends, deduplicating by (symbol, date, amount)
         existing_dividends = {
-            (d.symbol, d.payment_date, d.amount): d for d in self.dividends
+            (d.symbol, d.payment_date, d.amount): d
+            for d in self.dividends
         }
         for div in other.dividends:
             key = (div.symbol, div.payment_date, div.amount)
@@ -223,7 +214,8 @@ class Portfolio:
 
         # Merge bond interest, deduplicating by (symbol, date, amount)
         existing_bond_interest = {
-            (b.symbol, b.payment_date, b.amount): b for b in self.bond_interest
+            (b.symbol, b.payment_date, b.amount): b
+            for b in self.bond_interest
         }
         for interest in other.bond_interest:
             key = (interest.symbol, interest.payment_date, interest.amount)
@@ -237,11 +229,7 @@ class Portfolio:
             for t in self.cash_transactions
         }
         for transaction in other.cash_transactions:
-            key = (
-                transaction.transaction_date,
-                transaction.amount,
-                transaction.description,
-            )
+            key = (transaction.transaction_date, transaction.amount, transaction.description)
             if key not in existing_cash_transactions:
                 self.cash_transactions.append(transaction)
                 existing_cash_transactions[key] = transaction
@@ -254,18 +242,12 @@ class Portfolio:
     @property
     def total_dividends(self) -> float:
         """Total dividends received (filtered by statement period)."""
-        return sum(
-            d.amount for d in self.dividends if self._is_within_period(d.payment_date)
-        )
+        return sum(d.amount for d in self.dividends if self._is_within_period(d.payment_date))
 
     @property
     def total_bond_interest(self) -> float:
         """Total bond interest/coupons received (filtered by statement period)."""
-        return sum(
-            b.amount
-            for b in self.bond_interest
-            if self._is_within_period(b.payment_date)
-        )
+        return sum(b.amount for b in self.bond_interest if self._is_within_period(b.payment_date))
 
     @property
     def total_deposits(self) -> float:
@@ -308,40 +290,30 @@ class Portfolio:
 
     def get_dividends_by_symbol(self) -> Dict[str, Dict]:
         """Get dividend summary by symbol (filtered by statement period)."""
-        by_symbol = defaultdict(
-            lambda: {"total": 0.0, "count": 0, "payment_dates": set(), "payments": []}
-        )
+        by_symbol = defaultdict(lambda: {'total': 0.0, 'count': 0, 'payment_dates': set(), 'payments': []})
         for div in self.dividends:
             if self._is_within_period(div.payment_date):
-                by_symbol[div.symbol]["total"] += div.amount
-                by_symbol[div.symbol]["payment_dates"].add(div.payment_date)
-                by_symbol[div.symbol]["payments"].append(div)
+                by_symbol[div.symbol]['total'] += div.amount
+                by_symbol[div.symbol]['payment_dates'].add(div.payment_date)
+                by_symbol[div.symbol]['payments'].append(div)
         # Convert payment_dates set to count of unique dates
         for symbol in by_symbol:
-            by_symbol[symbol]["count"] = len(by_symbol[symbol]["payment_dates"])
+            by_symbol[symbol]['count'] = len(by_symbol[symbol]['payment_dates'])
         return dict(by_symbol)
 
     def get_bond_interest_by_symbol(self) -> Dict[str, Dict]:
         """Get bond interest summary by symbol (filtered by statement period)."""
-        by_symbol = defaultdict(
-            lambda: {
-                "total": 0.0,
-                "count": 0,
-                "payment_dates": set(),
-                "payments": [],
-                "bond_name": "",
-            }
-        )
+        by_symbol = defaultdict(lambda: {'total': 0.0, 'count': 0, 'payment_dates': set(), 'payments': [], 'bond_name': ''})
         for interest in self.bond_interest:
             if self._is_within_period(interest.payment_date):
-                by_symbol[interest.symbol]["total"] += interest.amount
-                by_symbol[interest.symbol]["payment_dates"].add(interest.payment_date)
-                by_symbol[interest.symbol]["payments"].append(interest)
+                by_symbol[interest.symbol]['total'] += interest.amount
+                by_symbol[interest.symbol]['payment_dates'].add(interest.payment_date)
+                by_symbol[interest.symbol]['payments'].append(interest)
                 if interest.bond_name:
-                    by_symbol[interest.symbol]["bond_name"] = interest.bond_name
+                    by_symbol[interest.symbol]['bond_name'] = interest.bond_name
         # Convert payment_dates set to count of unique dates
         for symbol in by_symbol:
-            by_symbol[symbol]["count"] = len(by_symbol[symbol]["payment_dates"])
+            by_symbol[symbol]['count'] = len(by_symbol[symbol]['payment_dates'])
         return dict(by_symbol)
 
     def get_monthly_realized_pnl(self) -> Dict[str, float]:
@@ -379,7 +351,8 @@ class Portfolio:
         # Calculate net for each month
         all_months = set(monthly_opens.keys()) | set(monthly_closes.keys())
         monthly_net = {
-            month: monthly_opens[month] - monthly_closes[month] for month in all_months
+            month: monthly_opens[month] - monthly_closes[month]
+            for month in all_months
         }
 
         return dict(sorted(monthly_net.items()))
@@ -431,13 +404,8 @@ class Portfolio:
             "short_options_count": len(self.short_options),
             "flagged_positions_count": len(self.flagged_positions),
             "options": [opt.to_dict() for opt in self.options],
-            "stocks": [
-                {
-                    "symbol": s.symbol,
-                    "quantity": s.quantity,
-                    "current_price": s.current_price,
-                    "unrealized_pnl": s.unrealized_pnl,
-                }
-                for s in self.stocks
-            ],
+            "stocks": [{"symbol": s.symbol, "quantity": s.quantity, 
+                       "current_price": s.current_price, "unrealized_pnl": s.unrealized_pnl}
+                      for s in self.stocks],
         }
+

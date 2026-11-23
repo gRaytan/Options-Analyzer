@@ -31,7 +31,6 @@ class PriceFetcher:
         if self._yf is None:
             try:
                 import yfinance as yf
-
                 self._yf = yf
             except ImportError:
                 raise ImportError(
@@ -55,19 +54,17 @@ class PriceFetcher:
         with _cache_lock:
             if symbol in _global_cache:
                 entry = _global_cache[symbol]
-                if datetime.now() - entry["timestamp"] < timedelta(
-                    seconds=CACHE_EXPIRY_SECONDS
-                ):
-                    return entry.get("price")
+                if datetime.now() - entry['timestamp'] < timedelta(seconds=CACHE_EXPIRY_SECONDS):
+                    return entry.get('price')
         return None
 
     def _set_cache(self, symbol: str, price: float, extra_data: Dict = None):
         """Set price in global cache."""
         with _cache_lock:
             _global_cache[symbol] = {
-                "price": price,
-                "timestamp": datetime.now(),
-                **(extra_data or {}),
+                'price': price,
+                'timestamp': datetime.now(),
+                **(extra_data or {})
             }
 
     def get_price(self, symbol: str, retry_count: int = 2) -> Optional[float]:
@@ -87,9 +84,7 @@ class PriceFetcher:
                 ticker = yf.Ticker(clean_symbol)
                 # Try fast_info first (less API calls)
                 try:
-                    price = ticker.fast_info.get("lastPrice") or ticker.fast_info.get(
-                        "previousClose"
-                    )
+                    price = ticker.fast_info.get('lastPrice') or ticker.fast_info.get('previousClose')
                     if price and price > 0:
                         self._set_cache(symbol, float(price))
                         return float(price)
@@ -99,12 +94,12 @@ class PriceFetcher:
                 # Fallback to history (more reliable)
                 hist = ticker.history(period="1d")
                 if not hist.empty:
-                    price = float(hist["Close"].iloc[-1])
+                    price = float(hist['Close'].iloc[-1])
                     self._set_cache(symbol, price)
                     return price
 
             except Exception as e:
-                if "429" in str(e) or "Too Many Requests" in str(e):
+                if '429' in str(e) or 'Too Many Requests' in str(e):
                     # Rate limited - wait and retry
                     wait_time = (attempt + 1) * 2  # Exponential backoff
                     print(f"Rate limited for {symbol}, waiting {wait_time}s...")
@@ -147,21 +142,21 @@ class PriceFetcher:
                     tickers=clean_symbols,
                     period="1d",
                     progress=False,
-                    threads=False,  # Disable threading to reduce rate limit issues
+                    threads=False  # Disable threading to reduce rate limit issues
                 )
 
                 if not data.empty:
                     # Handle single vs multiple symbols
                     if len(clean_symbols) == 1:
-                        if "Close" in data.columns:
-                            price = float(data["Close"].iloc[-1])
+                        if 'Close' in data.columns:
+                            price = float(data['Close'].iloc[-1])
                             original_symbol = symbols_to_fetch[0]
                             self._set_cache(original_symbol, price)
                             result[original_symbol] = price
                     else:
                         # Multiple symbols - data has multi-level columns
-                        if "Close" in data.columns:
-                            close_prices = data["Close"]
+                        if 'Close' in data.columns:
+                            close_prices = data['Close']
                             for clean_sym in clean_symbols:
                                 if clean_sym in close_prices.columns:
                                     price = close_prices[clean_sym].iloc[-1]
@@ -172,7 +167,7 @@ class PriceFetcher:
                 break  # Success, exit retry loop
 
             except Exception as e:
-                if "429" in str(e) or "Too Many Requests" in str(e):
+                if '429' in str(e) or 'Too Many Requests' in str(e):
                     wait_time = (attempt + 1) * 5
                     print(f"Rate limited on batch download, waiting {wait_time}s...")
                     time.sleep(wait_time)
@@ -207,7 +202,7 @@ class PriceFetcher:
     def get_cached_prices(self) -> Dict[str, float]:
         """Get all cached prices."""
         with _cache_lock:
-            return {k: v["price"] for k, v in _global_cache.items() if "price" in v}
+            return {k: v['price'] for k, v in _global_cache.items() if 'price' in v}
 
 
 def get_global_cache() -> Dict[str, Any]:
@@ -216,27 +211,25 @@ def get_global_cache() -> Dict[str, Any]:
         return _global_cache.copy()
 
 
-def update_portfolio_prices(
-    portfolio, fetcher: Optional[PriceFetcher] = None
-) -> Dict[str, float]:
+def update_portfolio_prices(portfolio, fetcher: Optional[PriceFetcher] = None) -> Dict[str, float]:
     """Update underlying prices for all options in a portfolio."""
     if fetcher is None:
         fetcher = PriceFetcher()
-
+    
     # Get unique underlyings that need prices
     underlyings_needing_prices = set()
     for option in portfolio.options:
         if option.underlying_price == 0 and option.underlying:
             underlyings_needing_prices.add(option.underlying)
-
+    
     if not underlyings_needing_prices:
         return {}
-
+    
     print(f"Fetching prices for {len(underlyings_needing_prices)} underlyings...")
-
+    
     # Fetch prices
     prices = fetcher.get_prices(list(underlyings_needing_prices))
-
+    
     # Update options
     updated_count = 0
     for option in portfolio.options:
@@ -245,7 +238,8 @@ def update_portfolio_prices(
             if price:
                 option.underlying_price = price
                 updated_count += 1
-
+    
     print(f"Updated {updated_count} options with underlying prices")
-
+    
     return prices
+

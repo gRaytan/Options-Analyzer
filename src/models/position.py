@@ -25,7 +25,6 @@ class TradeAction(Enum):
 @dataclass
 class Dividend:
     """Represents a dividend payment."""
-
     symbol: str
     payment_date: date
     amount: float
@@ -41,7 +40,6 @@ class Dividend:
 @dataclass
 class BondInterest:
     """Represents a bond coupon/interest payment."""
-
     symbol: str
     payment_date: date
     amount: float
@@ -53,7 +51,6 @@ class BondInterest:
 @dataclass
 class CashTransaction:
     """Represents a deposit or withdrawal."""
-
     transaction_date: date
     amount: float  # Positive for deposits, negative for withdrawals
     description: str = ""
@@ -71,7 +68,6 @@ class CashTransaction:
 @dataclass
 class Trade:
     """Represents a single trade."""
-
     symbol: str
     trade_date: datetime
     quantity: int
@@ -98,11 +94,7 @@ class Trade:
     @property
     def is_closing(self) -> bool:
         """True if this is a closing trade."""
-        return self.action in (
-            TradeAction.CLOSE,
-            TradeAction.ASSIGNED,
-            TradeAction.EXPIRED,
-        )
+        return self.action in (TradeAction.CLOSE, TradeAction.ASSIGNED, TradeAction.EXPIRED)
 
     @property
     def premium_collected(self) -> float:
@@ -120,44 +112,37 @@ class Trade:
 @dataclass
 class Position:
     """Base class for all positions."""
-
     symbol: str
     quantity: int
     cost_price: float
     current_price: float
     currency: str = "USD"
-
+    
     @property
     def cost_basis(self) -> float:
         return abs(self.quantity) * self.cost_price * self.multiplier
-
+    
     @property
     def market_value(self) -> float:
         return self.quantity * self.current_price * self.multiplier
-
+    
     @property
     def unrealized_pnl(self) -> float:
         if self.quantity < 0:  # Short position
-            return (
-                (self.cost_price - self.current_price)
-                * abs(self.quantity)
-                * self.multiplier
-            )
+            return (self.cost_price - self.current_price) * abs(self.quantity) * self.multiplier
         else:  # Long position
-            return (
-                (self.current_price - self.cost_price) * self.quantity * self.multiplier
-            )
-
+            return (self.current_price - self.cost_price) * self.quantity * self.multiplier
+    
     @property
     def unrealized_pnl_pct(self) -> float:
         if self.cost_basis == 0:
             return 0.0
         return (self.unrealized_pnl / self.cost_basis) * 100
-
+    
     @property
     def multiplier(self) -> int:
         return 1
-
+    
     @property
     def side(self) -> PositionSide:
         return PositionSide.LONG if self.quantity > 0 else PositionSide.SHORT
@@ -166,9 +151,8 @@ class Position:
 @dataclass
 class StockPosition(Position):
     """Stock position."""
-
     asset_type: str = "Stock"
-
+    
     @property
     def multiplier(self) -> int:
         return 1
@@ -177,50 +161,49 @@ class StockPosition(Position):
 @dataclass
 class OptionPosition(Position):
     """Option position with Greeks and additional metrics."""
-
     underlying: str = ""
     strike: float = 0.0
     expiration: Optional[date] = None
     option_type: Optional[OptionType] = None
     underlying_price: float = 0.0
     asset_type: str = "Option"
-
+    
     # Greeks (to be calculated)
     delta: float = 0.0
     gamma: float = 0.0
     theta: float = 0.0
     vega: float = 0.0
     implied_volatility: float = 0.0
-
+    
     # Margin (to be calculated)
     margin_requirement: float = 0.0
-
+    
     # Risk flags
     flags: list = field(default_factory=list)
-
+    
     @property
     def multiplier(self) -> int:
         return 100
-
+    
     @property
     def days_to_expiration(self) -> int:
         if self.expiration is None:
             return 0
         today = date.today()
         return max(0, (self.expiration - today).days)
-
+    
     @property
     def is_call(self) -> bool:
         return self.option_type == OptionType.CALL
-
+    
     @property
     def is_put(self) -> bool:
         return self.option_type == OptionType.PUT
-
+    
     @property
     def is_short(self) -> bool:
         return self.quantity < 0
-
+    
     @property
     def is_itm(self) -> bool:
         """Check if option is in-the-money."""
@@ -230,14 +213,14 @@ class OptionPosition(Position):
             return self.underlying_price > self.strike
         else:
             return self.underlying_price < self.strike
-
+    
     @property
     def moneyness(self) -> float:
         """Calculate moneyness (underlying / strike)."""
         if self.strike == 0:
             return 0.0
         return self.underlying_price / self.strike
-
+    
     @property
     def intrinsic_value(self) -> float:
         """Calculate intrinsic value per share."""
@@ -247,12 +230,12 @@ class OptionPosition(Position):
             return max(0, self.underlying_price - self.strike)
         else:
             return max(0, self.strike - self.underlying_price)
-
+    
     @property
     def extrinsic_value(self) -> float:
         """Calculate extrinsic (time) value per share."""
         return max(0, self.current_price - self.intrinsic_value)
-
+    
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
         return {
@@ -281,3 +264,4 @@ class OptionPosition(Position):
             "flags": self.flags,
             "side": self.side.value,
         }
+

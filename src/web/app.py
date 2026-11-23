@@ -2,16 +2,7 @@
 import os
 from datetime import datetime
 import secrets
-from flask import (
-    Flask,
-    render_template,
-    request,
-    jsonify,
-    redirect,
-    url_for,
-    flash,
-    session,
-)
+from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, session
 from werkzeug.utils import secure_filename
 
 from src.data.parser import IBActivityStatementParser
@@ -31,31 +22,31 @@ from src.trading.status import load_bot_status
 
 def create_app(config=None):
     """Create and configure the Flask application."""
-    app = Flask(
-        __name__, template_folder="../../templates", static_folder="../../static"
-    )
+    app = Flask(__name__,
+                template_folder='../../templates',
+                static_folder='../../static')
 
     # A random key when none is configured: never a guessable default.
-    app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
-    app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16MB max file size
+    app.secret_key = os.environ.get('SECRET_KEY') or secrets.token_hex(32)
+    app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
     # Initialize storage
     storage = DataStorage()
 
     # Store in app context - now supports multiple portfolios
     app.storage = storage
-    app.jinja_env.globals["HIGH_RISK_FLAGS"] = HIGH_RISK_FLAGS
+    app.jinja_env.globals['HIGH_RISK_FLAGS'] = HIGH_RISK_FLAGS
     app.portfolios = {}  # Dict of portfolio_id -> portfolio
     app.risk_analyses = {}  # Dict of portfolio_id -> risk_analysis
 
     def get_active_portfolio():
         """Get the currently selected portfolio based on session filter."""
-        portfolio_filter = session.get("portfolio_filter", "all")
+        portfolio_filter = session.get('portfolio_filter', 'all')
 
         if not app.portfolios:
             return None, None
 
-        if portfolio_filter == "all":
+        if portfolio_filter == 'all':
             # Combine all portfolios - aggregate positions, don't replace
             combined = Portfolio()
             combined.options = []
@@ -74,16 +65,10 @@ def create_app(config=None):
             for pid, p in app.portfolios.items():
                 # Merge period ranges - expand to cover all portfolios
                 if p.period_start:
-                    if (
-                        combined.period_start is None
-                        or p.period_start < combined.period_start
-                    ):
+                    if combined.period_start is None or p.period_start < combined.period_start:
                         combined.period_start = p.period_start
                 if p.period_end:
-                    if (
-                        combined.period_end is None
-                        or p.period_end > combined.period_end
-                    ):
+                    if combined.period_end is None or p.period_end > combined.period_end:
                         combined.period_end = p.period_end
                 if p.statement_period:
                     if combined.statement_period:
@@ -107,7 +92,8 @@ def create_app(config=None):
 
                 # Combine all dividends (deduplicate by key)
                 existing_dividends = {
-                    (d.symbol, d.payment_date, d.amount): d for d in combined.dividends
+                    (d.symbol, d.payment_date, d.amount): d
+                    for d in combined.dividends
                 }
                 for div in p.dividends:
                     key = (div.symbol, div.payment_date, div.amount)
@@ -120,7 +106,7 @@ def create_app(config=None):
                     (b.symbol, b.payment_date, b.amount): b
                     for b in combined.bond_interest
                 }
-                for interest in getattr(p, "bond_interest", []):
+                for interest in getattr(p, 'bond_interest', []):
                     key = (interest.symbol, interest.payment_date, interest.amount)
                     if key not in existing_bond_interest:
                         combined.bond_interest.append(interest)
@@ -131,12 +117,8 @@ def create_app(config=None):
                     (t.transaction_date, t.amount, t.description): t
                     for t in combined.cash_transactions
                 }
-                for transaction in getattr(p, "cash_transactions", []):
-                    key = (
-                        transaction.transaction_date,
-                        transaction.amount,
-                        transaction.description,
-                    )
+                for transaction in getattr(p, 'cash_transactions', []):
+                    key = (transaction.transaction_date, transaction.amount, transaction.description)
                     if key not in existing_cash_transactions:
                         combined.cash_transactions.append(transaction)
                         existing_cash_transactions[key] = transaction
@@ -151,9 +133,7 @@ def create_app(config=None):
                 if p.account_name:
                     account_names.append(p.account_name)
 
-            combined.account_name = (
-                " + ".join(account_names) if account_names else "Combined"
-            )
+            combined.account_name = " + ".join(account_names) if account_names else "Combined"
 
             # Recalculate for combined
             if combined.options:
@@ -170,14 +150,14 @@ def create_app(config=None):
             return portfolio, risk_analysis
 
     app.get_active_portfolio = get_active_portfolio
-
-    @app.route("/")
+    
+    @app.route('/')
     def index():
         """Dashboard page."""
         portfolio, risk_analysis = get_active_portfolio()
 
         if not app.portfolios:
-            return render_template("upload.html")
+            return render_template('upload.html')
 
         # Calculate YTD revenue (realized P&L + dividends + bond interest + unrealized P&L - deposits)
         ytd_realized_pnl = portfolio.total_realized_pnl
@@ -185,13 +165,7 @@ def create_app(config=None):
         ytd_bond_interest = portfolio.total_bond_interest
         ytd_unrealized_pnl = portfolio.total_unrealized_pnl
         net_deposits = portfolio.net_deposits  # Deposits minus withdrawals
-        ytd_revenue = (
-            ytd_realized_pnl
-            + ytd_dividends
-            + ytd_bond_interest
-            + ytd_unrealized_pnl
-            - net_deposits
-        )
+        ytd_revenue = ytd_realized_pnl + ytd_dividends + ytd_bond_interest + ytd_unrealized_pnl - net_deposits
 
         # Debug: print YTD revenue breakdown
         print(f"YTD Revenue Breakdown:")
@@ -204,44 +178,36 @@ def create_app(config=None):
         # Check for stocks with 0 price
         zero_price_stocks = [s for s in portfolio.stocks if s.current_price == 0]
         if zero_price_stocks:
-            print(
-                f"    WARNING: {len(zero_price_stocks)} stocks have price=0: {[s.symbol for s in zero_price_stocks[:5]]}"
-            )
+            print(f"    WARNING: {len(zero_price_stocks)} stocks have price=0: {[s.symbol for s in zero_price_stocks[:5]]}")
         # Check for options with 0 price
         zero_price_options = [o for o in portfolio.options if o.current_price == 0]
         if zero_price_options:
-            print(
-                f"    WARNING: {len(zero_price_options)} options have price=0: {[o.symbol for o in zero_price_options[:5]]}"
-            )
+            print(f"    WARNING: {len(zero_price_options)} options have price=0: {[o.symbol for o in zero_price_options[:5]]}")
         print(f"  Net Deposits: ${net_deposits:,.2f}")
         print(f"  TOTAL YTD Revenue: ${ytd_revenue:,.2f}")
-        print(
-            f"  Number of stocks: {len(portfolio.stocks)}, options: {len(portfolio.options)}"
-        )
+        print(f"  Number of stocks: {len(portfolio.stocks)}, options: {len(portfolio.options)}")
 
         # Calculate YTD return percentage (based on NAV minus net deposits)
         # This gives the actual return on the original investment
         adjusted_nav = portfolio.net_asset_value - net_deposits
         ytd_return_pct = (ytd_revenue / adjusted_nav * 100) if adjusted_nav > 0 else 0
 
-        return render_template(
-            "dashboard.html",
-            portfolio=portfolio,
-            risk_analysis=risk_analysis,
-            ytd_revenue=ytd_revenue,
-            ytd_return_pct=ytd_return_pct,
-            portfolios=app.portfolios,
-            portfolio_filter=session.get("portfolio_filter", "all"),
-        )
+        return render_template('dashboard.html',
+                             portfolio=portfolio,
+                             risk_analysis=risk_analysis,
+                             ytd_revenue=ytd_revenue,
+                             ytd_return_pct=ytd_return_pct,
+                             portfolios=app.portfolios,
+                             portfolio_filter=session.get('portfolio_filter', 'all'))
 
-    @app.route("/set_portfolio/<portfolio_id>")
+    @app.route('/set_portfolio/<portfolio_id>')
     def set_portfolio(portfolio_id):
         """Set the active portfolio filter."""
-        if portfolio_id == "all" or portfolio_id in app.portfolios:
-            session["portfolio_filter"] = portfolio_id
-        return redirect(request.referrer or url_for("index"))
+        if portfolio_id == 'all' or portfolio_id in app.portfolios:
+            session['portfolio_filter'] = portfolio_id
+        return redirect(request.referrer or url_for('index'))
 
-    @app.route("/remove_portfolio/<portfolio_id>")
+    @app.route('/remove_portfolio/<portfolio_id>')
     def remove_portfolio(portfolio_id):
         """Remove a portfolio."""
         if portfolio_id in app.portfolios:
@@ -249,22 +215,22 @@ def create_app(config=None):
             if portfolio_id in app.risk_analyses:
                 del app.risk_analyses[portfolio_id]
             # Reset filter if removed portfolio was selected
-            if session.get("portfolio_filter") == portfolio_id:
-                session["portfolio_filter"] = "all"
-            flash(f'Portfolio "{portfolio_id}" removed', "success")
-        return redirect(url_for("upload"))
+            if session.get('portfolio_filter') == portfolio_id:
+                session['portfolio_filter'] = 'all'
+            flash(f'Portfolio "{portfolio_id}" removed', 'success')
+        return redirect(url_for('upload'))
 
-    @app.route("/upload", methods=["GET", "POST"])
+    @app.route('/upload', methods=['GET', 'POST'])
     def upload():
         """Handle file upload - each file becomes a separate portfolio."""
-        if request.method == "POST":
-            if "file" not in request.files:
-                flash("No file selected", "error")
+        if request.method == 'POST':
+            if 'file' not in request.files:
+                flash('No file selected', 'error')
                 return redirect(request.url)
 
-            files = request.files.getlist("file")
-            if not files or all(f.filename == "" for f in files):
-                flash("No file selected", "error")
+            files = request.files.getlist('file')
+            if not files or all(f.filename == '' for f in files):
+                flash('No file selected', 'error')
                 return redirect(request.url)
 
             try:
@@ -272,18 +238,16 @@ def create_app(config=None):
                 files_processed = 0
 
                 for file in files:
-                    if file.filename == "":
+                    if file.filename == '':
                         continue
 
-                    content = file.read().decode("utf-8-sig")
+                    content = file.read().decode('utf-8-sig')
                     portfolio = parser.parse_content(content)
 
                     # Generate portfolio ID from filename or account
                     filename = secure_filename(file.filename)
                     base_name = os.path.splitext(filename)[0]
-                    portfolio_id = (
-                        portfolio.account_name or portfolio.account_id or base_name
-                    )
+                    portfolio_id = portfolio.account_name or portfolio.account_id or base_name
 
                     # Ensure unique ID
                     original_id = portfolio_id
@@ -297,12 +261,11 @@ def create_app(config=None):
                     files_processed += 1
 
                 if files_processed == 0:
-                    flash("No valid files found", "error")
+                    flash('No valid files found', 'error')
                     return redirect(request.url)
 
                 # Fetch prices and calculate Greeks/Risk in background thread
                 import threading
-
                 def background_data_fetch():
                     """Fetch prices and dividend data in background."""
                     from src.analysis.income_projection import get_forward_dividend_rate
@@ -338,30 +301,25 @@ def create_app(config=None):
                 thread = threading.Thread(target=background_data_fetch, daemon=True)
                 thread.start()
 
-                flash(
-                    f"Loaded {files_processed} portfolio(s). Prices updating in background...",
-                    "success",
-                )
-                return redirect(url_for("index"))
+                flash(f'Loaded {files_processed} portfolio(s). Prices updating in background...', 'success')
+                return redirect(url_for('index'))
 
             except Exception as e:
-                flash(f"Error parsing file: {str(e)}", "error")
+                flash(f'Error parsing file: {str(e)}', 'error')
                 return redirect(request.url)
 
-        return render_template(
-            "upload.html",
-            portfolios=app.portfolios,
-            portfolio_filter=session.get("portfolio_filter", "all"),
-        )
+        return render_template('upload.html',
+                             portfolios=app.portfolios,
+                             portfolio_filter=session.get('portfolio_filter', 'all'))
 
-    @app.route("/refresh_prices")
+    @app.route('/refresh_prices')
     def refresh_prices():
         """Refresh stock prices for all portfolios."""
         from src.data.price_fetcher import PriceFetcher
 
         if not app.portfolios:
-            flash("No portfolios loaded", "error")
-            return redirect(url_for("upload"))
+            flash('No portfolios loaded', 'error')
+            return redirect(url_for('upload'))
 
         try:
             fetcher = PriceFetcher()
@@ -373,9 +331,7 @@ def create_app(config=None):
                 update_portfolio_prices(portfolio, fetcher)
 
                 # Also update stock prices (only if we get valid prices)
-                stock_symbols = list(
-                    set(s.symbol for s in portfolio.stocks if s.symbol)
-                )
+                stock_symbols = list(set(s.symbol for s in portfolio.stocks if s.symbol))
                 if stock_symbols:
                     prices = fetcher.get_prices(stock_symbols)
                     for stock in portfolio.stocks:
@@ -387,84 +343,79 @@ def create_app(config=None):
 
                 total_updated += len(portfolio.options) + len(portfolio.stocks)
 
-            flash(f"Prices refreshed for {total_updated} positions", "success")
+            flash(f'Prices refreshed for {total_updated} positions', 'success')
         except Exception as e:
-            flash(f"Error refreshing prices: {str(e)}", "error")
+            flash(f'Error refreshing prices: {str(e)}', 'error')
 
         # Redirect back to the referring page or index
-        return redirect(request.referrer or url_for("index"))
+        return redirect(request.referrer or url_for('index'))
 
-    @app.route("/positions")
+    @app.route('/positions')
     def positions():
         """Positions table page."""
         portfolio, _ = get_active_portfolio()
         if not app.portfolios:
-            return redirect(url_for("upload"))
+            return redirect(url_for('upload'))
 
         # Get filter parameters
-        filter_type = request.args.get("type", "all")  # all, calls, puts
-        filter_risk = request.args.get("risk", "all")  # all, high, flagged
-        sort_by = request.args.get("sort", "underlying")
-        sort_dir = request.args.get("dir", "asc")  # asc or desc
+        filter_type = request.args.get('type', 'all')  # all, calls, puts
+        filter_risk = request.args.get('risk', 'all')  # all, high, flagged
+        sort_by = request.args.get('sort', 'underlying')
+        sort_dir = request.args.get('dir', 'asc')  # asc or desc
 
         options = portfolio.options if portfolio else []
 
         # Apply filters
-        if filter_type == "calls":
+        if filter_type == 'calls':
             options = [o for o in options if o.is_call]
-        elif filter_type == "puts":
+        elif filter_type == 'puts':
             options = [o for o in options if o.is_put]
 
-        if filter_risk == "high":
+        if filter_risk == 'high':
             options = [o for o in options if HIGH_RISK_FLAGS.intersection(o.flags)]
-        elif filter_risk == "flagged":
+        elif filter_risk == 'flagged':
             options = [o for o in options if o.flags]
 
         # Sort configuration: column -> (key_func, default_reverse)
         sort_config = {
-            "underlying": (lambda x: x.underlying.lower(), False),
-            "strike": (lambda x: x.strike, False),
-            "expiration": (lambda x: x.expiration or datetime.min, False),
-            "dte": (lambda x: x.days_to_expiration, False),
-            "qty": (lambda x: x.quantity, False),
-            "stock_price": (lambda x: x.underlying_price, False),
-            "option_price": (lambda x: x.current_price, False),
-            "delta": (lambda x: x.delta, False),
-            "iv": (lambda x: x.implied_volatility, False),
-            "pnl": (
-                lambda x: x.unrealized_pnl,
-                True,
-            ),  # Default descending (best first)
-            "margin": (lambda x: x.margin_requirement, True),
+            'underlying': (lambda x: x.underlying.lower(), False),
+            'strike': (lambda x: x.strike, False),
+            'expiration': (lambda x: x.expiration or datetime.min, False),
+            'dte': (lambda x: x.days_to_expiration, False),
+            'qty': (lambda x: x.quantity, False),
+            'stock_price': (lambda x: x.underlying_price, False),
+            'option_price': (lambda x: x.current_price, False),
+            'delta': (lambda x: x.delta, False),
+            'iv': (lambda x: x.implied_volatility, False),
+            'pnl': (lambda x: x.unrealized_pnl, True),  # Default descending (best first)
+            'margin': (lambda x: x.margin_requirement, True),
         }
 
         if sort_by in sort_config:
             key_func, default_reverse = sort_config[sort_by]
-            reverse = sort_dir == "desc"
+            reverse = (sort_dir == 'desc')
             options = sorted(options, key=key_func, reverse=reverse)
 
-        return render_template(
-            "positions.html",
-            options=options,
-            portfolio=portfolio,
-            filter_type=filter_type,
-            filter_risk=filter_risk,
-            sort_by=sort_by,
-            sort_dir=sort_dir,
-            portfolios=app.portfolios,
-            portfolio_filter=session.get("portfolio_filter", "all"),
-        )
+        return render_template('positions.html',
+                             options=options,
+                             portfolio=portfolio,
+                             filter_type=filter_type,
+                             filter_risk=filter_risk,
+                             sort_by=sort_by,
+                             sort_dir=sort_dir,
+                             portfolios=app.portfolios,
+                             portfolio_filter=session.get('portfolio_filter', 'all'))
 
-    @app.route("/stocks")
+    @app.route('/stocks')
     def stocks():
         """Stocks holdings table page."""
         portfolio, _ = get_active_portfolio()
         if not app.portfolios:
-            return redirect(url_for("upload"))
+            return redirect(url_for('upload'))
 
         # Get sort parameters
-        sort_by = request.args.get("sort", "symbol")
-        sort_dir = request.args.get("dir", "asc")
+        sort_by = request.args.get('sort', 'symbol')
+        sort_dir = request.args.get('dir', 'asc')
 
         stock_list = portfolio.stocks if portfolio else []
 
@@ -475,30 +426,26 @@ def create_app(config=None):
             if symbol in aggregated:
                 agg = aggregated[symbol]
                 # Combine quantities and cost basis, recalculate weighted avg cost
-                new_qty = agg["quantity"] + stock.quantity
-                new_cost_basis = agg["cost_basis"] + stock.cost_basis
-                new_market_value = agg["market_value"] + stock.market_value
-                agg["quantity"] = new_qty
-                agg["cost_basis"] = new_cost_basis
-                agg["market_value"] = new_market_value
-                agg["cost_price"] = new_cost_basis / new_qty if new_qty else 0
-                agg["current_price"] = stock.current_price  # Same for all
-                agg["unrealized_pnl"] = new_market_value - new_cost_basis
-                agg["unrealized_pnl_pct"] = (
-                    ((new_market_value - new_cost_basis) / new_cost_basis * 100)
-                    if new_cost_basis
-                    else 0
-                )
+                new_qty = agg['quantity'] + stock.quantity
+                new_cost_basis = agg['cost_basis'] + stock.cost_basis
+                new_market_value = agg['market_value'] + stock.market_value
+                agg['quantity'] = new_qty
+                agg['cost_basis'] = new_cost_basis
+                agg['market_value'] = new_market_value
+                agg['cost_price'] = new_cost_basis / new_qty if new_qty else 0
+                agg['current_price'] = stock.current_price  # Same for all
+                agg['unrealized_pnl'] = new_market_value - new_cost_basis
+                agg['unrealized_pnl_pct'] = ((new_market_value - new_cost_basis) / new_cost_basis * 100) if new_cost_basis else 0
             else:
                 aggregated[symbol] = {
-                    "symbol": symbol,
-                    "quantity": stock.quantity,
-                    "cost_price": stock.cost_price,
-                    "current_price": stock.current_price,
-                    "cost_basis": stock.cost_basis,
-                    "market_value": stock.market_value,
-                    "unrealized_pnl": stock.unrealized_pnl,
-                    "unrealized_pnl_pct": stock.unrealized_pnl_pct,
+                    'symbol': symbol,
+                    'quantity': stock.quantity,
+                    'cost_price': stock.cost_price,
+                    'current_price': stock.current_price,
+                    'cost_basis': stock.cost_basis,
+                    'market_value': stock.market_value,
+                    'unrealized_pnl': stock.unrealized_pnl,
+                    'unrealized_pnl_pct': stock.unrealized_pnl_pct,
                 }
 
         # Convert to list of dict-like objects for template
@@ -511,19 +458,19 @@ def create_app(config=None):
 
         # Sort configuration: column -> (key_func, default_reverse)
         sort_config = {
-            "symbol": (lambda x: x.symbol.lower(), False),
-            "quantity": (lambda x: x.quantity, False),
-            "cost_price": (lambda x: x.cost_price, False),
-            "current_price": (lambda x: x.current_price, False),
-            "market_value": (lambda x: x.market_value, True),
-            "cost_basis": (lambda x: x.cost_basis, True),
-            "pnl": (lambda x: x.unrealized_pnl, True),
-            "pnl_pct": (lambda x: x.unrealized_pnl_pct, True),
+            'symbol': (lambda x: x.symbol.lower(), False),
+            'quantity': (lambda x: x.quantity, False),
+            'cost_price': (lambda x: x.cost_price, False),
+            'current_price': (lambda x: x.current_price, False),
+            'market_value': (lambda x: x.market_value, True),
+            'cost_basis': (lambda x: x.cost_basis, True),
+            'pnl': (lambda x: x.unrealized_pnl, True),
+            'pnl_pct': (lambda x: x.unrealized_pnl_pct, True),
         }
 
         if sort_by in sort_config:
             key_func, _ = sort_config[sort_by]
-            reverse = sort_dir == "desc"
+            reverse = (sort_dir == 'desc')
             stock_list = sorted(stock_list, key=key_func, reverse=reverse)
 
         # Calculate totals
@@ -531,25 +478,23 @@ def create_app(config=None):
         total_cost_basis = sum(s.cost_basis for s in stock_list)
         total_unrealized_pnl = sum(s.unrealized_pnl for s in stock_list)
 
-        return render_template(
-            "stocks.html",
-            stocks=stock_list,
-            portfolio=portfolio,
-            sort_by=sort_by,
-            sort_dir=sort_dir,
-            total_market_value=total_market_value,
-            total_cost_basis=total_cost_basis,
-            total_unrealized_pnl=total_unrealized_pnl,
-            portfolios=app.portfolios,
-            portfolio_filter=session.get("portfolio_filter", "all"),
-        )
+        return render_template('stocks.html',
+                             stocks=stock_list,
+                             portfolio=portfolio,
+                             sort_by=sort_by,
+                             sort_dir=sort_dir,
+                             total_market_value=total_market_value,
+                             total_cost_basis=total_cost_basis,
+                             total_unrealized_pnl=total_unrealized_pnl,
+                             portfolios=app.portfolios,
+                             portfolio_filter=session.get('portfolio_filter', 'all'))
 
-    @app.route("/balance")
+    @app.route('/balance')
     def balance():
         """Balance information page - always shows per-portfolio data."""
         portfolio, risk_analysis = get_active_portfolio()
         if not app.portfolios:
-            return redirect(url_for("upload"))
+            return redirect(url_for('upload'))
 
         # Always build per-portfolio margin data with recommendations
         portfolio_margins = []
@@ -561,173 +506,149 @@ def create_app(config=None):
 
             # 1. Check for negative cash (margin loan) - paying this down increases margin
             if p.cash_balance < 0:
-                recommendations.append(
-                    {
-                        "severity": "high",
-                        "title": "Pay Down Margin Loan",
-                        "message": f"Deposit ${abs(p.cash_balance):,.0f} to eliminate margin loan and stop interest charges. This directly increases available margin.",
-                        "icon": "cash-stack",
-                    }
-                )
+                recommendations.append({
+                    'severity': 'high',
+                    'title': 'Pay Down Margin Loan',
+                    'message': f'Deposit ${abs(p.cash_balance):,.0f} to eliminate margin loan and stop interest charges. This directly increases available margin.',
+                    'icon': 'cash-stack'
+                })
 
             # 2. Close profitable short options to free up margin
             profitable_shorts = [o for o in p.short_options if o.unrealized_pnl > 0]
             if profitable_shorts:
                 total_profit = sum(o.unrealized_pnl for o in profitable_shorts)
-                recommendations.append(
-                    {
-                        "severity": "medium",
-                        "title": "Close Profitable Short Options",
-                        "message": f"You have {len(profitable_shorts)} profitable short options with ${total_profit:,.0f} in unrealized gains. Closing these frees up margin.",
-                        "icon": "graph-up-arrow",
-                    }
-                )
+                recommendations.append({
+                    'severity': 'medium',
+                    'title': 'Close Profitable Short Options',
+                    'message': f'You have {len(profitable_shorts)} profitable short options with ${total_profit:,.0f} in unrealized gains. Closing these frees up margin.',
+                    'icon': 'graph-up-arrow'
+                })
 
             # 3. Roll short options to reduce notional exposure
-            high_strike_puts = [
-                o for o in p.short_options if o.is_put and o.strike > 100
-            ]
+            high_strike_puts = [o for o in p.short_options if o.is_put and o.strike > 100]
             if high_strike_puts:
-                recommendations.append(
-                    {
-                        "severity": "low",
-                        "title": "Roll Down High-Strike Puts",
-                        "message": f"Consider rolling {len(high_strike_puts)} high-strike puts to lower strikes to reduce margin requirements.",
-                        "icon": "arrow-down-circle",
-                    }
-                )
+                recommendations.append({
+                    'severity': 'low',
+                    'title': 'Roll Down High-Strike Puts',
+                    'message': f'Consider rolling {len(high_strike_puts)} high-strike puts to lower strikes to reduce margin requirements.',
+                    'icon': 'arrow-down-circle'
+                })
 
             # 4. Convert naked options to spreads
             naked_shorts = len(p.short_options)
             if naked_shorts > 5:
-                recommendations.append(
-                    {
-                        "severity": "low",
-                        "title": "Convert to Spreads",
-                        "message": f"You have {naked_shorts} short options. Converting naked positions to spreads (buying protective options) significantly reduces margin.",
-                        "icon": "layers",
-                    }
-                )
+                recommendations.append({
+                    'severity': 'low',
+                    'title': 'Convert to Spreads',
+                    'message': f'You have {naked_shorts} short options. Converting naked positions to spreads (buying protective options) significantly reduces margin.',
+                    'icon': 'layers'
+                })
 
             # 5. Sell covered calls on stock positions
             if p.stocks and len(p.stocks) > 0:
                 stock_value = p.stocks_market_value
-                recommendations.append(
-                    {
-                        "severity": "low",
-                        "title": "Sell Covered Calls",
-                        "message": f"You have ${stock_value:,.0f} in stocks. Selling covered calls generates premium and doesn't require additional margin.",
-                        "icon": "telephone-outbound",
-                    }
-                )
+                recommendations.append({
+                    'severity': 'low',
+                    'title': 'Sell Covered Calls',
+                    'message': f'You have ${stock_value:,.0f} in stocks. Selling covered calls generates premium and doesn\'t require additional margin.',
+                    'icon': 'telephone-outbound'
+                })
 
             # 6. Deposit additional funds
-            recommendations.append(
-                {
-                    "severity": "low",
-                    "title": "Deposit Funds",
-                    "message": "Depositing additional cash directly increases your available margin and buying power.",
-                    "icon": "plus-circle",
-                }
-            )
+            recommendations.append({
+                'severity': 'low',
+                'title': 'Deposit Funds',
+                'message': 'Depositing additional cash directly increases your available margin and buying power.',
+                'icon': 'plus-circle'
+            })
 
-            portfolio_margins.append(
-                {
-                    "name": name,
-                    "net_liquidation_value": p.net_asset_value,
-                    "cash_balance": p.cash_balance,
-                    "margin_utilization": utilization,
-                    "short_options_count": len(p.short_options),
-                    "long_options_count": len([o for o in p.options if o.quantity > 0]),
-                    "stock_positions_count": len(p.stocks),
-                    "options_market_value": p.options_market_value,
-                    "stocks_market_value": p.stocks_market_value,
-                    "recommendations": recommendations,
-                }
-            )
+            portfolio_margins.append({
+                'name': name,
+                'net_liquidation_value': p.net_asset_value,
+                'cash_balance': p.cash_balance,
+                'margin_utilization': utilization,
+                'short_options_count': len(p.short_options),
+                'long_options_count': len([o for o in p.options if o.quantity > 0]),
+                'stock_positions_count': len(p.stocks),
+                'options_market_value': p.options_market_value,
+                'stocks_market_value': p.stocks_market_value,
+                'recommendations': recommendations,
+            })
 
-        return render_template(
-            "balance.html",
-            portfolio=portfolio,
-            risk_analysis=risk_analysis,
-            portfolio_margins=portfolio_margins,
-            portfolios=app.portfolios,
-            portfolio_filter=session.get("portfolio_filter", "all"),
-        )
+        return render_template('balance.html',
+                             portfolio=portfolio,
+                             risk_analysis=risk_analysis,
+                             portfolio_margins=portfolio_margins,
+                             portfolios=app.portfolios,
+                             portfolio_filter=session.get('portfolio_filter', 'all'))
 
     def journal_path():
-        return os.environ.get("TRADING_JOURNAL", str(DEFAULT_JOURNAL_PATH))
+        return os.environ.get('TRADING_JOURNAL', str(DEFAULT_JOURNAL_PATH))
 
     def halt_file():
-        return os.environ.get("TRADING_HALT_FILE", str(DEFAULT_HALT_FILE))
+        return os.environ.get('TRADING_HALT_FILE', str(DEFAULT_HALT_FILE))
 
     def bot_status():
         config = load_trading_config()
         return config, load_bot_status(
             journal_path(),
-            os.environ.get("TRADING_HEARTBEAT", "data/trading/heartbeat.json"),
+            os.environ.get('TRADING_HEARTBEAT', 'data/trading/heartbeat.json'),
             config.margin_floor,
             halt_file=halt_file(),
         )
 
     def csrf_token():
         """Per-session token for the bot's POST forms (validation finding 7)."""
-        if "_csrf" not in session:
-            session["_csrf"] = secrets.token_urlsafe(32)
-        return session["_csrf"]
+        if '_csrf' not in session:
+            session['_csrf'] = secrets.token_urlsafe(32)
+        return session['_csrf']
 
-    app.jinja_env.globals["csrf_token"] = csrf_token
+    app.jinja_env.globals['csrf_token'] = csrf_token
 
     def csrf_ok():
-        sent = request.form.get("csrf_token", "")
-        expected = session.get("_csrf", "")
+        sent = request.form.get('csrf_token', '')
+        expected = session.get('_csrf', '')
         return bool(expected) and secrets.compare_digest(sent, expected)
 
-    @app.route("/bot/halt", methods=["POST"])
+    @app.route('/bot/halt', methods=['POST'])
     def bot_halt():
         """Kill switch from the UI (spec §6.4)."""
         if not csrf_ok():
             # Halting is the safe direction, but a forged request still isn't trusted.
-            flash("Form expired; please try again.", "danger")
-            return redirect(url_for("bot"))
-        scope = (
-            HaltScope.ALL if request.form.get("scope") == "all" else HaltScope.OPENING
-        )
-        reason = (request.form.get("reason") or "manual halt from web UI").strip()[:200]
+            flash("Form expired; please try again.", 'danger')
+            return redirect(url_for('bot'))
+        scope = HaltScope.ALL if request.form.get('scope') == 'all' else HaltScope.OPENING
+        reason = (request.form.get('reason') or 'manual halt from web UI').strip()[:200]
         with Journal(journal_path()) as journal:
-            HaltManager(journal, halt_file()).halt(reason, scope, by="web-ui")
-        flash(f"Bot halted ({scope.value}).", "warning")
-        return redirect(url_for("bot"))
+            HaltManager(journal, halt_file()).halt(reason, scope, by='web-ui')
+        flash(f"Bot halted ({scope.value}).", 'warning')
+        return redirect(url_for('bot'))
 
-    @app.route("/bot/resume", methods=["POST"])
+    @app.route('/bot/resume', methods=['POST'])
     def bot_resume():
         if not csrf_ok():
-            flash("Form expired; please try again.", "danger")
-            return redirect(url_for("bot"))
-        if request.form.get("confirm") != "yes":
-            flash("Tick the confirmation box to resume.", "danger")
-            return redirect(url_for("bot"))
+            flash("Form expired; please try again.", 'danger')
+            return redirect(url_for('bot'))
+        if request.form.get('confirm') != 'yes':
+            flash("Tick the confirmation box to resume.", 'danger')
+            return redirect(url_for('bot'))
         with Journal(journal_path()) as journal:
-            HaltManager(journal, halt_file()).resume(
-                by="web-ui", note=request.form.get("note", "")
-            )
-        flash("Halt cleared.", "success")
-        return redirect(url_for("bot"))
+            HaltManager(journal, halt_file()).resume(by='web-ui', note=request.form.get('note', ''))
+        flash("Halt cleared.", 'success')
+        return redirect(url_for('bot'))
 
-    @app.route("/bot")
+    @app.route('/bot')
     def bot():
         """Trading bot status (read-only; data written by the engine)."""
         config, status = bot_status()
-        return render_template(
-            "bot_status.html",
-            status=status,
-            config=config,
-            floor=config.margin_floor,
-            portfolios=app.portfolios,
-            portfolio_filter=session.get("portfolio_filter", "all"),
-        )
+        return render_template('bot_status.html',
+                             status=status,
+                             config=config,
+                             floor=config.margin_floor,
+                             portfolios=app.portfolios,
+                             portfolio_filter=session.get('portfolio_filter', 'all'))
 
-    @app.route("/bot/approvals")
+    @app.route('/bot/approvals')
     def bot_approvals():
         """Stage 3: approve or reject each opening trade (spec §11)."""
         pending, recent = [], []
@@ -735,35 +656,28 @@ def create_app(config=None):
             with Journal(journal_path()) as journal:
                 queue = ApprovalQueue(journal)
                 pending, recent = queue.pending(), queue.recent()
-        return render_template(
-            "bot_approvals.html",
-            pending=pending,
-            recent=recent,
-            portfolios=app.portfolios,
-            portfolio_filter=session.get("portfolio_filter", "all"),
-        )
+        return render_template('bot_approvals.html',
+                               pending=pending, recent=recent,
+                               portfolios=app.portfolios,
+                               portfolio_filter=session.get('portfolio_filter', 'all'))
 
-    @app.route("/bot/approvals/<intent_id>", methods=["POST"])
+    @app.route('/bot/approvals/<intent_id>', methods=['POST'])
     def bot_approval_decision(intent_id):
         if not csrf_ok():
-            flash("Form expired; please try again.", "danger")
-            return redirect(url_for("bot_approvals"))
-        decision = request.form.get("decision")
+            flash("Form expired; please try again.", 'danger')
+            return redirect(url_for('bot_approvals'))
+        decision = request.form.get('decision')
         with Journal(journal_path()) as journal:
             queue = ApprovalQueue(journal)
             try:
-                if decision == "approve":
-                    queue.approve(
-                        intent_id, by="web-ui", note=request.form.get("note", "")
-                    )
-                    flash("Approved. The bot will send the order.", "success")
-                elif decision == "reject":
-                    queue.reject(
-                        intent_id, by="web-ui", note=request.form.get("note", "")
-                    )
-                    flash("Rejected. Nothing will be sent.", "warning")
+                if decision == 'approve':
+                    queue.approve(intent_id, by='web-ui', note=request.form.get('note', ''))
+                    flash("Approved. The bot will send the order.", 'success')
+                elif decision == 'reject':
+                    queue.reject(intent_id, by='web-ui', note=request.form.get('note', ''))
+                    flash("Rejected. Nothing will be sent.", 'warning')
             except ApprovalError as exc:
-                flash(str(exc), "danger")
+                flash(str(exc), 'danger')
         nxt = request.form.get("next", "")
         if nxt.startswith("/bot/") and "//" not in nxt:
             return redirect(nxt)
@@ -861,7 +775,7 @@ def create_app(config=None):
             portfolio_filter=session.get("portfolio_filter", "all"),
         )
 
-    @app.route("/bot/opportunities")
+    @app.route('/bot/opportunities')
     def bot_opportunities():
         """Latest scanner results (T30) with timing (T31)."""
         scan = None
@@ -870,14 +784,11 @@ def create_app(config=None):
                 rec = journal.latest("scan_results")
                 if rec is not None:
                     scan = {"ts": rec.ts, **rec.data}
-        return render_template(
-            "bot_opportunities.html",
-            scan=scan,
-            portfolios=app.portfolios,
-            portfolio_filter=session.get("portfolio_filter", "all"),
-        )
+        return render_template('bot_opportunities.html', scan=scan,
+                               portfolios=app.portfolios,
+                               portfolio_filter=session.get('portfolio_filter', 'all'))
 
-    @app.route("/bot/metrics")
+    @app.route('/bot/metrics')
     def bot_metrics():
         """Bot performance from the journal (T40): win rate, fees, slippage, P&L."""
         from datetime import date as _date
@@ -890,65 +801,55 @@ def create_app(config=None):
         chart = None
         if m is not None:
             chart = {
-                "months": list(m.months),
-                "premium": [v["premium"] for v in m.months.values()],
-                "pnl": [v["pnl"] for v in m.months.values()],
-                "fees": [v["fees"] for v in m.months.values()],
-                "nlv_days": [d.isoformat() for d, _ in m.nlv],
-                "nlv": [v for _, v in m.nlv],
+                'months': list(m.months),
+                'premium': [v['premium'] for v in m.months.values()],
+                'pnl': [v['pnl'] for v in m.months.values()],
+                'fees': [v['fees'] for v in m.months.values()],
+                'nlv_days': [d.isoformat() for d, _ in m.nlv],
+                'nlv': [v for _, v in m.nlv],
             }
         years = sorted({t.closed.year for t in m.closed}) if m else []
-        return render_template(
-            "bot_metrics.html",
-            m=m,
-            chart=chart,
-            years=years,
-            portfolios=app.portfolios,
-            portfolio_filter=session.get("portfolio_filter", "all"),
-        )
+        return render_template('bot_metrics.html', m=m, chart=chart, years=years,
+                               portfolios=app.portfolios,
+                               portfolio_filter=session.get('portfolio_filter', 'all'))
 
-    @app.route("/bot/metrics/realized.csv")
+    @app.route('/bot/metrics/realized.csv')
     def bot_realized_csv():
         """Closed trades for one year (USD, fees included), for the tax return."""
         from datetime import date as _date
         from flask import Response
         from src.trading import metrics as bot_metrics_mod
 
-        year = request.args.get("year", type=int)
+        year = request.args.get('year', type=int)
         text = bot_metrics_mod.realized_csv([], year)
         if os.path.exists(journal_path()):
             with Journal(journal_path()) as journal:
                 m = bot_metrics_mod.compute(journal, today=_date.today())
             text = bot_metrics_mod.realized_csv(m.trades, year)
         name = f"realized_{year or 'all'}.csv"
-        return Response(
-            text,
-            mimetype="text/csv",
-            headers={"Content-Disposition": f"attachment; filename={name}"},
-        )
+        return Response(text, mimetype='text/csv',
+                        headers={'Content-Disposition': f'attachment; filename={name}'})
 
-    @app.route("/api/bot-status")
+    @app.route('/api/bot-status')
     def api_bot_status():
         _, status = bot_status()
         return jsonify(status.to_json())
 
-    @app.route("/recommendations")
+    @app.route('/recommendations')
     def recommendations():
         """Recommendations page."""
         portfolio, risk_analysis = get_active_portfolio()
 
         if not app.portfolios:
-            return redirect(url_for("upload"))
+            return redirect(url_for('upload'))
 
-        return render_template(
-            "recommendations.html",
-            portfolio=portfolio,
-            risk_analysis=risk_analysis,
-            portfolios=app.portfolios,
-            portfolio_filter=session.get("portfolio_filter", "all"),
-        )
+        return render_template('recommendations.html',
+                             portfolio=portfolio,
+                             risk_analysis=risk_analysis,
+                             portfolios=app.portfolios,
+                             portfolio_filter=session.get('portfolio_filter', 'all'))
 
-    @app.route("/charts")
+    @app.route('/charts')
     def charts():
         """Charts and analytics page."""
         from datetime import datetime, timedelta
@@ -956,7 +857,7 @@ def create_app(config=None):
         portfolio, _ = get_active_portfolio()
 
         if not app.portfolios:
-            return redirect(url_for("upload"))
+            return redirect(url_for('upload'))
 
         # Get monthly data
         monthly_pnl = portfolio.get_monthly_realized_pnl()
@@ -969,7 +870,8 @@ def create_app(config=None):
         # Filter trades to last 30 days
         thirty_days_ago = datetime.now() - timedelta(days=30)
         recent_trades = [
-            t for t in portfolio.option_trades if t.trade_date >= thirty_days_ago
+            t for t in portfolio.option_trades
+            if t.trade_date >= thirty_days_ago
         ]
         # Sort by date descending (most recent first)
         recent_trades.sort(key=lambda t: t.trade_date, reverse=True)
@@ -979,53 +881,45 @@ def create_app(config=None):
         for opt in portfolio.options:
             underlying = opt.underlying
             if underlying not in unrealized_by_underlying:
-                unrealized_by_underlying[underlying] = {"pnl": 0, "count": 0}
-            unrealized_by_underlying[underlying]["pnl"] += opt.unrealized_pnl
-            unrealized_by_underlying[underlying]["count"] += 1
+                unrealized_by_underlying[underlying] = {'pnl': 0, 'count': 0}
+            unrealized_by_underlying[underlying]['pnl'] += opt.unrealized_pnl
+            unrealized_by_underlying[underlying]['count'] += 1
 
         # Sort by absolute P&L value (largest impact first)
         sorted_unrealized = sorted(
             unrealized_by_underlying.items(),
-            key=lambda x: abs(x[1]["pnl"]),
-            reverse=True,
+            key=lambda x: abs(x[1]['pnl']),
+            reverse=True
         )
 
         # Prepare unrealized data for chart and table
         unrealized_list = [
-            {"underlying": k, "pnl": v["pnl"], "count": v["count"]}
+            {'underlying': k, 'pnl': v['pnl'], 'count': v['count']}
             for k, v in sorted_unrealized
         ]
 
         chart_data = {
-            "months": months,
-            "realized_pnl": [monthly_pnl.get(m, 0) for m in months],
-            "premium_collected": [monthly_premium.get(m, 0) for m in months],
-            "trades_count": [monthly_trades.get(m, 0) for m in months],
-            "total_realized_pnl": portfolio.total_realized_pnl if portfolio else 0,
-            "total_premium_collected": portfolio.total_premium_collected
-            if portfolio
-            else 0,
-            "total_trades": len(portfolio.option_trades) if portfolio else 0,
-            "options_unrealized_pnl": portfolio.options_unrealized_pnl
-            if portfolio
-            else 0,
-            "unrealized_by_underlying": unrealized_list,
-            "unrealized_labels": [
-                item["underlying"] for item in unrealized_list[:10]
-            ],  # Top 10 for chart
-            "unrealized_values": [item["pnl"] for item in unrealized_list[:10]],
+            'months': months,
+            'realized_pnl': [monthly_pnl.get(m, 0) for m in months],
+            'premium_collected': [monthly_premium.get(m, 0) for m in months],
+            'trades_count': [monthly_trades.get(m, 0) for m in months],
+            'total_realized_pnl': portfolio.total_realized_pnl if portfolio else 0,
+            'total_premium_collected': portfolio.total_premium_collected if portfolio else 0,
+            'total_trades': len(portfolio.option_trades) if portfolio else 0,
+            'options_unrealized_pnl': portfolio.options_unrealized_pnl if portfolio else 0,
+            'unrealized_by_underlying': unrealized_list,
+            'unrealized_labels': [item['underlying'] for item in unrealized_list[:10]],  # Top 10 for chart
+            'unrealized_values': [item['pnl'] for item in unrealized_list[:10]],
         }
 
-        return render_template(
-            "charts.html",
-            portfolio=portfolio,
-            chart_data=chart_data,
-            recent_trades=recent_trades,
-            portfolios=app.portfolios,
-            portfolio_filter=session.get("portfolio_filter", "all"),
-        )
+        return render_template('charts.html',
+                             portfolio=portfolio,
+                             chart_data=chart_data,
+                             recent_trades=recent_trades,
+                             portfolios=app.portfolios,
+                             portfolio_filter=session.get('portfolio_filter', 'all'))
 
-    @app.route("/dividends")
+    @app.route('/dividends')
     def dividends():
         """Dividends page with charts and projections."""
         from datetime import datetime, timedelta
@@ -1034,7 +928,7 @@ def create_app(config=None):
         portfolio, _ = get_active_portfolio()
 
         if not app.portfolios:
-            return redirect(url_for("upload"))
+            return redirect(url_for('upload'))
 
         # Get monthly dividend data
         monthly_dividends = portfolio.get_monthly_dividends()
@@ -1060,32 +954,28 @@ def create_app(config=None):
             market_value = shares * current_price if shares and current_price else 0
 
             # Calculate annual dividend and yield
-            annual_dividend = div_data["total"]  # YTD dividends
+            annual_dividend = div_data['total']  # YTD dividends
             # Annualize based on months of data
             if months:
                 months_of_data = len(months)
                 if months_of_data > 0:
-                    annual_dividend = (div_data["total"] / months_of_data) * 12
+                    annual_dividend = (div_data['total'] / months_of_data) * 12
 
-            dividend_yield = (
-                (annual_dividend / market_value * 100) if market_value > 0 else 0
-            )
+            dividend_yield = (annual_dividend / market_value * 100) if market_value > 0 else 0
 
-            dividend_stocks.append(
-                {
-                    "symbol": symbol,
-                    "shares": shares,
-                    "current_price": current_price,
-                    "market_value": market_value,
-                    "ytd_dividends": div_data["total"],
-                    "payment_count": div_data["count"],
-                    "annual_dividend": annual_dividend,
-                    "dividend_yield": dividend_yield,
-                }
-            )
+            dividend_stocks.append({
+                'symbol': symbol,
+                'shares': shares,
+                'current_price': current_price,
+                'market_value': market_value,
+                'ytd_dividends': div_data['total'],
+                'payment_count': div_data['count'],
+                'annual_dividend': annual_dividend,
+                'dividend_yield': dividend_yield,
+            })
 
         # Sort by YTD dividends descending
-        dividend_stocks.sort(key=lambda x: x["ytd_dividends"], reverse=True)
+        dividend_stocks.sort(key=lambda x: x['ytd_dividends'], reverse=True)
 
         # Get bond interest data
         monthly_bond_interest = portfolio.get_monthly_bond_interest()
@@ -1097,9 +987,7 @@ def create_app(config=None):
         current_year = str(datetime.now().year)
         total_ytd = portfolio.total_dividends
         total_income = total_ytd + total_bond_interest
-        all_income_months = set(monthly_dividends.keys()) | set(
-            monthly_bond_interest.keys()
-        )
+        all_income_months = set(monthly_dividends.keys()) | set(monthly_bond_interest.keys())
         # Filter to current year only
         ytd_months = {m for m in all_income_months if m.startswith(current_year)}
         if ytd_months:
@@ -1111,45 +999,41 @@ def create_app(config=None):
         # Build bond info list
         bond_list = []
         for symbol, interest_data in bond_interest_by_symbol.items():
-            bond_list.append(
-                {
-                    "symbol": symbol,
-                    "bond_name": interest_data["bond_name"],
-                    "ytd_interest": interest_data["total"],
-                    "payment_count": interest_data["count"],
-                }
-            )
+            bond_list.append({
+                'symbol': symbol,
+                'bond_name': interest_data['bond_name'],
+                'ytd_interest': interest_data['total'],
+                'payment_count': interest_data['count'],
+            })
         # Sort by YTD interest descending
-        bond_list.sort(key=lambda x: x["ytd_interest"], reverse=True)
+        bond_list.sort(key=lambda x: x['ytd_interest'], reverse=True)
 
         chart_data = {
-            "months": months,
-            "months_count": len(months),
-            "dividends": [monthly_dividends.get(m, 0) for m in months],
-            "total_dividends": total_ytd,
-            "avg_monthly_income": avg_monthly_income,
-            "total_bond_interest": total_bond_interest,
-            "bond_interest": [monthly_bond_interest.get(m, 0) for m in months],
+            'months': months,
+            'months_count': len(months),
+            'dividends': [monthly_dividends.get(m, 0) for m in months],
+            'total_dividends': total_ytd,
+            'avg_monthly_income': avg_monthly_income,
+            'total_bond_interest': total_bond_interest,
+            'bond_interest': [monthly_bond_interest.get(m, 0) for m in months],
         }
 
-        return render_template(
-            "dividends.html",
-            portfolio=portfolio,
-            chart_data=chart_data,
-            dividend_stocks=dividend_stocks,
-            bond_list=bond_list,
-            portfolios=app.portfolios,
-            portfolio_filter=session.get("portfolio_filter", "all"),
-        )
+        return render_template('dividends.html',
+                             portfolio=portfolio,
+                             chart_data=chart_data,
+                             dividend_stocks=dividend_stocks,
+                             bond_list=bond_list,
+                             portfolios=app.portfolios,
+                             portfolio_filter=session.get('portfolio_filter', 'all'))
 
-    @app.route("/api/income-projection")
+    @app.route('/api/income-projection')
     def api_income_projection():
         """API endpoint for income projection data (fetched async)."""
         from src.analysis.income_projection import calculate_income_projection
 
         portfolio, _ = get_active_portfolio()
         if portfolio is None:
-            return jsonify({"error": "No portfolio loaded"}), 404
+            return jsonify({'error': 'No portfolio loaded'}), 404
 
         # Get monthly dividend data for months count
         monthly_dividends = portfolio.get_monthly_dividends()
@@ -1166,156 +1050,128 @@ def create_app(config=None):
             if shares <= 0:
                 continue
             current_price = matching_stocks[0].current_price if matching_stocks else 0
-            dividend_stocks.append(
-                {
-                    "symbol": symbol,
-                    "shares": shares,
-                    "current_price": current_price,
-                    "ytd_dividends": div_data["total"],
-                }
-            )
+            dividend_stocks.append({
+                'symbol': symbol,
+                'shares': shares,
+                'current_price': current_price,
+                'ytd_dividends': div_data['total'],
+            })
 
         # Build bond list
         bond_interest_by_symbol = portfolio.get_bond_interest_by_symbol()
         bond_list = []
         for symbol, interest_data in bond_interest_by_symbol.items():
-            bond_list.append(
-                {
-                    "symbol": symbol,
-                    "bond_name": interest_data["bond_name"],
-                    "ytd_interest": interest_data["total"],
-                    "payment_count": interest_data["count"],
-                }
-            )
+            bond_list.append({
+                'symbol': symbol,
+                'bond_name': interest_data['bond_name'],
+                'ytd_interest': interest_data['total'],
+                'payment_count': interest_data['count'],
+            })
 
         # Calculate projection
         projection = calculate_income_projection(
             dividend_stocks=dividend_stocks,
             bond_list=bond_list,
-            months_of_data=len(months) if months else 12,
+            months_of_data=len(months) if months else 12
         )
 
         # Build monthly data arrays for chart
-        month_names = [
-            "Jan",
-            "Feb",
-            "Mar",
-            "Apr",
-            "May",
-            "Jun",
-            "Jul",
-            "Aug",
-            "Sep",
-            "Oct",
-            "Nov",
-            "Dec",
-        ]
-        monthly_dividends = [
-            projection.monthly_breakdown[m]["dividends"] for m in range(1, 13)
-        ]
-        monthly_bonds = [projection.monthly_breakdown[m]["bonds"] for m in range(1, 13)]
-        monthly_growth = [
-            projection.monthly_breakdown[m]["growth_bonus"] for m in range(1, 13)
-        ]
+        month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+        monthly_dividends = [projection.monthly_breakdown[m]['dividends'] for m in range(1, 13)]
+        monthly_bonds = [projection.monthly_breakdown[m]['bonds'] for m in range(1, 13)]
+        monthly_growth = [projection.monthly_breakdown[m]['growth_bonus'] for m in range(1, 13)]
 
-        return jsonify(
-            {
-                "total_dividend": projection.total_dividend_projection,
-                "total_dividend_with_growth": projection.total_dividend_with_growth,
-                "total_bond": projection.total_bond_projection,
-                "total_income": projection.total_income_projection,
-                "total_income_with_growth": projection.total_income_with_growth,
-                "avg_cagr": projection.avg_dividend_cagr * 100,
-                "monthly": {
-                    "months": month_names,
-                    "dividends": monthly_dividends,
-                    "bonds": monthly_bonds,
-                    "growth_bonus": monthly_growth,
-                },
-                "stocks": [
-                    {
-                        "symbol": p.symbol,
-                        "shares": p.shares,
-                        "forward_rate": p.forward_dividend_rate,
-                        "projected": p.projected_annual,
-                        "yield": p.dividend_yield,
-                        "cagr": p.cagr_5yr * 100 if p.cagr_5yr else None,
-                        "projected_with_growth": p.projected_with_growth,
-                        "frequency": p.frequency,
-                        "payment_months": p.payment_months,
-                    }
-                    for p in projection.stock_projections
-                ],
-                "bonds": [
-                    {
-                        "symbol": p.symbol,
-                        "bond_name": p.bond_name,
-                        "coupon_rate": p.coupon_rate,
-                        "annual_interest": p.annual_interest,
-                        "payment_months": p.payment_months,
-                    }
-                    for p in projection.bond_projections
-                ],
-            }
-        )
+        return jsonify({
+            'total_dividend': projection.total_dividend_projection,
+            'total_dividend_with_growth': projection.total_dividend_with_growth,
+            'total_bond': projection.total_bond_projection,
+            'total_income': projection.total_income_projection,
+            'total_income_with_growth': projection.total_income_with_growth,
+            'avg_cagr': projection.avg_dividend_cagr * 100,
+            'monthly': {
+                'months': month_names,
+                'dividends': monthly_dividends,
+                'bonds': monthly_bonds,
+                'growth_bonus': monthly_growth,
+            },
+            'stocks': [
+                {
+                    'symbol': p.symbol,
+                    'shares': p.shares,
+                    'forward_rate': p.forward_dividend_rate,
+                    'projected': p.projected_annual,
+                    'yield': p.dividend_yield,
+                    'cagr': p.cagr_5yr * 100 if p.cagr_5yr else None,
+                    'projected_with_growth': p.projected_with_growth,
+                    'frequency': p.frequency,
+                    'payment_months': p.payment_months,
+                }
+                for p in projection.stock_projections
+            ],
+            'bonds': [
+                {
+                    'symbol': p.symbol,
+                    'bond_name': p.bond_name,
+                    'coupon_rate': p.coupon_rate,
+                    'annual_interest': p.annual_interest,
+                    'payment_months': p.payment_months,
+                }
+                for p in projection.bond_projections
+            ],
+        })
 
-    @app.route("/api/portfolio")
+    @app.route('/api/portfolio')
     def api_portfolio():
         """API endpoint for portfolio data."""
         portfolio, _ = get_active_portfolio()
         if portfolio is None:
-            return jsonify({"error": "No portfolio loaded"}), 404
+            return jsonify({'error': 'No portfolio loaded'}), 404
         return jsonify(portfolio.to_dict())
 
-    @app.route("/api/refresh-prices", methods=["POST"])
+    @app.route('/api/refresh-prices', methods=['POST'])
     def api_refresh_prices():
         """Refresh underlying prices for all portfolios."""
         if not app.portfolios:
-            return jsonify({"error": "No portfolio loaded"}), 404
+            return jsonify({'error': 'No portfolio loaded'}), 404
 
         for portfolio in app.portfolios.values():
             update_portfolio_prices(portfolio)
             calculate_portfolio_greeks(portfolio)
 
-        return jsonify({"status": "success", "message": "Prices refreshed"})
+        return jsonify({'status': 'success', 'message': 'Prices refreshed'})
 
-    @app.route("/api/debug/dividends")
+    @app.route('/api/debug/dividends')
     def debug_dividends():
         """Debug endpoint to inspect raw dividend data."""
         portfolio, _ = get_active_portfolio()
         if portfolio is None:
-            return jsonify({"error": "No portfolio loaded"}), 404
+            return jsonify({'error': 'No portfolio loaded'}), 404
 
         dividends = []
         filtered_dividends = []
         for div in portfolio.dividends:
             div_info = {
-                "symbol": div.symbol,
-                "payment_date": div.payment_date.isoformat(),
-                "amount": div.amount,
-                "description": div.description[:50] if div.description else "",
-                "in_period": portfolio._is_within_period(div.payment_date),
+                'symbol': div.symbol,
+                'payment_date': div.payment_date.isoformat(),
+                'amount': div.amount,
+                'description': div.description[:50] if div.description else '',
+                'in_period': portfolio._is_within_period(div.payment_date),
             }
             dividends.append(div_info)
-            if div_info["in_period"]:
+            if div_info['in_period']:
                 filtered_dividends.append(div_info)
 
         # Sort by date
-        dividends.sort(key=lambda x: x["payment_date"])
+        dividends.sort(key=lambda x: x['payment_date'])
 
-        return jsonify(
-            {
-                "statement_period": portfolio.statement_period,
-                "period_start": portfolio.period_start.isoformat()
-                if portfolio.period_start
-                else None,
-                "period_end": portfolio.period_end.isoformat()
-                if portfolio.period_end
-                else None,
-                "total_dividends": len(dividends),
-                "filtered_dividends": len(filtered_dividends),
-                "dividends": dividends,
-            }
-        )
+        return jsonify({
+            'statement_period': portfolio.statement_period,
+            'period_start': portfolio.period_start.isoformat() if portfolio.period_start else None,
+            'period_end': portfolio.period_end.isoformat() if portfolio.period_end else None,
+            'total_dividends': len(dividends),
+            'filtered_dividends': len(filtered_dividends),
+            'dividends': dividends
+        })
 
     return app
+
