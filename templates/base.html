@@ -636,6 +636,30 @@
         </div>
         {% endif %}
     </aside>
+    <script>
+        // Keep the menu where it was when moving between pages (it would jump
+        // back to the top on every page load). Runs before the page paints.
+        (function () {
+            var bar = document.getElementById('sidebar');
+            var KEY = 'sidebarScroll';
+            try {
+                var saved = sessionStorage.getItem(KEY);
+                if (saved !== null) { bar.scrollTop = parseInt(saved, 10) || 0; }
+            } catch (e) { /* storage blocked: start at the top */ }
+            var active = bar.querySelector('.nav-link.active');
+            if (active) {
+                var r = active.getBoundingClientRect(), b = bar.getBoundingClientRect();
+                if (r.top < b.top || r.bottom > b.bottom) {
+                    active.scrollIntoView({ block: 'center' });  // e.g. a page opened from a bookmark
+                }
+            }
+            function save() {
+                try { sessionStorage.setItem(KEY, String(bar.scrollTop)); } catch (e) {}
+            }
+            bar.addEventListener('scroll', save, { passive: true });
+            window.addEventListener('pagehide', save);
+        })();
+    </script>
 
     <!-- Mobile Header -->
     <div class="mobile-header">
