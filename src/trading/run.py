@@ -13,6 +13,7 @@ import asyncio
 import logging
 import os
 import signal
+from typing import Optional
 
 from src.trading.broker.base import BrokerError
 from src.trading.broker.ib_adapter import IBAdapter, IBConnectionSettings
@@ -28,7 +29,7 @@ from src.trading import guard as assignment_guard
 from src.trading import rolls
 from src.trading import spreads
 from src.trading import rebuild
-from src.trading.scanner import ScanResult
+from src.trading.scanner import ScanResult, report_strategies
 from dataclasses import replace
 from src.trading.assignments import handle_assignment
 from src.trading import margin_restoration
@@ -401,6 +402,8 @@ async def _cycle(
             )
         if jobs is not None and sched.EXPIRY_SWEEP in jobs:
             _expiry_sweep(positions, journal, notifier)
+        if jobs is not None and sched.OPPORTUNITIES in jobs:
+            _opportunities_digest(journal, config, notifier)
         if jobs is not None and sched.EOD in jobs:
             _daily_report(journal, snap, budget, margin, positions, notifier)
     except BrokerError as exc:
@@ -410,7 +413,14 @@ async def _cycle(
 
 SCAN_EVERY_S = 15 * 60  # spec §8: the scanner runs every 15 minutes
 OBSERVE_JOBS = frozenset(
-    {sched.MANAGE, sched.SCAN, sched.PREOPEN, sched.EXPIRY_SWEEP, sched.EOD}
+    {
+        sched.MANAGE,
+        sched.SCAN,
+        sched.PREOPEN,
+        sched.EXPIRY_SWEEP,
+        sched.EOD,
+        sched.OPPORTUNITIES,
+    }
 )
 ACT_JOBS = frozenset({sched.MANAGE, sched.SCAN, sched.EXPIRY_SWEEP})
 
@@ -699,10 +709,22 @@ async def _act(
         if not _done(journal, intent_id):
             await executor.submit(intent)
 
-    # 5. New entries from the scanner (T33), only when everything allows new risk.
+    # 5. The opportunities report (every scan tick, whatever the mode), then
+    #    new entries from it (T33), only when everything allows new risk.
     if entry_ctx is not None:
+        scanned = await _opportunities(
+            executor, journal, config, positions, snap, entry_ctx, today
+        )
         await _enter(
-            executor, journal, config, margin, positions, snap, entry_ctx, today
+            executor,
+            journal,
+            config,
+            margin,
+            positions,
+            snap,
+            entry_ctx,
+            today,
+            scanned=scanned,
         )
 
     # 6. The owner's rebuild plan: build it on request, then submit its items;
@@ -712,8 +734,77 @@ async def _act(
     )
 
 
+async def _opportunities(executor, journal, config, positions, snap, ctx, today):
+    """Scan the real market for the report (Opportunities page, daily digest)."""
+    budget = ctx.budget.last if ctx.budget is not None else None
+    try:
+        result = await _scan(
+            executor,
+            journal,
+            config,
+            positions,
+            snap,
+            ctx,
+            budget,
+            today,
+            strategies=report_strategies(config),
+        )
+    except BrokerError as exc:
+        log.warning("opportunities scan: market data unavailable (%s)", exc)
+        return None
+    ctx.last_scan = utcnow()
+    log.info(
+        "opportunities: %d candidates, %d ready to sell",
+        len(result.candidates),
+        len(result.ready()),
+    )
+    return result
+
+
+def _opportunities_digest(journal, config, notifier) -> Optional[dict]:
+    """10:00 ET: the day's best candidates from the latest scan, in one message."""
+    today = utcnow().astimezone(sched.ET).date().isoformat()
+    rec = journal.latest("scan_results")
+    data = rec.data if rec is not None and rec.data.get("date") == today else None
+    if data is None:
+        body = "No scan yet today: is the engine connected to IB with market data?"
+        best = []
+    else:
+        best = data.get("best", [])[:5]
+        lines = []
+        for c in best:
+            tag = "READY" if c.get("fire") else "wait"
+            delta = c.get("delta")
+            lines.append(
+                f"{tag:5s} {c['strategy'].replace('_', ' ')}: {c['key']}"
+                + (f" (delta {abs(delta):.2f})" if delta is not None else "")
+                + f", credit ${c.get('net_credit', 0):,.0f}/contract,"
+                f" yield {c.get('annual_yield', 0):.0%}/yr"
+            )
+        if not lines:
+            top = sorted(data.get("rejected", {}).items(), key=lambda kv: -kv[1])[:3]
+            lines.append(
+                "Nothing passes the filters today. Most common reasons: "
+                + "; ".join(f"{k} ({v})" for k, v in top)
+            )
+        body = (
+            f"VIX regime: {data.get('regime', 'unknown')}.\n"
+            + "\n".join(lines)
+            + (
+                "\nReport only (not enabled to open): " + ", ".join(data["report_only"])
+                if data.get("report_only")
+                else ""
+            )
+            + "\nDetails on the Opportunities page."
+        )
+    report = {"job": sched.OPPORTUNITIES, "date": today, "best": best}
+    journal.append("job_runs", report, key=sched.OPPORTUNITIES)
+    _alert(notifier, "report", f"opps:{today}", f"Opportunities {today}", body)
+    return report
+
+
 async def _enter(
-    executor, journal, config, margin, positions, snap, ctx, today
+    executor, journal, config, margin, positions, snap, ctx, today, scanned=None
 ) -> None:
     opening = [
         StrategyName.COVERED_CALL,
@@ -731,15 +822,28 @@ async def _enter(
         return
     if not budget or budget.get("multiplier", 0) <= 0:
         return  # unknown or rising VIX regime: no new risk
-    now = utcnow()
-    if (
-        not ctx.scheduled  # the scheduler already paces the scan (T38)
-        and ctx.last_scan is not None
-        and (now - ctx.last_scan).total_seconds() < SCAN_EVERY_S
-    ):
-        return
-    ctx.last_scan = now
-    result = await _scan(executor, journal, config, positions, snap, ctx, budget, today)
+    if scanned is not None:
+        # This tick's opportunities scan: entries only from strategies that may open.
+        result = ScanResult(
+            [
+                c
+                for c in scanned.candidates
+                if config.enabled_strategies[c.strategy].open
+            ],
+            scanned.rejected,
+        )
+    else:
+        now = utcnow()
+        if (
+            not ctx.scheduled  # the scheduler already paces the scan (T38)
+            and ctx.last_scan is not None
+            and (now - ctx.last_scan).total_seconds() < SCAN_EVERY_S
+        ):
+            return
+        ctx.last_scan = now
+        result = await _scan(
+            executor, journal, config, positions, snap, ctx, budget, today
+        )
     intents = entry_rules.entry_intents(
         result,
         budget,
@@ -761,7 +865,9 @@ async def _enter(
         await executor.submit(intent)
 
 
-async def _scan(executor, journal, config, positions, snap, ctx, budget, today):
+async def _scan(
+    executor, journal, config, positions, snap, ctx, budget, today, strategies=None
+):
     if ctx.history is None:
         cache = os.path.join(
             os.environ.get("TRADING_CACHE_DIR", "data/trading/cache"), "history"
@@ -777,7 +883,8 @@ async def _scan(executor, journal, config, positions, snap, ctx, budget, today):
         events=ctx.events,
         journal=journal,
         tracker=ctx.tracker,
-        regime=budget.get("regime", "unknown"),
+        regime=(budget or {}).get("regime", "unknown"),
+        strategies=strategies,
     )
 
 
