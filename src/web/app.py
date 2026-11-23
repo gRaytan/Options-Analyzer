@@ -1,5 +1,6 @@
 """Flask web application for Options Analyzer."""
 import os
+from datetime import datetime
 import secrets
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, session
 from werkzeug.utils import secure_filename
@@ -691,6 +692,48 @@ def create_app(config=None):
         return render_template('bot_opportunities.html', scan=scan,
                                portfolios=app.portfolios,
                                portfolio_filter=session.get('portfolio_filter', 'all'))
+
+    @app.route('/bot/metrics')
+    def bot_metrics():
+        """Bot performance from the journal (T40): win rate, fees, slippage, P&L."""
+        from datetime import date as _date
+        from src.trading import metrics as bot_metrics_mod
+
+        m = None
+        if os.path.exists(journal_path()):
+            with Journal(journal_path()) as journal:
+                m = bot_metrics_mod.compute(journal, today=_date.today())
+        chart = None
+        if m is not None:
+            chart = {
+                'months': list(m.months),
+                'premium': [v['premium'] for v in m.months.values()],
+                'pnl': [v['pnl'] for v in m.months.values()],
+                'fees': [v['fees'] for v in m.months.values()],
+                'nlv_days': [d.isoformat() for d, _ in m.nlv],
+                'nlv': [v for _, v in m.nlv],
+            }
+        years = sorted({t.closed.year for t in m.closed}) if m else []
+        return render_template('bot_metrics.html', m=m, chart=chart, years=years,
+                               portfolios=app.portfolios,
+                               portfolio_filter=session.get('portfolio_filter', 'all'))
+
+    @app.route('/bot/metrics/realized.csv')
+    def bot_realized_csv():
+        """Closed trades for one year (USD, fees included), for the tax return."""
+        from datetime import date as _date
+        from flask import Response
+        from src.trading import metrics as bot_metrics_mod
+
+        year = request.args.get('year', type=int)
+        text = bot_metrics_mod.realized_csv([], year)
+        if os.path.exists(journal_path()):
+            with Journal(journal_path()) as journal:
+                m = bot_metrics_mod.compute(journal, today=_date.today())
+            text = bot_metrics_mod.realized_csv(m.trades, year)
+        name = f"realized_{year or 'all'}.csv"
+        return Response(text, mimetype='text/csv',
+                        headers={'Content-Disposition': f'attachment; filename={name}'})
 
     @app.route('/api/bot-status')
     def api_bot_status():
