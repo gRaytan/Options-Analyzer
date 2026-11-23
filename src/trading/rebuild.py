@@ -9,8 +9,10 @@ The owner sets target holdings on the Rebuild page (e.g. SPY 50%, QQQM
    after it, all three hold:
 
    * Excess Liquidity >= $125k and Cushion >= 40% (the new-trade floor);
-   * in the crash scenario (-25%, IV +50%, margin x1.5) Excess Liquidity
-     stays >= $100k.
+   * in the crash scenario (S&P ``risk.crash_move``, default -30%, each name
+     moving by its beta, at least 1x; IV +50%, margin x1.5) Excess Liquidity
+     stays >= $100k. Volatile names use their own maintenance rate
+     (``watchlist.<sym>.maint_margin``, e.g. NBIS 40%) instead of Reg-T's 25%.
 
    While VIX is above 30 and rising the tranche is halved
    (``rising_vix_scale``).
@@ -30,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import Dict, List, Optional, Sequence
@@ -44,24 +47,32 @@ from src.trading.domain import (
     Quote,
     StockContract,
     TradeIntent,
+    normalize_symbol,
     utcnow,
 )
 from src.trading.risk.limits import exposures_from
-from src.trading.risk.stress import STOCK_MAINT, Scenario, StressModel
+from src.trading.risk.stress import (
+    STOCK_MAINT,
+    StressModel,
+    betas_from,
+    crash_scenario,
+)
 
 STRATEGY = "rebuild"
+INDEX_ETFS = {"SPY", "QQQ", "QQQM", "VOO", "IVV", "VTI"}
 BISECT_STEPS = 30
 
 
 def parse_targets(text: str) -> Dict[str, float]:
-    """``"SPY=50, QQQM=50"`` or ``"SPY=0.5,QQQM=0.5"`` -> weights (fractions)."""
+    """``"SPY=50, QQQM=50"`` or ``"SPY=0.5,QQQM=0.5"`` -> weights (fractions).
+    Share classes are written the IB way: ``BRK.B`` / ``BRKB`` -> ``BRK B``."""
     out: Dict[str, float] = {}
     for part in text.replace(";", ",").split(","):
         if not part.strip():
             continue
         sym, _, w = part.partition("=")
-        sym, value = sym.strip().upper(), float(w.strip().rstrip("%"))
-        if not sym.isalnum():
+        sym, value = normalize_symbol(sym), float(w.strip().rstrip("%"))
+        if not re.fullmatch(r"[A-Z0-9]{1,6}( [A-Z])?", sym):
             raise ValueError(f"bad symbol {sym!r}")
         out[sym] = value / 100 if value > 1 else value
     total = sum(out.values())
@@ -148,7 +159,7 @@ def evaluate(
     """Account after buying ``buys`` with cash (Reg-T): EL, Cushion, crash EL."""
     cost = sum(buys.values())
     nlv = account.net_liquidation
-    maint_add = STOCK_MAINT * cost
+    maint_add = sum(v * maint_rate(s, config) for s, v in buys.items())
     after = replace(
         account,
         excess_liquidity=account.excess_liquidity - maint_add,
@@ -161,10 +172,13 @@ def evaluate(
         if v > 0
     ]
     model = StressModel(
-        exposures_from(list(positions) + added, quotes), quotes, after, today
+        exposures_from(list(positions) + added, quotes),
+        quotes,
+        after,
+        today,
+        betas_from(config),
     )
-    mm = config.risk.stress_margin_multiplier
-    crash = model.run(Scenario("worst -25% IV+50%", -0.25, 0.50, mm))
+    crash = model.run(crash_scenario(config))
     gross = sum(_stock_value(positions, prices).values()) + cost
     return Fit(
         1.0,
@@ -176,6 +190,11 @@ def evaluate(
     )
 
 
+def maint_rate(symbol: str, config: TradingConfig) -> float:
+    entry = config.watchlist.get(symbol.upper())
+    return entry.maint_margin if entry and entry.maint_margin else STOCK_MAINT
+
+
 def _ok(fit: Fit, nlv: float, config: TradingConfig) -> str:
     f = config.margin_floor
     if fit.el_after < f.excess_liquidity_min + f.entry_buffer:
@@ -183,7 +202,7 @@ def _ok(fit: Fit, nlv: float, config: TradingConfig) -> str:
     if fit.cushion_after < f.cushion_min_new_trade:
         return "Cushion after the buy"
     if fit.stress_el_after < f.excess_liquidity_min:
-        return "Excess Liquidity in a -25% crash"
+        return f"Excess Liquidity in a {config.risk.crash_move:+.0%} S&P crash"
     if fit.gross_after > config.rebuild.max_gross_leverage * nlv + 1e-6:
         return "no borrowing (stock <= account value)"
     return ""
@@ -222,6 +241,15 @@ def plan_shares(
             f"VIX regime '{regime}': the share tranche is cut to {scale_regime:.0%}"
         )
     tranche = {s: v * scale_regime for s, v in tranche.items()}
+    for sym, w in targets.items():
+        entry = config.watchlist.get(sym)
+        beta = entry.beta if entry and entry.beta else 1.0
+        if w > config.risk.per_name_max and sym not in INDEX_ETFS:
+            notes.append(
+                f"{sym}: target {w:.0%} of the account in one stock (the bot's per-name "
+                f"guide is {config.risk.per_name_max:.0%}); its crash loss is sized at "
+                f"{max(beta, 1.0) * abs(config.risk.crash_move):.0%}."
+            )
     if not tranche:
         return [], None, notes
 
@@ -276,6 +304,18 @@ def plan_shares(
                 shares * prices[sym],
             )
         )
+    if steps:  # report the account after the whole-share amounts actually planned
+        final = evaluate(
+            positions,
+            quotes,
+            account,
+            {st.symbol: st.cost for st in steps},
+            prices,
+            config,
+            today,
+        )
+        final.scale, final.binding = best.scale, best.binding
+        best = final
     return steps, best, notes
 
 

@@ -8,12 +8,19 @@
     "put_spread":   {"manage": true, "open": true},
     "tail_hedge":   {"manage": true, "open": true}
   },
+  "risk": {"crash_move": -0.30},
   "watchlist": {
-    "SPY":  {"strategies": ["covered_call"], "cc_max_coverage": 0.5},
-    "QQQ":  {"strategies": ["covered_call"], "cc_max_coverage": 0.5},
-    "QQQM": {"strategies": ["covered_call"], "cc_max_coverage": 0.5,
+    "SPY":  {"strategies": ["covered_call"], "cc_max_coverage": 0.5, "beta": 1.0},
+    "QQQ":  {"strategies": ["covered_call"], "cc_max_coverage": 0.5, "beta": 1.2},
+    "QQQM": {"strategies": ["covered_call"], "cc_max_coverage": 0.5, "beta": 1.2,
              "cc_delta": [0.06, 0.10], "call_roll_delta": 0.30,
              "min_oi": 50, "max_spread_pct": 0.20,
-             "fair_value_proxy": "QQQ", "order_step_s": 300}
+             "fair_value_proxy": "QQQ", "order_step_s": 300},
+    "BRK B": {"strategies": ["covered_call"], "cc_max_coverage": 0.5, "sector": "financials",
+              "beta": 0.9, "cc_delta": [0.08, 0.15], "min_oi": 100},
+    "NBIS": {"strategies": ["covered_call"], "cc_max_coverage": 0.5, "sector": "tech",
+             "beta": 2.5, "maint_margin": 0.40,
+             "cc_delta": [0.06, 0.12], "call_roll_delta": 0.30,
+             "min_oi": 100, "max_spread_pct": 0.15}
   }
 }

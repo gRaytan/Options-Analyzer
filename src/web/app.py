@@ -760,9 +760,12 @@ def create_app(config=None):
         waiting = bool(
             req and (plan is None or plan.get("request_id") != req.get("request_id"))
         )
+        _, live = bot_status()
+        crash = (live.budget or {}).get("crash")
         return render_template(
             "bot_rebuild.html",
             account=account,
+            crash=crash,
             stocks=stocks,
             stock_value=stock_value,
             req=req,

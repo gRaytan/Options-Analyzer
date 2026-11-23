@@ -252,6 +252,22 @@ class OrderLeg:
             raise ValueError("leg quantity must be positive")
 
 
+def normalize_symbol(symbol: str) -> str:
+    """IB's form of a ticker: share classes take a space ("BRK.B", "BRK-B",
+    "BRK/B", "BRKB" -> "BRK B"); everything upper case."""
+    s = " ".join(symbol.strip().upper().split())
+    for sep in (".", "-", "/"):
+        if sep in s:
+            head, _, tail = s.partition(sep)
+            if head.isalpha() and len(tail) == 1 and tail.isalpha():
+                return f"{head} {tail}"
+    return SHARE_CLASS_ALIASES.get(s, s)
+
+
+# Well-known share classes typed without a separator.
+SHARE_CLASS_ALIASES = {"BRKB": "BRK B", "BRKA": "BRK A", "BFB": "BF B", "BFA": "BF A"}
+
+
 def make_intent_id(
     strategy: str, kind: IntentKind, position_key: str, day: date
 ) -> str:

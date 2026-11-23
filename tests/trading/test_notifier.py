@@ -190,7 +190,8 @@ def test_engine_alerts_on_breach_and_halt(tmp_path, monkeypatch):
     run_once(tmp_path, monkeypatch, broker, notifier)
     titles = {a.title for a in rec.alerts}
     assert "Margin breach" in titles and "Bot halted (everything)" in titles
-    assert all(a.level == "critical" for a in rec.alerts)
+    # The breaching account also fails the -30% crash test (a warning, by design).
+    assert all(a.level == "critical" for a in rec.alerts if a.key != "crash-test")
 
 
 def test_engine_no_alert_on_normal_start(tmp_path, monkeypatch):

@@ -158,8 +158,9 @@ def test_risk_reducing_skips():
 
 def test_standard_scenarios():
     names = [s.name for s in standard_scenarios(CFG)]
-    assert names[:7] == ["-25%", "-20%", "-15%", "-8%", "+8%", "+15%", "+25%"]
-    assert {"-15% IV+50%", "-20% IV+50%", "-25% IV+50%"} <= set(names)
+    # The -30% crash (risk.crash_move) is in the grid too.
+    assert names[:8] == ["-30%", "-25%", "-20%", "-15%", "-8%", "+8%", "+15%", "+25%"]
+    assert {"-15% IV+50%", "-20% IV+50%", "-25% IV+50%", "-30% IV+50%"} <= set(names)
     assert all(
         s.margin_multiplier == 1.5 for s in standard_scenarios(CFG) if s.market_move < 0
     )

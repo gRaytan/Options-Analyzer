@@ -158,6 +158,7 @@
             <div class="progress-bar {{ 'bg-danger' if b.over_budget else ('bg-warning' if pct > 80 else 'bg-success') }}" style="width: {{ [pct, 100] | min }}%"></div>
         </div>
         <div class="small text-muted mt-2">{{ b.regime_detail }}{% if b.budget == 0 %} · no new risk in this regime{% endif %}</div>
+        {% set c = b.crash %}{% include "_crash_test.html" %}
     </div>
 </div>
 {% endif %}
