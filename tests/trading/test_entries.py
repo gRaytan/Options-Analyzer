@@ -23,6 +23,7 @@ from src.trading.domain import (
     Quote,
     Right,
     StockContract,
+    set_clock,
 )
 from src.trading.entries import entry_intents, notional_room, size_put, worst_price
 from src.trading.executor import Executor
@@ -219,15 +220,21 @@ def test_engine_sells_an_index_put_on_paper(tmp_path, monkeypatch):
         delta = -0.5 * math.erfc(m / (0.22 * math.sqrt(38 / 365)) / math.sqrt(2))
         broker.set_quote(fair_quote(xsp(k), last, 0.22, delta, width=0.02))
 
-    asyncio.run(
-        run.monitor(
-            0,
-            once=True,
-            adapter=broker,
-            journal=Journal(tmp_path / "j.db"),
-            halt_file=tmp_path / "H",
+    # The fixture's quotes are stamped NOW; pin the engine clock to the same
+    # instant so the sanity gate doesn't read them as stale (§6.3).
+    set_clock(lambda: NOW)
+    try:
+        asyncio.run(
+            run.monitor(
+                0,
+                once=True,
+                adapter=broker,
+                journal=Journal(tmp_path / "j.db"),
+                halt_file=tmp_path / "H",
+            )
         )
-    )
+    finally:
+        set_clock(None)
     asyncio.run(broker.connect())
     shorts = [
         p

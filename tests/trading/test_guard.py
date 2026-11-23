@@ -16,6 +16,7 @@ from src.trading.domain import (
     Position,
     Quote,
     Right,
+    set_clock,
 )
 from src.trading.guard import check_position, scan
 from src.trading.journal import Journal
@@ -156,16 +157,22 @@ def test_engine_reports_guard_signals(tmp_path, monkeypatch):
     from src.trading.notifier import Notifier
 
     rec = Rec()
-    asyncio.run(
-        run.monitor(
-            0,
-            once=True,
-            adapter=broker,
-            journal=Journal(tmp_path / "j.db"),
-            halt_file=tmp_path / "H",
-            notifier=Notifier(AlertsConfig(min_level="info"), [rec]),
+    # The positions expire relative to the fixture's TODAY; pin the engine clock
+    # so the guard sees the DTEs this test was written for.
+    set_clock(lambda: NOW)
+    try:
+        asyncio.run(
+            run.monitor(
+                0,
+                once=True,
+                adapter=broker,
+                journal=Journal(tmp_path / "j.db"),
+                halt_file=tmp_path / "H",
+                notifier=Notifier(AlertsConfig(min_level="info"), [rec]),
+            )
         )
-    )
+    finally:
+        set_clock(None)
     beat = json.loads(hb.read_text())
     assert [g["trigger"] for g in beat["guard"]] == ["early_roll"]
     assert any(a.title.startswith("Roll needed") for a in rec.alerts)
@@ -214,14 +221,18 @@ def test_engine_plans_a_roll_for_a_triggered_position(tmp_path, monkeypatch):
                 greeks=Greeks(-0.4, iv=0.2),
             )
         )
-    asyncio.run(
-        run.monitor(
-            0,
-            once=True,
-            adapter=broker,
-            journal=Journal(tmp_path / "j.db"),
-            halt_file=tmp_path / "H",
+    set_clock(lambda: NOW)
+    try:
+        asyncio.run(
+            run.monitor(
+                0,
+                once=True,
+                adapter=broker,
+                journal=Journal(tmp_path / "j.db"),
+                halt_file=tmp_path / "H",
+            )
         )
-    )
+    finally:
+        set_clock(None)
     [g] = json.loads(hb.read_text())["guard"]
     assert g["plan"].startswith("roll: roll to XSP") and "590" in g["plan"]

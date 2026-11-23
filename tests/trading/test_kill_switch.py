@@ -7,7 +7,14 @@ import pytest
 
 from src.trading import run
 from src.trading.broker.fake import FakeAdapter
-from src.trading.domain import Action, Fill, HaltScope, OptionContract, Right
+from src.trading.domain import (
+    Action,
+    Fill,
+    HaltScope,
+    OptionContract,
+    Right,
+    set_clock,
+)
 from src.trading.journal import Journal
 from src.trading.kill_switch import HaltManager, main
 
@@ -104,11 +111,21 @@ def test_engine_halts_all_on_reconcile_mismatch(tmp_path, monkeypatch):
     journal = Journal(tmp_path / "j.db")
     journal.append("fills", Fill("e1", "r", PUT, Action.SELL, 1, 1.0, T0))
     broker = FakeAdapter(account_id="DU123", read_only=True)
-    asyncio.run(
-        run.monitor(
-            0, once=True, adapter=broker, journal=journal, halt_file=tmp_path / "HALT"
+    # The journalled fill is for a contract expiring 2026-12-31; pin the engine
+    # clock so reconcile still expects it after that date.
+    set_clock(lambda: T0)
+    try:
+        asyncio.run(
+            run.monitor(
+                0,
+                once=True,
+                adapter=broker,
+                journal=journal,
+                halt_file=tmp_path / "HALT",
+            )
         )
-    )
+    finally:
+        set_clock(None)
     beat = json.loads(hb.read_text())
     assert beat["halted"] is True and beat["halt_scope"] == "all"
     assert "reconcile mismatch" in beat["halt_reason"]

@@ -17,6 +17,7 @@ from src.trading.domain import (
     Quote,
     Right,
     StockContract,
+    set_clock,
 )
 from src.trading.journal import Journal
 from src.trading.reconcile import expected_from_fills, expected_from_journal, reconcile
@@ -187,16 +188,22 @@ def test_engine_handles_assignment_without_full_halt(tmp_path, monkeypatch):
     from src.trading.config import AlertsConfig
     from src.trading.notifier import Notifier
 
-    asyncio.run(
-        run.monitor(
-            0,
-            once=True,
-            adapter=broker,
-            journal=j,
-            halt_file=tmp_path / "H",
-            notifier=Notifier(AlertsConfig(), [Rec()]),
+    # The assigned put and its replacement are dated from the fixture's TODAY;
+    # pin the engine clock so they don't age out.
+    set_clock(lambda: NOW)
+    try:
+        asyncio.run(
+            run.monitor(
+                0,
+                once=True,
+                adapter=broker,
+                journal=j,
+                halt_file=tmp_path / "H",
+                notifier=Notifier(AlertsConfig(), [Rec()]),
+            )
         )
-    )
+    finally:
+        set_clock(None)
     beat = json.loads(hb.read_text())
     assert beat["assignments"] == 1 and beat["halted"] is False
     assert any(a.title == "Option assigned" for a in alerts)

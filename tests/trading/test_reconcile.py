@@ -12,6 +12,7 @@ from src.trading.domain import (
     Quote,
     Right,
     StockContract,
+    set_clock,
 )
 from src.trading.journal import MIGRATIONS, Journal
 from src.trading.reconcile import (
@@ -23,6 +24,7 @@ from src.trading.reconcile import (
 
 T0 = datetime(2026, 11, 20, 15, 0, tzinfo=timezone.utc)
 TODAY = date(2026, 11, 23)
+NOW = datetime(2026, 11, 23, 15, 0, tzinfo=timezone.utc)  # TODAY, mid-session
 PUT = OptionContract("XSP", date(2026, 12, 31), 550, Right.PUT)
 OLD_PUT = OptionContract("XSP", date(2026, 11, 20), 540, Right.PUT)
 CALL = OptionContract("QQQM", date(2026, 12, 18), 270, Right.CALL)
@@ -130,7 +132,12 @@ def test_monitor_reconciles_and_reports_in_heartbeat(tmp_path, monkeypatch):
     broker.set_position(QQQM, 600, 180.0)
     journal = Journal(tmp_path / "j.db")
     journal.append("fills", fill(PUT, Action.SELL, 1))  # bot sold a put IB doesn't show
-    asyncio.run(run.monitor(0, once=True, adapter=broker, journal=journal))
+    # PUT expires 2026-12-31; pin the engine clock so it is still expected.
+    set_clock(lambda: NOW)
+    try:
+        asyncio.run(run.monitor(0, once=True, adapter=broker, journal=journal))
+    finally:
+        set_clock(None)
     beat = json.loads(hb.read_text())
     assert (
         beat["reconcile_ok"] is False

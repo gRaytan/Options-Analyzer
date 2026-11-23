@@ -20,6 +20,7 @@ from src.trading.domain import (
     Right,
     StockContract,
     TradeIntent,
+    set_clock,
 )
 from src.trading.entries import entry_intents, size_put, spread_mode
 from src.trading.executor import Executor
@@ -257,15 +258,21 @@ def _engine(tmp_path, monkeypatch, broker):
     )
 
     def once():
-        asyncio.run(
-            run.monitor(
-                0,
-                once=True,
-                adapter=broker,
-                journal=Journal(tmp_path / "j.db"),
-                halt_file=tmp_path / "H",
+        # The fixture's quotes are stamped NOW; pin the engine clock to the same
+        # instant so the sanity gate doesn't read them as stale (§6.3).
+        set_clock(lambda: NOW)
+        try:
+            asyncio.run(
+                run.monitor(
+                    0,
+                    once=True,
+                    adapter=broker,
+                    journal=Journal(tmp_path / "j.db"),
+                    halt_file=tmp_path / "H",
+                )
             )
-        )
+        finally:
+            set_clock(None)
 
     return once
 

@@ -11,6 +11,7 @@ from src.trading.domain import (
     Position,
     Right,
     StockContract,
+    set_clock,
 )
 from src.trading.journal import Journal
 from src.trading.status import (
@@ -149,7 +150,13 @@ def test_bot_page_renders_with_nothing(tmp_path, monkeypatch):
 
 
 def test_bot_status_api(client):
-    data = client.get("/api/bot-status").get_json()
+    # The route dates the snapshot against the engine clock; pin it to NOW so
+    # the fixture's 2-minute-old account data stays inside the 240 s window.
+    set_clock(lambda: NOW)
+    try:
+        data = client.get("/api/bot-status").get_json()
+    finally:
+        set_clock(None)
     assert data["account"]["excess_liquidity"] == 450_000
     assert data["margin_state"] == "normal"
 

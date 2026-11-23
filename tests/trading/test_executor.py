@@ -20,6 +20,7 @@ from src.trading.domain import (
     Right,
     StockContract,
     TradeIntent,
+    set_clock,
 )
 from src.trading.executor import Executor
 from src.trading.journal import Journal
@@ -208,7 +209,7 @@ def test_engine_restores_margin_on_paper(tmp_path, monkeypatch):
             PUT,
             1.00,
             1.02,
-            datetime.now(timezone.utc),
+            MID_SESSION,
             underlying_price=650,
             greeks=Greeks(-0.1, iv=0.2),
         )
@@ -221,15 +222,21 @@ def test_engine_restores_margin_on_paper(tmp_path, monkeypatch):
     monkeypatch.setattr(
         run, "OrderManager", lambda *a, **kw: real_om(*a, sleep=no_sleep, **kw)
     )
-    asyncio.run(
-        run.monitor(
-            0,
-            once=True,
-            adapter=broker,
-            journal=Journal(tmp_path / "j.db"),
-            halt_file=tmp_path / "H",
+    # PUT expires on a fixed date and its quote is stamped MID_SESSION; pin the
+    # engine clock to the same instant so neither ages out over time.
+    set_clock(lambda: MID_SESSION)
+    try:
+        asyncio.run(
+            run.monitor(
+                0,
+                once=True,
+                adapter=broker,
+                journal=Journal(tmp_path / "j.db"),
+                halt_file=tmp_path / "H",
+            )
         )
-    )
+    finally:
+        set_clock(None)
     asyncio.run(broker.connect())  # the engine disconnects on exit
     assert asyncio.run(broker.positions()) == []  # closed
     events = [

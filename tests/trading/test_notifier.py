@@ -8,7 +8,7 @@ import pytest
 from src.trading import run
 from src.trading.broker.fake import FakeAdapter
 from src.trading.config import AlertsConfig
-from src.trading.domain import Action, Fill, OptionContract, Right
+from src.trading.domain import Action, Fill, OptionContract, Right, set_clock
 from src.trading.journal import Journal
 from src.trading.notifier import (
     Alert,
@@ -168,16 +168,21 @@ PUT = OptionContract("XSP", date(2026, 12, 31), 600, Right.PUT)
 
 def run_once(tmp_path, monkeypatch, broker, notifier):
     monkeypatch.setattr(run, "HEARTBEAT_FILE", str(tmp_path / "hb.json"))
-    asyncio.run(
-        run.monitor(
-            0,
-            once=True,
-            adapter=broker,
-            journal=Journal(tmp_path / "j.db"),
-            halt_file=tmp_path / "H",
-            notifier=notifier,
+    # PUT expires 2026-12-31; pin the engine clock so it stays a live position.
+    set_clock(lambda: T0)
+    try:
+        asyncio.run(
+            run.monitor(
+                0,
+                once=True,
+                adapter=broker,
+                journal=Journal(tmp_path / "j.db"),
+                halt_file=tmp_path / "H",
+                notifier=notifier,
+            )
         )
-    )
+    finally:
+        set_clock(None)
 
 
 def test_engine_alerts_on_breach_and_halt(tmp_path, monkeypatch):

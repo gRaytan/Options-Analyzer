@@ -18,7 +18,7 @@ from src.trading.domain import (
 from src.trading.executor import Executor
 from src.trading.journal import Journal
 from src.trading.scanner import report_strategies
-from tests.trading.test_entries import EXP, TODAY, _ivs, xsp
+from tests.trading.test_entries import EXP, NOW, TODAY, _ivs, xsp
 from tests.trading.test_scheduler import simulate
 
 
@@ -75,16 +75,22 @@ def test_engine_reports_opportunities_with_nothing_enabled(tmp_path, monkeypatch
     broker = FakeAdapter(account_id="DU1", read_only=False)
     broker.set_position(StockContract("SPY"), 400, 670.0)
     market(broker)
-    asyncio.run(
-        run.monitor(
-            0,
-            once=True,
-            adapter=broker,
-            journal=Journal(tmp_path / "j.db"),
-            halt_file=tmp_path / "H",
-            config=TradingConfig(),
+    # The chain's expiry is EXP, 38 days after the fixture's TODAY; pin the
+    # engine clock so the DTE window still matches whenever this runs.
+    set_clock(lambda: NOW)
+    try:
+        asyncio.run(
+            run.monitor(
+                0,
+                once=True,
+                adapter=broker,
+                journal=Journal(tmp_path / "j.db"),
+                halt_file=tmp_path / "H",
+                config=TradingConfig(),
+            )
         )
-    )
+    finally:
+        set_clock(None)
     scan = Journal(tmp_path / "j.db").latest("scan_results").data
     strategies = {c["strategy"] for c in scan["best"]}
     assert "index_put" in strategies
