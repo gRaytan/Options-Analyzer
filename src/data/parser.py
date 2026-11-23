@@ -5,40 +5,49 @@ from datetime import datetime, date
 from typing import List, Dict, Tuple, Optional
 from io import StringIO
 
-from src.models.position import OptionPosition, StockPosition, OptionType, Trade, TradeAction, Dividend, BondInterest, CashTransaction
+from src.models.position import (
+    OptionPosition,
+    StockPosition,
+    OptionType,
+    Trade,
+    TradeAction,
+    Dividend,
+    BondInterest,
+    CashTransaction,
+)
 from src.models.portfolio import Portfolio
 
 
 class IBActivityStatementParser:
     """Parser for IB Activity Statement CSV exports."""
-    
+
     def __init__(self):
         self.sections: Dict[str, List[Dict]] = {}
-        
+
     def parse_file(self, filepath: str) -> Portfolio:
         """Parse an IB Activity Statement CSV file."""
-        with open(filepath, 'r', encoding='utf-8-sig') as f:
+        with open(filepath, "r", encoding="utf-8-sig") as f:
             content = f.read()
         return self.parse_content(content)
-    
+
     def parse_content(self, content: str) -> Portfolio:
         """Parse CSV content string."""
         self._extract_sections(content)
-        
+
         portfolio = Portfolio()
-        
+
         # Parse account info
         self._parse_account_info(portfolio)
-        
+
         # Parse NAV
         self._parse_nav(portfolio)
-        
+
         # Parse stock positions
         portfolio.stocks = self._parse_stock_positions()
-        
+
         # Parse option positions
         portfolio.options = self._parse_option_positions()
-        
+
         # Enrich options with financial instrument info
         self._enrich_options_with_instrument_info(portfolio.options)
 
@@ -61,7 +70,7 @@ class IBActivityStatementParser:
         self._parse_cash_report(portfolio)
 
         return portfolio
-    
+
     def _extract_sections(self, content: str) -> None:
         """Extract all sections from the CSV content."""
         self.sections = {}
@@ -88,27 +97,27 @@ class IBActivityStatementParser:
                 # Format: SectionName,Data,FieldName,FieldValue
                 if len(row) >= 4 and section_name == "Statement":
                     data = {"Field Name": row[2], "Field Value": row[3]}
-                    data['_section'] = section_name
+                    data["_section"] = section_name
                     self.sections[section_name].append(data)
                 elif current_headers:
                     data = dict(zip(current_headers, row[2:]))
-                    data['_section'] = section_name
+                    data["_section"] = section_name
                     self.sections[section_name].append(data)
-    
+
     def _parse_account_info(self, portfolio: Portfolio) -> None:
         """Parse account information section."""
         account_info = self.sections.get("Account Information", [])
         for item in account_info:
             field_name = item.get("Field Name", "")
             field_value = item.get("Field Value", "")
-            
+
             if field_name == "Account":
                 portfolio.account_id = field_value
             elif field_name == "Name":
                 portfolio.account_name = field_value
             elif field_name == "Base Currency":
                 portfolio.base_currency = field_value
-        
+
         # Parse statement period
         statement_info = self.sections.get("Statement", [])
         for item in statement_info:
@@ -117,9 +126,13 @@ class IBActivityStatementParser:
                 portfolio.statement_period = period_str
                 # Parse start and end dates from period string
                 # Format: "January 1, 2026 - January 31, 2026"
-                portfolio.period_start, portfolio.period_end = self._parse_period_dates(period_str)
+                portfolio.period_start, portfolio.period_end = self._parse_period_dates(
+                    period_str
+                )
 
-    def _parse_period_dates(self, period_str: str) -> Tuple[Optional[date], Optional[date]]:
+    def _parse_period_dates(
+        self, period_str: str
+    ) -> Tuple[Optional[date], Optional[date]]:
         """Parse statement period string into start and end dates."""
         if not period_str or " - " not in period_str:
             return None, None
@@ -135,16 +148,20 @@ class IBActivityStatementParser:
             return start_date, end_date
         except ValueError:
             return None, None
-    
+
     def _parse_nav(self, portfolio: Portfolio) -> None:
         """Parse Net Asset Value section."""
         nav_data = self.sections.get("Net Asset Value", [])
         for item in nav_data:
             asset_class = item.get("Asset Class", "")
             if asset_class == "Total":
-                portfolio.net_asset_value = self._parse_float(item.get("Current Total", "0"))
+                portfolio.net_asset_value = self._parse_float(
+                    item.get("Current Total", "0")
+                )
             elif asset_class == "Cash ":  # Note: IB has trailing space
-                portfolio.cash_balance = self._parse_float(item.get("Current Total", "0"))
+                portfolio.cash_balance = self._parse_float(
+                    item.get("Current Total", "0")
+                )
 
     def _parse_cash_report(self, portfolio: Portfolio) -> None:
         """Parse Cash Report section for margin data."""
@@ -170,8 +187,12 @@ class IBActivityStatementParser:
             # Cash Report uses different column names depending on format
             field_name = item.get("Currency Summary", "") or item.get("Field Name", "")
             # Try to get value from different possible column names
-            value = (item.get("Total", "") or item.get("Current Total", "") or
-                     item.get("Field Value", "") or item.get("Base Currency Summary", ""))
+            value = (
+                item.get("Total", "")
+                or item.get("Current Total", "")
+                or item.get("Field Value", "")
+                or item.get("Base Currency Summary", "")
+            )
 
             if field_name in field_mapping:
                 attr_name = field_mapping[field_name]
@@ -186,13 +207,13 @@ class IBActivityStatementParser:
         """Parse stock positions from Open Positions section."""
         positions = []
         open_positions = self.sections.get("Open Positions", [])
-        
+
         for item in open_positions:
             if item.get("Asset Category") != "Stocks":
                 continue
             if item.get("DataDiscriminator") != "Summary":
                 continue
-                
+
             try:
                 position = StockPosition(
                     symbol=item.get("Symbol", ""),
@@ -204,24 +225,26 @@ class IBActivityStatementParser:
                 positions.append(position)
             except (ValueError, KeyError) as e:
                 print(f"Warning: Could not parse stock position: {e}")
-                
+
         return positions
-    
+
     def _parse_option_positions(self) -> List[OptionPosition]:
         """Parse option positions from Open Positions section."""
         positions = []
         open_positions = self.sections.get("Open Positions", [])
-        
+
         for item in open_positions:
             if item.get("Asset Category") != "Equity and Index Options":
                 continue
             if item.get("DataDiscriminator") != "Summary":
                 continue
-                
+
             try:
                 symbol = item.get("Symbol", "")
-                underlying, strike, expiration, opt_type = self._parse_option_symbol(symbol)
-                
+                underlying, strike, expiration, opt_type = self._parse_option_symbol(
+                    symbol
+                )
+
                 position = OptionPosition(
                     symbol=symbol,
                     underlying=underlying,
@@ -235,11 +258,15 @@ class IBActivityStatementParser:
                 )
                 positions.append(position)
             except (ValueError, KeyError) as e:
-                print(f"Warning: Could not parse option position {item.get('Symbol', 'unknown')}: {e}")
-                
+                print(
+                    f"Warning: Could not parse option position {item.get('Symbol', 'unknown')}: {e}"
+                )
+
         return positions
-    
-    def _parse_option_symbol(self, symbol: str) -> Tuple[str, float, Optional[date], Optional[OptionType]]:
+
+    def _parse_option_symbol(
+        self, symbol: str
+    ) -> Tuple[str, float, Optional[date], Optional[OptionType]]:
         """Parse option symbol like 'AAPL 15JAN27 110 P' or 'BRK B 18JUN26 240 P' into components."""
         # Pattern: UNDERLYING DDMMMYY STRIKE TYPE (underlying may have spaces)
         # We parse from the end since the last 3 parts are always: DATE STRIKE TYPE
@@ -250,9 +277,9 @@ class IBActivityStatementParser:
 
         # Last part is option type (C or P)
         opt_type_str = parts[-1]
-        if opt_type_str not in ('C', 'P'):
+        if opt_type_str not in ("C", "P"):
             return symbol, 0.0, None, None
-        opt_type = OptionType.CALL if opt_type_str == 'C' else OptionType.PUT
+        opt_type = OptionType.CALL if opt_type_str == "C" else OptionType.PUT
 
         # Second to last is strike
         try:
@@ -271,7 +298,7 @@ class IBActivityStatementParser:
 
     def _parse_expiry_string(self, date_str: str) -> Optional[date]:
         """Parse expiry string like '15JAN27' to date."""
-        pattern = r'^(\d{1,2})([A-Z]{3})(\d{2})$'
+        pattern = r"^(\d{1,2})([A-Z]{3})(\d{2})$"
         match = re.match(pattern, date_str.strip())
 
         if not match:
@@ -281,8 +308,20 @@ class IBActivityStatementParser:
         month_str = match.group(2)
         year = int(match.group(3)) + 2000
 
-        months = {'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
-                  'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12}
+        months = {
+            "JAN": 1,
+            "FEB": 2,
+            "MAR": 3,
+            "APR": 4,
+            "MAY": 5,
+            "JUN": 6,
+            "JUL": 7,
+            "AUG": 8,
+            "SEP": 9,
+            "OCT": 10,
+            "NOV": 11,
+            "DEC": 12,
+        }
         month = months.get(month_str, 1)
 
         try:
@@ -290,7 +329,9 @@ class IBActivityStatementParser:
         except ValueError:
             return None
 
-    def _enrich_options_with_instrument_info(self, options: List[OptionPosition]) -> None:
+    def _enrich_options_with_instrument_info(
+        self, options: List[OptionPosition]
+    ) -> None:
         """Enrich options with data from Financial Instrument Information section."""
         instrument_info = self.sections.get("Financial Instrument Information", [])
 
@@ -309,7 +350,9 @@ class IBActivityStatementParser:
                 expiry_str = info.get("Expiry", "")
                 if expiry_str:
                     try:
-                        option.expiration = datetime.strptime(expiry_str, "%Y-%m-%d").date()
+                        option.expiration = datetime.strptime(
+                            expiry_str, "%Y-%m-%d"
+                        ).date()
                     except ValueError:
                         pass
 
@@ -371,7 +414,12 @@ class IBActivityStatementParser:
                 opt_type = None
 
                 if is_option:
-                    underlying, strike, expiration, opt_type = self._parse_option_symbol(symbol)
+                    (
+                        underlying,
+                        strike,
+                        expiration,
+                        opt_type,
+                    ) = self._parse_option_symbol(symbol)
 
                 trade = Trade(
                     symbol=symbol,
@@ -410,7 +458,7 @@ class IBActivityStatementParser:
                 # Parse description to extract symbol
                 description = item.get("Description", "")
                 # Format: "JEPI(US46641Q3323) Cash Dividend USD 0.39478 per Share (Ordinary Dividend)"
-                symbol_match = re.match(r'^([A-Z]+)\(', description)
+                symbol_match = re.match(r"^([A-Z]+)\(", description)
                 symbol = symbol_match.group(1) if symbol_match else ""
 
                 # Parse amount
@@ -456,13 +504,15 @@ class IBActivityStatementParser:
 
                 # Extract symbol and bond name from description
                 # Format: "Bond Coupon Payment (AMZN 4.95 12/05/44 - Amazon.com Inc AMZN 4.95 12/05/44)"
-                match = re.search(r'\(([A-Z]+)\s+[\d.]+\s+\d+/\d+/\d+\s+-\s+(.+)\)', description)
+                match = re.search(
+                    r"\(([A-Z]+)\s+[\d.]+\s+\d+/\d+/\d+\s+-\s+(.+)\)", description
+                )
                 if match:
                     symbol = match.group(1)
                     bond_name = match.group(2).strip()
                 else:
                     # Fallback: try to extract just the symbol
-                    symbol_match = re.search(r'\(([A-Z]+)', description)
+                    symbol_match = re.search(r"\(([A-Z]+)", description)
                     symbol = symbol_match.group(1) if symbol_match else "UNKNOWN"
                     bond_name = description
 
@@ -487,7 +537,9 @@ class IBActivityStatementParser:
 
         print(f"DEBUG: Deposits & Withdrawals section has {len(deposits_data)} items")
         if deposits_data:
-            print(f"DEBUG: First item keys: {list(deposits_data[0].keys()) if deposits_data else 'N/A'}")
+            print(
+                f"DEBUG: First item keys: {list(deposits_data[0].keys()) if deposits_data else 'N/A'}"
+            )
             for i, item in enumerate(deposits_data[:3]):
                 print(f"DEBUG: Item {i}: {item}")
 
@@ -501,7 +553,9 @@ class IBActivityStatementParser:
                 date_str = item.get("Settle Date", "") or item.get("Date", "")
                 if not date_str:
                     continue
-                transaction_date = datetime.strptime(date_str.strip(), "%Y-%m-%d").date()
+                transaction_date = datetime.strptime(
+                    date_str.strip(), "%Y-%m-%d"
+                ).date()
 
                 # Parse amount
                 amount = self._parse_float(item.get("Amount", "0"))
@@ -572,4 +626,3 @@ class IBActivityStatementParser:
             return int(float(cleaned))
         except ValueError:
             return 0
-

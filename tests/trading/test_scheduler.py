@@ -87,7 +87,15 @@ def engine(tmp_path, monkeypatch):
     acted = []
 
     async def fake_act(
-        executor, journal, config, margin, positions, snap, notifier, entry_ctx=None
+        executor,
+        journal,
+        config,
+        margin,
+        positions,
+        snap,
+        notifier,
+        entry_ctx=None,
+        rebuild_ctx=None,
     ):
         acted.append((run.utcnow().astimezone(ET).time(), entry_ctx is not None))
 

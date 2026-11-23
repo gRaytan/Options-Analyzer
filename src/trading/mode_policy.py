@@ -71,6 +71,8 @@ def route(intent: TradeIntent, config: TradingConfig, is_live: bool, env=None) -
         return Route.LOG
     if is_live and (mode is Mode.PAPER or not live_allowed(config, env)):
         return Route.LOG  # never send to a live account without both keys
+    if intent.details.get("require_approval"):
+        return Route.ASK  # owner approves each one, in every sending mode
     if mode is Mode.PAPER:
         return Route.SEND
     restoration = intent.strategy == RESTORATION_STRATEGY

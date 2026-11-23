@@ -355,6 +355,12 @@ def check_limits(
     )
 
     restores = bool(intent.details.get("restore_assignment"))
+    # Rebuilding the owner's holdings after a margin call (rebuild.py): shares
+    # the owner approved one by one. Sized by margin and crash stress, which
+    # still apply; per-name, contract-count and daily-order caps are for options.
+    rebuild_shares = bool(intent.details.get("rebuild")) and all(
+        isinstance(leg.contract, StockContract) for leg in intent.legs
+    )
 
     # Concentration: per name and per sector (delta-dollars), block increases above cap.
     # A rebuy after a call assignment restores the previous holding: not a new
@@ -362,6 +368,13 @@ def check_limits(
     if restores:
         checks.append(CheckResult("per_name", True, "restores pre-assignment shares"))
         checks.append(CheckResult("per_sector", True, "restores pre-assignment shares"))
+    elif rebuild_shares:
+        checks.append(
+            CheckResult("per_name", True, "owner-approved rebuild of holdings")
+        )
+        checks.append(
+            CheckResult("per_sector", True, "owner-approved rebuild of holdings")
+        )
     else:
         checks.extend(_concentration_checks(ctx, after, risk, nlv))
 
@@ -399,6 +412,10 @@ def check_limits(
         cap = risk.max_contracts_spx
     elif "XSP" in roots:
         cap = risk.max_contracts_xsp
+    if rebuild_shares:
+        checks.append(CheckResult("contracts_per_order", True, f"{max_qty} shares"))
+        checks.append(CheckResult("orders_per_day", True, "owner-approved rebuild"))
+        return GateDecision(tuple(checks))
     checks.append(
         CheckResult(
             "contracts_per_order", max_qty <= cap, f"{max_qty} contracts (cap {cap})"

@@ -585,6 +585,11 @@
                 </a>
             </li>
             <li class="nav-item">
+                <a class="nav-link nav-link-sub {% if request.endpoint == 'bot_rebuild' %}active{% endif %}" href="/bot/rebuild">
+                    <i class="bi bi-bricks"></i> Rebuild plan
+                </a>
+            </li>
+            <li class="nav-item">
                 <a class="nav-link nav-link-sub {% if request.endpoint == 'bot_metrics' %}active{% endif %}" href="/bot/metrics">
                     <i class="bi bi-graph-up-arrow"></i> Metrics
                 </a>

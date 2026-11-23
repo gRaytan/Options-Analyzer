@@ -58,8 +58,13 @@ class ApprovalQueue:
         self.journal.append("approvals", data, key=intent_id, ts=self._clock())
         return data
 
-    def request(self, intent: TradeIntent, summary: str) -> dict:
-        """Ask for approval (idempotent: an open request is returned as is)."""
+    def request(
+        self, intent: TradeIntent, summary: str, ttl: Optional[timedelta] = None
+    ) -> dict:
+        """Ask for approval (idempotent: an open request is returned as is).
+
+        ``ttl`` overrides the default 10 minutes (e.g. a rebuild plan's items
+        stay open until the close)."""
         current = self._latest(intent.intent_id)
         if current and self._effective_status(current) in (
             ApprovalStatus.PENDING,
@@ -73,7 +78,7 @@ class ApprovalQueue:
             "intent": to_dict(intent),
             "summary": summary,
             "requested_at": now.isoformat(),
-            "expires_at": (now + self.ttl).isoformat(),
+            "expires_at": (now + (ttl or self.ttl)).isoformat(),
             "decided_by": "",
         }
         self._record(intent.intent_id, data)

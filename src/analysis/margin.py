@@ -6,18 +6,19 @@ from src.models.portfolio import Portfolio
 
 class MarginCalculator:
     """Calculate margin requirements for option positions."""
-    
+
     def __init__(self, margin_type: str = "reg_t"):
         """
         Initialize margin calculator.
-        
+
         Args:
             margin_type: "reg_t" for Regulation T or "portfolio" for Portfolio Margin
         """
         self.margin_type = margin_type
-    
-    def calculate_margin(self, option: OptionPosition,
-                         naked_quantity: Optional[float] = None) -> float:
+
+    def calculate_margin(
+        self, option: OptionPosition, naked_quantity: Optional[float] = None
+    ) -> float:
         """Calculate margin requirement for an option position.
 
         Args:
@@ -61,7 +62,7 @@ class MarginCalculator:
         if S <= 0:
             # Can't calculate without underlying price
             return premium
-        
+
         if option.is_call:
             # Short call margin: premium + max(20% underlying - OTM, 10% underlying)
             otm_amount = max(0, K - S) * multiplier * qty
@@ -76,7 +77,7 @@ class MarginCalculator:
             margin = max(margin_20, margin_10) + premium
 
         return margin
-    
+
     def _calculate_portfolio_margin(self, option: OptionPosition, qty: int) -> float:
         """
         Calculate Portfolio Margin for a short option.
@@ -93,17 +94,17 @@ class MarginCalculator:
 
         if S <= 0:
             return premium
-        
+
         # Base margin is 15% of notional
         notional = S * multiplier * qty
         base_margin = 0.15 * notional
-        
+
         # Adjust based on moneyness
         if option.is_call:
             moneyness = S / K  # > 1 means ITM for calls
         else:
             moneyness = K / S  # > 1 means ITM for puts
-        
+
         # Scale margin based on moneyness
         if moneyness < 0.8:
             # Deep OTM - reduce margin
@@ -117,17 +118,18 @@ class MarginCalculator:
         else:
             # ITM - increased margin
             margin_factor = 1.0 + (moneyness - 1.05) * 2
-        
+
         margin = base_margin * margin_factor + premium
-        
+
         return margin
 
 
 SHARES_PER_CONTRACT = 100
 
 
-def calculate_portfolio_margin(portfolio: Portfolio,
-                                margin_type: str = "reg_t") -> float:
+def calculate_portfolio_margin(
+    portfolio: Portfolio, margin_type: str = "reg_t"
+) -> float:
     """
     Calculate and update margin requirements for all options in a portfolio.
 
@@ -150,9 +152,13 @@ def calculate_portfolio_margin(portfolio: Portfolio,
     short_shares: dict = {}
     for stock in portfolio.stocks:
         if stock.quantity > 0:
-            long_shares[stock.symbol] = long_shares.get(stock.symbol, 0) + stock.quantity
+            long_shares[stock.symbol] = (
+                long_shares.get(stock.symbol, 0) + stock.quantity
+            )
         elif stock.quantity < 0:
-            short_shares[stock.symbol] = short_shares.get(stock.symbol, 0) + abs(stock.quantity)
+            short_shares[stock.symbol] = short_shares.get(stock.symbol, 0) + abs(
+                stock.quantity
+            )
 
     total_margin = 0.0
 
@@ -182,4 +188,3 @@ def calculate_portfolio_margin(portfolio: Portfolio,
         total_margin += margin
 
     return total_margin
-

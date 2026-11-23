@@ -222,6 +222,22 @@ class MarginFloorConfig(_Strict):
         return self.excess_liquidity_min + self.entry_buffer
 
 
+class RebuildConfig(_Strict):
+    """Rebuilding positions after a margin call (plan R1, rebuild.py).
+
+    Shares are bought back in ``tranches`` steps toward the targets, each
+    sized so the crash scenario still leaves Excess Liquidity above the floor;
+    total stock is capped at ``max_gross_leverage`` x NLV (1.0 = no borrowing).
+    """
+
+    tranches: int = Field(default=4, ge=1, le=20)
+    max_gross_leverage: float = Field(default=1.0, gt=0.0, le=2.0)
+    rising_vix_scale: float = Field(default=0.5, ge=0.0, le=1.0)  # VIX > 30 and rising
+    worst_price_pct: float = Field(default=0.003, ge=0.0, le=0.05)  # stock limit cap
+    approval_hours: float = Field(default=6.5, gt=0.0, le=72.0)  # plan items stay open
+    max_option_items: int = Field(default=3, ge=0, le=10)
+
+
 class RiskConfig(_Strict):
     risk_budget_pct_nlv: float = Field(default=0.10, gt=0.0, le=1.0)
     short_put_notional_max: float = Field(default=0.50, ge=0.0, le=2.0)
@@ -352,6 +368,7 @@ class TradingConfig(_Strict):
     watchlist: Dict[str, WatchlistEntry] = Field(default_factory=dict)
     index: IndexConfig = IndexConfig()
     entry: EntryConfig = EntryConfig()
+    rebuild: RebuildConfig = RebuildConfig()
     exit: ExitConfig = ExitConfig()
     guard: GuardConfig = GuardConfig()
     margin_floor: MarginFloorConfig = MarginFloorConfig()
