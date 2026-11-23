@@ -517,7 +517,13 @@ Every cycle, journal-expected positions are compared with IB. Any unexplained di
 | Monthly, first trading day after the standard expiration | Tail hedge purchase / roll (§5.12) |
 | 16:15 | Reconcile, snapshot P&L / Greeks / budget, daily report |
 
-NYSE calendar, including holidays and early closes.
+NYSE calendar, including holidays and early closes. Implemented in
+`src/trading/scheduler.py` (T38). The engine ticks every 60 s and runs only
+the jobs that are due. Times follow the day's real session: on a 13:00 early
+close the expiry sweep runs at 12:00 and the daily report at 13:15. On
+holidays only the account is watched, every 15 min. A margin breach always
+triggers a full management pass (restoration), whatever the schedule. The
+monthly tail-hedge job is not scheduled while the hedge is on hold.
 
 ---
 

@@ -41,8 +41,10 @@ from src.trading.tracker import Tracker
 from src.trading.config import StrategyName
 from src.trading.broker.ib_adapter import is_paper_account
 from src.trading.calendars import EventCalendar
-from src.trading.domain import OptionContract
+from src.trading.domain import OptionContract, StockContract
 from src.trading.status import write_heartbeat
+from src.trading import scheduler as sched
+from src.trading.calendars import MarketCalendar
 
 log = logging.getLogger("trading.run")
 
@@ -162,7 +164,18 @@ async def monitor(
                 pass
             delay = min(delay * 2, 60.0)
 
+    # Spec §8: jobs on the NYSE calendar. A one-shot run (tests, backtests)
+    # runs every job once.
+    schedule = None if once else sched.Scheduler(MarketCalendar())
     while not stop.is_set():
+        now = utcnow()
+        jobs = None if schedule is None else schedule.due(now)
+        if jobs is not None and not jobs:
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=interval_s)
+            except asyncio.TimeoutError:
+                pass
+            continue
         try:
             await _ensure_connected(adapter, halts, notifier)
             reconcile_state, last_reconcile = await _cycle(
@@ -178,7 +191,10 @@ async def monitor(
                 config,
                 executor,
                 entry_ctx,
+                jobs=jobs,
             )
+            if schedule is not None:
+                schedule.mark(jobs, now)
         except Exception as exc:  # pylint: disable=broad-except
             # Spec §6.4: an unhandled engine error halts opening; keep running.
             log.exception("engine cycle failed")
@@ -256,9 +272,13 @@ async def _cycle(
     config=None,
     executor=None,
     entry_ctx=None,
+    jobs=None,
 ):
     """One monitor pass: account and margin, positions, reconciliation, budget,
-    then acting on what was found (T28)."""
+    then acting on what was found (T28).
+
+    ``jobs`` (T38): the scheduled jobs due now; ``None`` runs everything. A
+    margin breach always runs the full management pass (restoration)."""
     snap = None
     try:
         snap = await adapter.account_snapshot()
@@ -273,6 +293,16 @@ async def _cycle(
     except BrokerError as exc:
         log.warning("no account snapshot: %s", exc)
     margin.update(snap, adapter.daily_pnl(), adapter.pnl_at_account_update())
+    reading = margin.last
+    breach = reading is not None and reading.state.value in ("breach", "emergency")
+    if jobs is None:
+        observe = act = scan = True
+    else:
+        observe = breach or bool(jobs & OBSERVE_JOBS)
+        act = breach or bool(jobs & ACT_JOBS)
+        scan = sched.SCAN in jobs
+    if not observe:
+        return reconcile_state, last_reconcile
     try:
         positions = await adapter.positions()
         prev_record = journal.latest("positions_snapshot")
@@ -346,16 +376,159 @@ async def _cycle(
                     used["budget"],
                     used["regime"],
                 )
-        if executor is not None and config is not None:
+        if jobs is not None and sched.PREOPEN in jobs:
+            _preopen(adapter, config, events, positions, journal, notifier)
+        if act and executor is not None and config is not None:
+            if entry_ctx is not None:
+                entry_ctx.scheduled = jobs is not None
             await _act(
-                executor, journal, config, margin, positions, snap, notifier, entry_ctx
+                executor,
+                journal,
+                config,
+                margin,
+                positions,
+                snap,
+                notifier,
+                entry_ctx if scan else None,
             )
+        if jobs is not None and sched.EXPIRY_SWEEP in jobs:
+            _expiry_sweep(positions, journal, notifier)
+        if jobs is not None and sched.EOD in jobs:
+            _daily_report(journal, snap, budget, margin, positions, notifier)
     except BrokerError as exc:
         log.warning("no positions: %s", exc)
     return reconcile_state, last_reconcile
 
 
 SCAN_EVERY_S = 15 * 60  # spec §8: the scanner runs every 15 minutes
+OBSERVE_JOBS = frozenset(
+    {sched.MANAGE, sched.SCAN, sched.PREOPEN, sched.EXPIRY_SWEEP, sched.EOD}
+)
+ACT_JOBS = frozenset({sched.MANAGE, sched.SCAN, sched.EXPIRY_SWEEP})
+
+
+def _preopen(adapter, config, events, positions, journal, notifier) -> None:
+    """09:00 ET: warm the event calendars, check the connection and permissions."""
+    symbols = sorted(
+        {
+            (
+                p.contract.symbol
+                if isinstance(p.contract, StockContract)
+                else p.contract.underlying
+            )
+            for p in positions
+        }
+        | set((config.watchlist if config else {}).keys())
+    )
+    loaded = 0
+    if events is not None:
+        for sym in symbols:
+            try:
+                events.events(sym)
+                loaded += 1
+            except Exception as exc:  # pylint: disable=broad-except
+                log.warning("pre-open: events for %s unavailable: %s", sym, exc)
+    detail = {
+        "connected": adapter.is_connected,
+        "read_only": adapter.read_only,
+        "mode": config.mode.value if config else None,
+        "events_loaded": loaded,
+        "symbols": symbols,
+    }
+    journal.append("job_runs", {"job": sched.PREOPEN, **detail}, key=sched.PREOPEN)
+    log.info("PRE-OPEN %s", detail)
+    if config is not None and config.mode.value != "shadow" and adapter.read_only:
+        _alert(
+            notifier,
+            "warning",
+            "preopen:read-only",
+            "Bot is read-only",
+            f"Mode is {config.mode.value} but the IB connection is read-only: "
+            "no orders can be sent today.",
+        )
+
+
+def _expiry_sweep(positions, journal, notifier) -> None:
+    """15:00 ET: list everything expiring today (the guards act on the risky ones)."""
+    today = utcnow().astimezone(sched.ET).date()
+    expiring = [
+        p
+        for p in positions
+        if isinstance(p.contract, OptionContract) and p.contract.expiry == today
+    ]
+    journal.append(
+        "job_runs",
+        {"job": sched.EXPIRY_SWEEP, "expiring": [p.contract.key for p in expiring]},
+        key=sched.EXPIRY_SWEEP,
+    )
+    if not expiring:
+        return
+    planned = {g["key"]: g.get("plan", "") for g in _last_guard}
+    lines = [
+        f"{p.contract.key} x{p.quantity:g}: {planned.get(p.contract.key) or 'expires (no guard trigger)'}"
+        for p in expiring
+    ]
+    _alert(
+        notifier,
+        "warning" if planned.keys() & {p.contract.key for p in expiring} else "info",
+        f"expiry:{today}",
+        f"Expiring today: {len(expiring)}",
+        "\n".join(lines),
+    )
+
+
+def _daily_report(journal, snap, budget, margin, positions, notifier) -> dict:
+    """16:15 ET: one message with the day's numbers (spec §8, §9)."""
+    now = utcnow()
+    start = now.astimezone(sched.ET).replace(hour=0, minute=0, second=0, microsecond=0)
+    fills = [r.data for r in journal.read("fills", since=start)]
+    sold = sum(
+        f.price * f.quantity * f.contract.multiplier
+        for f in fills
+        if isinstance(f.contract, OptionContract) and f.action.sign < 0
+    )
+    bought = sum(
+        f.price * f.quantity * f.contract.multiplier
+        for f in fills
+        if isinstance(f.contract, OptionContract) and f.action.sign > 0
+    )
+    fees = sum(f.commission for f in fills)
+    options = [p for p in positions if isinstance(p.contract, OptionContract)]
+    reading = margin.last
+    b = (budget.last if budget is not None else None) or {}
+    report = {
+        "job": sched.EOD,
+        "date": start.date().isoformat(),
+        "nlv": snap.net_liquidation if snap else None,
+        "excess_liquidity": snap.excess_liquidity if snap else None,
+        "cushion": snap.cushion if snap else None,
+        "margin_state": reading.state.value if reading else "unknown",
+        "regime": b.get("regime"),
+        "budget_used": b.get("used"),
+        "budget": b.get("budget"),
+        "fills": len(fills),
+        "premium_sold": sold,
+        "premium_bought": bought,
+        "fees": fees,
+        "open_options": len(options),
+    }
+    journal.append("job_runs", report, key=sched.EOD)
+    el = f"${report['excess_liquidity']:,.0f}" if snap else "n/a"
+    cushion = f"{report['cushion']:.0%}" if snap else "n/a"
+    budget_txt = (
+        f"${b['used']:,.0f} of ${b['budget']:,.0f} ({b.get('regime')})" if b else "n/a"
+    )
+    _alert(
+        notifier,
+        "info",
+        f"daily:{report['date']}",
+        f"Daily report {report['date']}",
+        f"NLV ${report['nlv'] or 0:,.0f}, EL {el}, Cushion {cushion}, margin {report['margin_state']}.\n"
+        f"Risk budget used {budget_txt}.\n"
+        f"Today: {len(fills)} fills, premium sold ${sold:,.0f}, bought ${bought:,.0f}, fees ${fees:,.2f}.\n"
+        f"Open option positions: {len(options)}.",
+    )
+    return report
 
 
 class EntryContext:
@@ -368,6 +541,7 @@ class EntryContext:
         self.history = history
         self.tracker = tracker or Tracker(journal)
         self.last_scan = None  # datetime of the last scan
+        self.scheduled = False  # True when the scheduler decides when to scan
 
 
 def _make_executor(
@@ -537,7 +711,8 @@ async def _enter(
         return  # unknown or rising VIX regime: no new risk
     now = utcnow()
     if (
-        ctx.last_scan is not None
+        not ctx.scheduled  # the scheduler already paces the scan (T38)
+        and ctx.last_scan is not None
         and (now - ctx.last_scan).total_seconds() < SCAN_EVERY_S
     ):
         return

@@ -42,6 +42,7 @@ TABLES: Sequence[str] = (
     "reconciliations",
     "margin_events",
     "approvals",
+    "job_runs",
 )
 
 
@@ -75,6 +76,8 @@ MIGRATIONS: List[List[str]] = [
     _create_table("margin_events"),
     # v4 (T27): approval requests and decisions
     _create_table("approvals"),
+    # v5 (T38): scheduled job runs (pre-open, expiry sweep, daily report)
+    _create_table("job_runs"),
 ]
 
 
