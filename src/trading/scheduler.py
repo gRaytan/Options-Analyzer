@@ -11,7 +11,12 @@ early closes (13:00) pull the afternoon jobs forward.
 | ``manage`` | every 5 min 09:45-15:45 | reconcile, guards and rolls, exits, budget, assignment undo |
 | ``scan`` | every 15 min 09:45-15:45 | scanner + tracker + entries (on top of ``manage``) |
 | ``expiry_sweep`` | once, 15:00 (an hour before an early close) | everything expiring today: one more manage pass, and an alert listing it |
+| ``opportunities`` | once, 10:00 (30 min after the open) | the daily opportunities digest: the best candidates from the latest scan |
 | ``eod`` | once, 16:15 | reconcile, budget, and the daily report |
+
+The scanner itself runs on every ``scan`` tick as a **report**, whether or
+not the bot may open trades (read-only and shadow too), so the Opportunities
+page always shows today's real market.
 
 The monthly tail-hedge job (§5.12) is not scheduled: the hedge is on hold.
 """
@@ -25,15 +30,17 @@ from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
 
-PREOPEN, MARGIN, MANAGE, SCAN, EXPIRY_SWEEP, EOD = (
+PREOPEN, MARGIN, MANAGE, SCAN, EXPIRY_SWEEP, EOD, OPPORTUNITIES = (
     "preopen",
     "margin",
     "manage",
     "scan",
     "expiry_sweep",
     "eod",
+    "opportunities",
 )
-ALL_JOBS = frozenset({PREOPEN, MARGIN, MANAGE, SCAN, EXPIRY_SWEEP, EOD})
+ALL_JOBS = frozenset({PREOPEN, MARGIN, MANAGE, SCAN, EXPIRY_SWEEP, EOD, OPPORTUNITIES})
+DIGEST_AFTER_OPEN = timedelta(minutes=30)
 
 MARGIN_EVERY = timedelta(seconds=60)
 MARGIN_EVERY_CLOSED = timedelta(minutes=15)
@@ -90,6 +97,8 @@ class Scheduler:
             jobs.add(SCAN)
         if self.sweep_time(day, close) <= now < close and self._once(EXPIRY_SWEEP, day):
             jobs.add(EXPIRY_SWEEP)
+        if open_ + DIGEST_AFTER_OPEN <= now < close and self._once(OPPORTUNITIES, day):
+            jobs.add(OPPORTUNITIES)
         if now >= close + EOD_DELAY and self._once(EOD, day):
             jobs.add(EOD)
         return jobs
@@ -98,5 +107,5 @@ class Scheduler:
         day = now.astimezone(ET).date()
         for job in jobs:
             self.last_run[job] = now
-            if job in (PREOPEN, EXPIRY_SWEEP, EOD):
+            if job in (PREOPEN, EXPIRY_SWEEP, EOD, OPPORTUNITIES):
                 self.once_done[job] = day

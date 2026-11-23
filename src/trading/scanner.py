@@ -141,6 +141,24 @@ class ScanResult:
 # -- helpers --------------------------------------------------------------------
 
 
+REPORT_CORE = (
+    StrategyName.COVERED_CALL,
+    StrategyName.INDEX_PUT,
+    StrategyName.PUT_SPREAD,
+)
+
+
+def report_strategies(config: TradingConfig) -> set:
+    """What the daily opportunities report scans: the core strategies, every
+    strategy enabled to open, and single-stock puts when the watchlist has any."""
+    out = set(REPORT_CORE)
+    out |= {name for name, switch in config.enabled_strategies.items() if switch.open}
+    if any(StrategyName.STOCK_PUT in w.strategies for w in config.watchlist.values()):
+        out.add(StrategyName.STOCK_PUT)
+    out.discard(StrategyName.TAIL_HEDGE)
+    return out
+
+
 def _watch(config: TradingConfig, symbol: str):
     return config.watchlist.get(symbol.upper())
 
@@ -585,16 +603,24 @@ async def scan(
     journal=None,
     tracker=None,
     regime: str = "unknown",
+    strategies=None,
 ) -> ScanResult:
     """Run all three queues and return the passing candidates (best first via .best()).
 
     With a ``tracker`` (T31), each underlying's candidates get its timing
     multiplier and a ``fire`` flag; without one, nothing is marked ready.
+    ``strategies``: which queues to scan (default: those enabled to open);
+    the daily opportunities report scans more, for display only.
     """
     result = ScanResult()
     work = []  # (strategy, symbol, right, contracts, cost_basis, trading_class)
     sw = config.enabled_strategies
-    if sw[StrategyName.COVERED_CALL].open:
+    wanted = (
+        set(strategies)
+        if strategies is not None
+        else {name for name, switch in sw.items() if switch.open}
+    )
+    if StrategyName.COVERED_CALL in wanted:
         cost = {
             p.contract.symbol: p.avg_cost
             for p in positions
@@ -604,13 +630,13 @@ async def scan(
             work.append(
                 (StrategyName.COVERED_CALL, sym, Right.CALL, lots, cost.get(sym), sym)
             )
-    if sw[StrategyName.INDEX_PUT].open:
+    if StrategyName.INDEX_PUT in wanted:
         root = config.entry.index_scan_root
         work.append((StrategyName.INDEX_PUT, root, Right.PUT, 1, None, root))
-    if sw[StrategyName.PUT_SPREAD].open:
+    if StrategyName.PUT_SPREAD in wanted:
         root = config.entry.index_scan_root
         work.append((StrategyName.PUT_SPREAD, root, Right.PUT, 1, None, root))
-    if sw[StrategyName.STOCK_PUT].open:
+    if StrategyName.STOCK_PUT in wanted:
         for sym, w in config.watchlist.items():
             if StrategyName.STOCK_PUT in w.strategies:
                 work.append((StrategyName.STOCK_PUT, sym, Right.PUT, 1, None, sym))
@@ -712,6 +738,9 @@ async def scan(
                 "date": today.isoformat(),
                 "best": [c.to_dict() for c in result.best(20)],
                 "rejected": result.rejected,
+                "regime": regime,
+                # Strategies scanned for the report but not enabled to open.
+                "report_only": sorted(s.value for s in wanted if not sw[s].open),
             },
         )
     return result

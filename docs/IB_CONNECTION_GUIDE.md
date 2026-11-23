@@ -125,6 +125,28 @@ The bot also enforces this itself: a live account (`U…`, or a live port) can
 only be opened read-only until the mode-gating task (plan T28) is built and you
 explicitly enable it.
 
+## 6b. Daily opportunities (read-only)
+
+Once the engine runs (on the server, `deploy/README.md`), it scans the real
+market every 15 minutes in market hours, even in read-only or shadow mode,
+and sends the best candidates at **10:00 ET** (the "Opportunities" digest).
+The web UI's **Opportunities** page shows the latest scan.
+
+Until the server is up, run the same scan on your computer, with IB Gateway
+logged in:
+
+```bash
+python scripts/opportunities.py --account DU1234567        # paper (4002)
+python scripts/opportunities.py --account U1234567 --port 4001   # live, still read-only
+```
+
+To run it every weekday at 10:00 ET automatically:
+- **macOS / Linux (cron):** `crontab -e`, then add
+  `CRON_TZ=America/New_York` and
+  `0 10 * * 1-5 cd /path/to/Options-Analyzer && venv/bin/python scripts/opportunities.py --account DU1234567 >> data/opportunities.log 2>&1`
+- **Windows:** Task Scheduler → Create Basic Task → Weekly, Mon–Fri, at 10:00 ET in your local time.
+  Action: `venv\Scripts\python.exe scripts\opportunities.py --account DU1234567`, with "Start in" set to the project folder.
+
 ## 7. Backtest data (one time, read-only)
 
 The backtest (plan T36/T37) prices options synthetically from free data,
