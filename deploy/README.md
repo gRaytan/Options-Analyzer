@@ -45,6 +45,17 @@ to `127.0.0.1:5900` through the VPN or an SSH tunnel
 In `deploy/gateway.env`, set `TRADING_MODE=live` and the live username and password. In
 `docker-compose.yml`, set `IB_PORT: "4003"` for both services. In `.env`, set the live `U...` account.
 
+## Watchdog and backups
+The `watchdog` service runs on its own, so it keeps working if the engine crashes:
+
+- **Engine down:** no heartbeat for 3 minutes in market hours (09:00-16:30 ET) sends a **critical** alert, repeated every 15 minutes until it's back. Outside hours the limit is 30 minutes.
+- **IB disconnected:** the engine is running but has had no IB connection for 10 minutes in market hours. That's usually the weekly IB Key re-login: approve it on your phone.
+- **Nightly backup** at 02:00 ET: the journal (a consistent SQLite copy) and `data/config` go to `data/backups/YYYY-MM-DD/`, and the last 14 days are kept. **Also copy `data/backups` off the server**, for example with rclone to cloud storage or a synced folder.
+
+**Independent backup alarm (do this once):** in IB Client Portal, set an account alert on Excess Liquidity, for example below $120,000, sent to your phone. It works even if the server, the bot and the watchdog are all down.
+
+To restore a backup: stop the engine, copy `data/backups/<day>/journal.db` to `data/trading/journal.db`, and start the engine again. It reconciles with IB on start.
+
 ## Updating the Gateway image
 The image tag is pinned. To update it, choose a newer tag from
 `ghcr.io/gnzsnz/ib-gateway` that's at least two weeks old, change it in
@@ -56,4 +67,4 @@ Add any of these to `.env` on the server (see `.env.example`), then run `docker 
 - **Telegram (push to your phone, free):** message @BotFather in Telegram and create a bot to get a token. Then send your bot any message, and open `https://api.telegram.org/bot<TOKEN>/getUpdates` to find your chat ID. Set `ALERT_TELEGRAM_TOKEN` and `ALERT_TELEGRAM_CHAT_ID`.
 - **Email (SMTP):** set `ALERT_SMTP_HOST`, `ALERT_SMTP_PORT`, `ALERT_SMTP_USER`, `ALERT_SMTP_PASSWORD`, `ALERT_EMAIL_FROM` and `ALERT_EMAIL_TO`. For Gmail, use an app password, not your account password.
 
-What you'll get: **critical** alerts for margin breach or emergency and for any halt; **warnings** for margin warning, IB unreachable (often the weekly 2FA) and risk budget exceeded. By default info alerts go to the log only; set `alerts.min_level` in `data/config/trading.json` to change that. The same alert repeats at most every 15 minutes unless it gets worse.
+What you'll get: the **daily report** after the close (always delivered); **critical** alerts for margin breach or emergency, for any halt, and when the watchdog finds the engine down; **warnings** for margin warning, IB unreachable (often the weekly 2FA) and risk budget exceeded. By default info alerts go to the log only; set `alerts.min_level` in `data/config/trading.json` to change that. The same alert repeats at most every 15 minutes unless it gets worse.

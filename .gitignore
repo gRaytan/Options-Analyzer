@@ -70,6 +70,7 @@ logs/
 # Auto-trading runtime data (journal, halt file)
 data/trading/
 data/backtest/
+data/backups/
 
 # Deployment secrets
 deploy/gateway.env

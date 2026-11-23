@@ -40,6 +40,9 @@ from src.trading.domain import utcnow
 log = logging.getLogger("trading.alerts")
 
 LEVELS = {"info": 0, "warning": 1, "critical": 2}
+# Scheduled reports (the daily report, T38): always delivered, whatever
+# min_level says; they come once a day, so no rate limit applies.
+REPORT = "report"
 SEND_TIMEOUT_S = 10
 
 
@@ -53,9 +56,12 @@ class Alert:
 
     @property
     def subject(self) -> str:
-        tag = {"info": "", "warning": "[WARNING] ", "critical": "[CRITICAL] "}[
-            self.level
-        ]
+        tag = {
+            "info": "",
+            "report": "",
+            "warning": "[WARNING] ",
+            "critical": "[CRITICAL] ",
+        }[self.level]
         return f"{tag}Options bot: {self.title}"
 
 
@@ -151,6 +157,8 @@ class Notifier:
         self.sent_log: List[Alert] = []  # what was actually sent (for tests / status)
 
     def _should_send(self, alert: Alert) -> bool:
+        if alert.level == REPORT:
+            return alert.key not in self._last  # each report once
         level = LEVELS[alert.level]
         if level < LEVELS[self.config.min_level]:
             return False
@@ -183,16 +191,19 @@ class Notifier:
         return alert
 
     def _prepare(self, level, key, title, message) -> Optional[Alert]:
-        if level not in LEVELS:
+        if level not in LEVELS and level != REPORT:
             raise ValueError(f"unknown alert level {level!r}")
         alert = Alert(level, key, title, message, self._clock())
-        log_fn = {"info": log.info, "warning": log.warning, "critical": log.error}[
-            level
-        ]
+        log_fn = {
+            "info": log.info,
+            "report": log.info,
+            "warning": log.warning,
+            "critical": log.error,
+        }[level]
         log_fn("ALERT %s: %s", title, message)
         if not self._should_send(alert):
             return None
-        self._last[key] = (alert.ts, LEVELS[level])
+        self._last[key] = (alert.ts, LEVELS.get(level, 0))
         self._sent.append(alert.ts)
         self.sent_log.append(alert)
         return alert

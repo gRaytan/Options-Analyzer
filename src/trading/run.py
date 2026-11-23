@@ -167,10 +167,14 @@ async def monitor(
     # Spec §8: jobs on the NYSE calendar. A one-shot run (tests, backtests)
     # runs every job once.
     schedule = None if once else sched.Scheduler(MarketCalendar())
+    hb_state: dict = {}
     while not stop.is_set():
         now = utcnow()
         jobs = None if schedule is None else schedule.due(now)
         if jobs is not None and not jobs:
+            # Nothing due: keep the heartbeat fresh (watchdog, health check)
+            # with the last cycle's state.
+            _heartbeat(adapter, **hb_state)
             try:
                 await asyncio.wait_for(stop.wait(), timeout=interval_s)
             except asyncio.TimeoutError:
@@ -203,8 +207,7 @@ async def monitor(
             )
         halt = halts.state()
         reading = margin.last
-        _heartbeat(
-            adapter,
+        hb_state = dict(
             margin=reading.to_dict() if reading else None,
             budget=budget.last,
             guard=_last_guard,
@@ -213,6 +216,7 @@ async def monitor(
             halt_reason=halt.reason if halt.active else "",
             **reconcile_state,
         )
+        _heartbeat(adapter, **hb_state)
         if once:
             break
         try:
@@ -520,7 +524,7 @@ def _daily_report(journal, snap, budget, margin, positions, notifier) -> dict:
     )
     _alert(
         notifier,
-        "info",
+        "report",
         f"daily:{report['date']}",
         f"Daily report {report['date']}",
         f"NLV ${report['nlv'] or 0:,.0f}, EL {el}, Cushion {cushion}, margin {report['margin_state']}.\n"

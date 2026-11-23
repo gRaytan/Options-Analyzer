@@ -43,6 +43,22 @@ services:
       retries: 3
       start_period: 120s
 
+  watchdog:
+    # Separate process: alerts if the engine is down or IB is disconnected in
+    # market hours, and writes the nightly journal/config backup (T39).
+    build: .
+    restart: unless-stopped
+    command: ["python", "-m", "src.trading.watchdog"]
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "find /app/data/trading/watchdog.json -mmin -5 | grep -q ."]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
   web-ui:
     build: .
     restart: unless-stopped
