@@ -15,14 +15,14 @@ from __future__ import annotations
 
 import json
 import math
-from collections import Counter, defaultdict
+from collections import Counter
 from dataclasses import asdict, dataclass, field
-from datetime import date
 from typing import Dict, List, Optional
 
 from src.trading.backtest.engine import BacktestResult, DayRecord
 from src.trading.domain import OptionContract
 from src.trading.journal import Journal
+from src.trading.metrics import trades_from
 
 FLOOR = 100_000.0
 
@@ -85,23 +85,6 @@ class Report:
         return json.dumps(asdict(self), indent=2, default=str)
 
 
-class _Trades:
-    """Union-find over option keys that shared an order."""
-
-    def __init__(self):
-        self.parent: Dict[str, str] = {}
-
-    def find(self, k: str) -> str:
-        self.parent.setdefault(k, k)
-        while self.parent[k] != k:
-            self.parent[k] = self.parent[self.parent[k]]
-            k = self.parent[k]
-        return k
-
-    def union(self, a: str, b: str) -> None:
-        self.parent[self.find(a)] = self.find(b)
-
-
 def build_report(result: BacktestResult) -> Report:
     days: List[DayRecord] = result.days
     if not days:
@@ -118,53 +101,19 @@ def build_report(result: BacktestResult) -> Report:
     finally:
         j.close()
 
-    # -- trades ------------------------------------------------------------------
-    uf = _Trades()
-    by_order: Dict[str, List[str]] = defaultdict(list)
-    flows: Dict[str, float] = defaultdict(float)
-    qty: Dict[str, float] = defaultdict(float)
-    sold = bought = fees = 0.0
-    opened_by: Dict[str, str] = {}
-    for f in fills:
-        c = f.contract
-        if not isinstance(c, OptionContract):
-            fees += f.commission
-            continue
-        k = c.key
-        uf.find(k)
-        by_order[f.order_ref].append(k)
-        amount = f.price * f.quantity * c.multiplier
-        if f.action.sign < 0:
-            sold += amount
-        else:
-            bought += amount
-        flows[k] += -f.action.sign * amount - f.commission
-        qty[k] += f.action.sign * f.quantity
-        fees += f.commission
-        it = intents.get(f.order_ref)
-        if it is not None and it.trigger == "SCAN_READY":
-            opened_by.setdefault(k, it.strategy)
-    for keys in by_order.values():
-        for k in keys[1:]:
-            uf.union(keys[0], k)
-    settled = Counter()
-    for _day, key, kind, amount in result.settlements:
-        settled[kind] += 1
-        # Cash settlement pays the intrinsic value; a physical assignment moves
-        # it into shares (NLV has it): either way the trade's P&L counts it.
-        flows[key] += amount
-        qty[key] = 0.0  # gone at expiry
-        uf.find(key)
-    groups: Dict[str, List[str]] = defaultdict(list)
-    for k in list(uf.parent):
-        groups[uf.find(k)].append(k)
-    trade_pnl = []
-    strategies = Counter()
-    for keys in groups.values():
-        strat = next((opened_by[k] for k in keys if k in opened_by), "other")
-        strategies[strat] += 1
-        if all(abs(qty[k]) < 1e-9 for k in keys):
-            trade_pnl.append(sum(flows[k] for k in keys))
+    # -- trades (shared with the Bot metrics page, T40) ----------------------------
+    trades = trades_from(fills, intents, result.settlements, days[-1].day)
+    opt = [f for f in fills if isinstance(f.contract, OptionContract)]
+    sold = sum(
+        f.price * f.quantity * f.contract.multiplier for f in opt if f.action.sign < 0
+    )
+    bought = sum(
+        f.price * f.quantity * f.contract.multiplier for f in opt if f.action.sign > 0
+    )
+    fees = sum(f.commission for f in fills)
+    settled = Counter(kind for _d, _k, kind, _a in result.settlements)
+    trade_pnl = [t.pnl for t in trades if t.is_closed]
+    strategies = Counter(t.strategy for t in trades)
     wins = [p for p in trade_pnl if p > 0]
     losses = [p for p in trade_pnl if p <= 0]
 
@@ -205,7 +154,7 @@ def build_report(result: BacktestResult) -> Report:
         fees=fees,
         fees_pct_of_premium=fees / sold if sold else 0.0,
         margin_interest_note=f"charged at {result.settings.margin_rate:.1%} on any debit",
-        trades=len(groups),
+        trades=len(trades),
         closed_trades=len(trade_pnl),
         wins=len(wins),
         win_rate=len(wins) / len(trade_pnl) if trade_pnl else 0.0,

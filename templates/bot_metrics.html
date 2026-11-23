@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+
+{% block title %}Bot Metrics - Options Analyzer{% endblock %}
+
+{% macro money(v) %}{% if v is none %}—{% else %}<span class="{{ 'text-success' if v > 0 else ('text-danger' if v < 0 else '') }}">${{ "{:,.0f}".format(v) }}</span>{% endif %}{% endmacro %}
+{% macro pct(v, digits=1) %}{% if v is none %}—{% else %}{{ ("%." ~ digits ~ "f")|format(v * 100) }}%{% endif %}{% endmacro %}
+
+{% block content %}
+<div class="page-header">
+    <h4><i class="bi bi-graph-up-arrow"></i> Bot Metrics</h4>
+    <p class="subtitle">The bot's own trades, from its journal. A trade is one position with all its rolls; spreads count once.</p>
+</div>
+
+{% if not m or not m.trades %}
+<div class="alert alert-secondary">No bot trades yet. Metrics appear here once the engine has filled its first order.</div>
+{% else %}
+<div class="row g-4 mb-4">
+    <div class="col-md-3"><div class="card"><div class="card-body">
+        <div class="text-muted small">Realized P&amp;L (closed trades)</div>
+        <div class="fs-4">{{ money(m.realized_pnl) }}</div>
+        <div class="small text-muted">{{ m.closed|length }} closed of {{ m.trades|length }}</div>
+    </div></div></div>
+    <div class="col-md-3"><div class="card"><div class="card-body">
+        <div class="text-muted small">Win rate</div>
+        <div class="fs-4">{{ pct(m.win_rate, 0) }}</div>
+        <div class="small text-muted">Roll rate {{ "%.2f"|format(m.roll_rate or 0) }} per trade</div>
+    </div></div></div>
+    <div class="col-md-3"><div class="card"><div class="card-body">
+        <div class="text-muted small">Fees, % of premium sold</div>
+        <div class="fs-4">{{ pct(m.fees_pct) }}</div>
+        <div class="small text-muted">${{ "{:,.2f}".format(m.fees) }} on ${{ "{:,.0f}".format(m.premium_sold) }} sold</div>
+    </div></div></div>
+    <div class="col-md-3"><div class="card"><div class="card-body">
+        <div class="text-muted small">Slippage vs mid</div>
+        <div class="fs-4">{{ money(-m.total_slippage) }}</div>
+        <div class="small text-muted">{{ pct(m.slippage_pct) }} of premium, {{ m.slippage|length }} orders</div>
+    </div></div></div>
+</div>
+
+<div class="row g-4 mb-4">
+    <div class="col-lg-6"><div class="card"><div class="card-header">Premium sold and realized P&amp;L by month</div>
+        <div class="card-body"><canvas id="monthlyChart" height="220"></canvas></div></div></div>
+    <div class="col-lg-6"><div class="card"><div class="card-header">Net liquidation value (daily close)
+        {% if m.max_drawdown is not none %}<span class="small text-muted ms-2">max drawdown {{ pct(m.max_drawdown) }}{% if m.sortino is not none %}, Sortino {{ "%.2f"|format(m.sortino) }}{% endif %}</span>{% endif %}</div>
+        <div class="card-body"><canvas id="nlvChart" height="220"></canvas></div></div></div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header">By strategy</div>
+    <div class="card-body p-0"><div class="table-responsive">
+    <table class="table mb-0 sortable-table">
+        <thead><tr><th data-sort="string">Strategy</th><th class="text-end" data-sort="number">Trades</th><th class="text-end" data-sort="number">Closed</th>
+            <th class="text-end" data-sort="number">Win rate</th><th class="text-end" data-sort="number">Realized P&amp;L</th>
+            <th class="text-end" data-sort="number">Premium sold</th><th class="text-end" data-sort="number">Fees</th></tr></thead>
+        <tbody>
+        {% for name, s in m.strategies|dictsort %}
+            <tr><td>{{ name|replace('_', ' ') }}</td><td class="text-end">{{ s.trades }}</td><td class="text-end">{{ s.closed }}</td>
+                <td class="text-end">{{ pct(s.win_rate, 0) }}</td><td class="text-end">{{ money(s.pnl) }}</td>
+                <td class="text-end">${{ "{:,.0f}".format(s.premium) }}</td><td class="text-end">${{ "{:,.2f}".format(s.fees) }}</td></tr>
+        {% endfor %}
+        </tbody>
+    </table></div></div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span>Trades</span>
+        <span class="small">Realized P&amp;L for your tax return (USD, fees included):
+        {% for y in years %}<a class="ms-2" href="/bot/metrics/realized.csv?year={{ y }}">{{ y }} CSV</a>{% endfor %}
+        <a class="ms-2" href="/bot/metrics/realized.csv">all</a></span>
+    </div>
+    <div class="card-body p-0"><div class="table-responsive">
+    <table class="table mb-0 sortable-table">
+        <thead><tr><th data-sort="string">Opened</th><th data-sort="string">Closed</th><th data-sort="string">Strategy</th><th>Contracts</th>
+            <th class="text-end" data-sort="number">Rolls</th><th class="text-end" data-sort="number">Premium</th><th class="text-end" data-sort="number">P&amp;L</th></tr></thead>
+        <tbody>
+        {% for t in m.trades|reverse %}
+            <tr><td class="text-nowrap">{{ t.opened.strftime('%Y-%m-%d') if t.opened else '—' }}</td>
+                <td class="text-nowrap">{% if t.closed %}{{ t.closed }}{% else %}<span class="badge bg-secondary">open</span>{% endif %}</td>
+                <td>{{ t.strategy|replace('_', ' ') }}</td>
+                <td class="small">{{ t.keys|join('<br>'|safe) }}{% if t.expired_worthless %}<div class="text-muted">expired worthless (assumed)</div>{% endif %}</td>
+                <td class="text-end">{{ t.rolls }}</td><td class="text-end">${{ "{:,.0f}".format(t.premium_sold) }}</td>
+                <td class="text-end">{% if t.closed %}{{ money(t.pnl) }}{% else %}<span class="text-muted">open</span>{% endif %}</td></tr>
+        {% endfor %}
+        </tbody>
+    </table></div></div>
+</div>
+<p class="small text-muted">An option that disappears at expiry is assumed to have expired worthless; the guards close or roll anything in the money before the end of expiration day. Slippage compares each fill with the mid when the order was placed.</p>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+{% if chart %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+    Chart.defaults.color = '#8b949e';
+    Chart.defaults.borderColor = '#30363d';
+    const c = {{ chart | tojson }};
+    new Chart(document.getElementById('monthlyChart'), {
+        type: 'bar',
+        data: { labels: c.months, datasets: [
+            { label: 'Premium sold', data: c.premium, backgroundColor: 'rgba(88,166,255,0.6)' },
+            { label: 'Realized P&L', data: c.pnl, backgroundColor: c.pnl.map(v => v >= 0 ? 'rgba(63,185,80,0.7)' : 'rgba(248,81,73,0.7)') },
+            { label: 'Fees', data: c.fees, backgroundColor: 'rgba(210,153,34,0.6)' }
+        ]},
+        options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
+    });
+    new Chart(document.getElementById('nlvChart'), {
+        type: 'line',
+        data: { labels: c.nlv_days, datasets: [{ label: 'NLV', data: c.nlv, borderColor: 'rgba(88,166,255,1)', pointRadius: 0, tension: 0.1 }] },
+        options: { responsive: true, plugins: { legend: { display: false } } }
+    });
+</script>
+{% endif %}
+{% endblock %}
