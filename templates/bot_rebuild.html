@@ -30,6 +30,7 @@
                     <tr><td>Stock held</td><td class="text-end">{{ money(stock_value) }} ({{ "%.0f"|format(stock_value / account.net_liquidation * 100 if account.net_liquidation else 0) }}% of NLV)</td></tr>
                 </table>
                 <p class="small text-muted mb-0">As of {{ account.ts.strftime('%Y-%m-%d %H:%M UTC') }}.</p>
+                {% set c = crash %}{% include "_crash_test.html" %}
                 {% else %}
                 <p class="text-muted mb-0">No account data yet: start the engine connected to IB.</p>
                 {% endif %}
@@ -49,7 +50,7 @@
                         <label class="form-check-label small" for="opts">Also plan option sales (covered calls, and puts or spreads if the VIX regime allows)</label>
                     </div>
                     <button class="btn btn-primary btn-sm" type="submit"><i class="bi bi-magic me-1"></i>Build plan</button>
-                    <span class="small text-muted ms-2">Each plan is one step ({{ config.rebuild.tranches }} steps to reach the targets), sized so a −25% crash still leaves Excess Liquidity above $100k.</span>
+                    <span class="small text-muted ms-2">Each plan is one step ({{ config.rebuild.tranches }} steps to reach the targets), sized so an S&amp;P drop of {{ "%.0f"|format(-config.risk.crash_move * 100) }}% (each stock by its beta) still leaves Excess Liquidity above $100k.</span>
                 </form>
             </div>
         </div>
@@ -68,7 +69,7 @@
     </div>
     <div class="card-body">
         {% if plan.fit %}
-        <p class="small mb-2">After the share purchases: Excess Liquidity {{ money(plan.fit.el_after) }}, Cushion {{ "%.0f"|format(plan.fit.cushion_after * 100) }}%, Excess Liquidity in a −25% crash {{ money(plan.fit.stress_el_after) }}, stock {{ money(plan.fit.gross_after) }} ({{ "%.0f"|format(plan.fit.gross_after / plan.nlv * 100 if plan.nlv else 0) }}% of NLV).</p>
+        <p class="small mb-2">After the share purchases: Excess Liquidity {{ money(plan.fit.el_after) }}, Cushion {{ "%.0f"|format(plan.fit.cushion_after * 100) }}%, Excess Liquidity if the S&amp;P fell {{ "%.0f"|format(-config.risk.crash_move * 100) }}% {{ money(plan.fit.stress_el_after) }}, stock {{ money(plan.fit.gross_after) }} ({{ "%.0f"|format(plan.fit.gross_after / plan.nlv * 100 if plan.nlv else 0) }}% of NLV).</p>
         {% endif %}
         {% for n in plan.notes %}<div class="small text-warning"><i class="bi bi-info-circle me-1"></i>{{ n }}</div>{% endfor %}
     </div>

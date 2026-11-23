@@ -17,8 +17,8 @@ Checks on an opening trade (the account **after** the trade):
 
 1. ``stress_budget``: options-book loss (excluding stock P&L) in the budget
    scenario (-20%, IV +50%) <= risk budget (10% NLV x regime multiplier).
-2. ``stress_el``: account EL in the worst scenario (-25%, IV +50%, margin x1.5)
-   stays >= $100k.
+2. ``stress_el``: account EL in the crash scenario (``risk.crash_move``, default
+   S&P -30%, each name x its beta; IV +50%, margin x1.5) stays >= $100k.
 3. ``single_name_gap``: for each stock with short puts, a -35% gap on that
    name alone loses <= 2% NLV on its options.
 """
@@ -59,13 +59,27 @@ class Scenario:
     margin_multiplier: float = 1.0
 
 
+def crash_scenario(config: TradingConfig) -> Scenario:
+    """The crash the account must survive: S&P ``crash_move``, IV +50%, margin x1.5."""
+    move = config.risk.crash_move
+    return Scenario(
+        f"crash {move:+.0%} IV+50%", move, 0.50, config.risk.stress_margin_multiplier
+    )
+
+
+def betas_from(config: TradingConfig) -> Dict[str, float]:
+    return {s.upper(): e.beta for s, e in config.watchlist.items() if e.beta}
+
+
 def standard_scenarios(config: TradingConfig) -> List[Scenario]:
     mm = config.risk.stress_margin_multiplier
     out = []
-    for move in (-0.25, -0.20, -0.15, -0.08, 0.08, 0.15, 0.25):
+    crash = config.risk.crash_move
+    moves = sorted({crash, -0.25, -0.20, -0.15, -0.08, 0.08, 0.15, 0.25})
+    for move in moves:
         down = move < 0
         out.append(Scenario(f"{move:+.0%}", move, 0.0, mm if down else 1.0))
-    for move in (-0.15, -0.20, -0.25):
+    for move in sorted({-0.15, -0.20, -0.25, crash}, reverse=True):
         out.append(Scenario(f"{move:+.0%} IV+50%", move, 0.50, mm))
     return out
 
@@ -236,12 +250,12 @@ def stress_checks(
         )
     )
 
-    worst = model.run(Scenario("worst -25% IV+50%", -0.25, 0.50, mm))
+    worst = model.run(crash_scenario(config))
     checks.append(
         CheckResult(
             "stress_el",
             worst.excess_liquidity_after >= floor.excess_liquidity_min,
-            f"EL ${worst.excess_liquidity_after:,.0f} in -25%/IV+50%/margin x{mm:g} "
+            f"EL ${worst.excess_liquidity_after:,.0f} in {risk.crash_move:+.0%}/IV+50%/margin x{mm:g} "
             f"(floor ${floor.excess_liquidity_min:,.0f})",
         )
     )

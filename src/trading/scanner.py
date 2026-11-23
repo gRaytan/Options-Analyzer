@@ -536,8 +536,11 @@ def candidate_contracts(
     (round strikes first). Without it: the ``max_strikes`` nearest OTM strikes.
     """
     chain = None
+    want = (trading_class or "").replace(" ", "").upper()
     for c in chains:
-        if trading_class is None or c.trading_class == trading_class:
+        # IB writes share classes without the space in option trading classes:
+        # stock "BRK B", options "BRKB".
+        if trading_class is None or c.trading_class.replace(" ", "").upper() == want:
             chain = c
             break
     if chain is None:

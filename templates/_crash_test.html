@@ -1,0 +1,10 @@
+{# The current account in the crash it must survive (risk.crash_move). `c` = budget.crash #}
+{% if c %}
+<div class="alert {{ 'alert-success' if c.survives else 'alert-danger' }} py-2 small mb-0 mt-2">
+    <i class="bi {{ 'bi-shield-check' if c.survives else 'bi-exclamation-octagon' }} me-1"></i>
+    <b>If the S&amp;P 500 fell {{ "%.0f"|format(-c.move * 100) }}% today</b> (each stock by its beta, IV +50%, margin ×1.5):
+    stocks {{ "{:+,.0f}".format(c.stock_pnl) }}, options {{ "{:+,.0f}".format(c.options_pnl) }},
+    NLV ${{ "{:,.0f}".format(c.nlv_after) }}, Excess Liquidity <b>${{ "{:,.0f}".format(c.excess_liquidity_after) }}</b>
+    {% if c.survives %}: stays above the $100,000 floor, no margin call.{% else %}: <b>below the $100,000 floor: a margin call</b>. The bot adds no new risk until this passes.{% endif %}
+</div>
+{% endif %}

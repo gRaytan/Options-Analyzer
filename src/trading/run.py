@@ -368,6 +368,19 @@ async def _cycle(
             )
         if budget is not None:
             used = await budget.update(adapter, positions, snap)
+            crash = (used or {}).get("crash")
+            if crash and not crash["survives"]:
+                _alert(
+                    notifier,
+                    "warning",
+                    "crash-test",
+                    f"Account fails the {crash['move']:+.0%} crash test",
+                    f"If the S&P 500 fell {abs(crash['move']):.0%} (each stock by its beta, "
+                    f"IV +50%, margin x1.5): NLV ${crash['nlv_after']:,.0f}, Excess "
+                    f"Liquidity ${crash['excess_liquidity_after']:,.0f}, below the "
+                    f"${config.margin_floor.excess_liquidity_min if config else 100_000:,.0f} "
+                    "floor. No new risk is added; consider reducing leverage or short puts.",
+                )
             if used and used["over_budget"]:
                 _alert(
                     notifier,

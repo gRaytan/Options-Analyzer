@@ -29,7 +29,7 @@ from src.trading.domain import (
 from src.trading.journal import Journal
 from src.trading.risk.limits import exposures_from
 from src.trading.risk.regime import Regime, budget_state, classify_regime, vix_inputs
-from src.trading.risk.stress import Scenario, StressModel
+from src.trading.risk.stress import Scenario, StressModel, betas_from, crash_scenario
 
 log = logging.getLogger(__name__)
 
@@ -90,11 +90,16 @@ class BudgetTracker:
                     "budget: option quotes unavailable (%s); unknown deltas/IVs", exc
                 )
         exposures = exposures_from(positions, quotes)
-        model = StressModel(exposures, quotes, account, self._clock().date())
+        model = StressModel(
+            exposures, quotes, account, self._clock().date(), betas_from(self.config)
+        )
         mm = self.config.risk.stress_margin_multiplier
         used = float(
             max(0.0, -model.run(Scenario("budget", -0.20, 0.50, mm)).options_pnl)
         )
+        # The whole account in the crash it must survive (S&P -30% by default).
+        crash = model.run(crash_scenario(self.config))
+        floor = self.config.margin_floor.excess_liquidity_min
         budget = float(state.budget(account.net_liquidation, self.config.risk))
         result = {
             "regime": regime.name,
@@ -107,6 +112,14 @@ class BudgetTracker:
             "free": max(0.0, budget - used),
             "over_budget": bool(used > budget),
             "drawdown": None,  # tracked from T40
+            "crash": {
+                "move": self.config.risk.crash_move,
+                "stock_pnl": float(crash.stock_pnl),
+                "options_pnl": float(crash.options_pnl),
+                "nlv_after": float(account.net_liquidation + crash.total_pnl),
+                "excess_liquidity_after": float(crash.excess_liquidity_after),
+                "survives": bool(crash.excess_liquidity_after >= floor),
+            },
         }
         self._maybe_journal(result, account)
         self.last = result

@@ -67,6 +67,8 @@ class WatchlistEntry(_Strict):
     order_step_s: Optional[int] = Field(default=None, gt=0)
     sector: Optional[str] = None  # for the per-sector cap; ETFs: "index"
     beta: Optional[float] = Field(default=None, gt=0.0, le=5.0)  # vs. SPY; default 1.0
+    # IB's maintenance margin on the shares, when above Reg-T's 25% (volatile names).
+    maint_margin: Optional[float] = Field(default=None, ge=0.25, le=1.0)
 
     @field_validator("cc_delta")
     @classmethod
@@ -247,6 +249,10 @@ class RiskConfig(_Strict):
     expiry_max_share: float = Field(default=0.35, gt=0.0, le=1.0)
     options_beta_delta_max: float = Field(default=0.35, ge=0.0, le=2.0)
     stress_margin_multiplier: float = Field(default=1.5, ge=1.0)
+    # The crash the account must survive (spec §6.2): S&P 500 down this much,
+    # each name moving by its beta (at least 1x on the way down), IV +50% and
+    # margin x stress_margin_multiplier; Excess Liquidity must stay >= the floor.
+    crash_move: float = Field(default=-0.30, ge=-0.90, le=-0.05)
     single_name_gap: float = Field(default=0.35, gt=0.0, lt=1.0)
     single_name_gap_max_loss: float = Field(default=0.02, gt=0.0, le=1.0)
     options_daily_loss_halt: float = Field(default=0.015, gt=0.0, le=1.0)
