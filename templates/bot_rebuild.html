@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+
+{% block title %}Rebuild Plan - Options Analyzer{% endblock %}
+
+{% macro money(v) %}{% if v is none %}—{% else %}${{ "{:,.0f}".format(v) }}{% endif %}{% endmacro %}
+
+{% block content %}
+<div class="page-header">
+    <h4><i class="bi bi-bricks"></i> Rebuild Plan</h4>
+    <p class="subtitle">Buy back your holdings step by step after a margin call, then add covered calls and (when the market allows) puts. Nothing is sent until you approve that item.</p>
+</div>
+
+{% if config.mode.value == 'shadow' %}
+<div class="alert alert-warning">Mode is <b>shadow</b>: approved items are only logged, never sent. Switch to <b>approve</b> (live) or <b>paper</b> to execute.</div>
+{% elif not config.live_trading_enabled %}
+<div class="alert alert-secondary small mb-3"><i class="bi bi-shield-lock me-1"></i>Live trading is off: approved items execute on the <b>paper</b> account only. A live account needs <code>live_trading_enabled: true</code>, <code>TRADING_ALLOW_LIVE=yes</code>, mode <code>approve</code>, and Read-Only API turned off in IB Gateway.</div>
+{% endif %}
+
+<div class="row g-4 mb-4">
+    <div class="col-lg-5">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-wallet2 me-2"></i>Account now</div>
+            <div class="card-body">
+                {% if account %}
+                <table class="table table-sm mb-2">
+                    <tr><td>Net liquidation</td><td class="text-end">{{ money(account.net_liquidation) }}</td></tr>
+                    <tr><td>Excess Liquidity</td><td class="text-end">{{ money(account.excess_liquidity) }} <span class="small text-muted">(floor $100,000)</span></td></tr>
+                    <tr><td>Cushion</td><td class="text-end">{{ "%.0f"|format(account.cushion * 100) }}% <span class="small text-muted">(new trades need 40%)</span></td></tr>
+                    <tr><td>Cash</td><td class="text-end">{{ money(account.cash) }}</td></tr>
+                    <tr><td>Stock held</td><td class="text-end">{{ money(stock_value) }} ({{ "%.0f"|format(stock_value / account.net_liquidation * 100 if account.net_liquidation else 0) }}% of NLV)</td></tr>
+                </table>
+                <p class="small text-muted mb-0">As of {{ account.ts.strftime('%Y-%m-%d %H:%M UTC') }}.</p>
+                {% else %}
+                <p class="text-muted mb-0">No account data yet: start the engine connected to IB.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-7">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-bullseye me-2"></i>Targets</div>
+            <div class="card-body">
+                <form method="post" action="/bot/rebuild">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <label class="form-label small">Target holdings, as % of net liquidation (at most 100% in total: no borrowing)</label>
+                    <input type="text" name="targets" class="form-control mb-2" value="{{ default_targets }}" placeholder="SPY=50%, QQQM=50%">
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" name="options" id="opts" {% if not req or req.options %}checked{% endif %}>
+                        <label class="form-check-label small" for="opts">Also plan option sales (covered calls, and puts or spreads if the VIX regime allows)</label>
+                    </div>
+                    <button class="btn btn-primary btn-sm" type="submit"><i class="bi bi-magic me-1"></i>Build plan</button>
+                    <span class="small text-muted ms-2">Each plan is one step ({{ config.rebuild.tranches }} steps to reach the targets), sized so a −25% crash still leaves Excess Liquidity above $100k.</span>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if waiting %}
+<div class="alert alert-info"><i class="bi bi-hourglass-split me-1"></i>Plan requested {{ req.requested_at[:16].replace('T', ' ') }} UTC. The engine builds it on its next pass in market hours (09:45–15:45 ET, every 5 minutes). Refresh this page.</div>
+{% endif %}
+
+{% if plan %}
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between">
+        <span><i class="bi bi-list-check me-2"></i>Plan {{ plan.plan_id }}</span>
+        <span class="small text-muted">Built {{ plan.created_at[:16].replace('T', ' ') }} UTC · VIX regime: {{ plan.regime }}</span>
+    </div>
+    <div class="card-body">
+        {% if plan.fit %}
+        <p class="small mb-2">After the share purchases: Excess Liquidity {{ money(plan.fit.el_after) }}, Cushion {{ "%.0f"|format(plan.fit.cushion_after * 100) }}%, Excess Liquidity in a −25% crash {{ money(plan.fit.stress_el_after) }}, stock {{ money(plan.fit.gross_after) }} ({{ "%.0f"|format(plan.fit.gross_after / plan.nlv * 100 if plan.nlv else 0) }}% of NLV).</p>
+        {% endif %}
+        {% for n in plan.notes %}<div class="small text-warning"><i class="bi bi-info-circle me-1"></i>{{ n }}</div>{% endfor %}
+    </div>
+    <div class="card-body p-0">
+        {% if not items %}
+        <p class="text-muted p-3 mb-0">Nothing to do in this step.</p>
+        {% else %}
+        <div class="table-responsive">
+        <table class="table mb-0">
+            <thead><tr><th>#</th><th>Action</th><th class="text-end">Size</th><th>Why / limits</th><th>Status</th><th>Decide</th></tr></thead>
+            <tbody>
+            {% for row in items %}{% set it = row.intent %}{% set leg = it.legs[0] %}
+            <tr>
+                <td>{{ loop.index }}</td>
+                <td class="text-nowrap">
+                    {% if it.strategy == 'rebuild' %}<span class="badge bg-primary">Buy shares</span> {{ leg.contract.symbol }}
+                    {% else %}<span class="badge bg-info text-dark">{{ it.strategy|replace('_', ' ') }}</span>
+                        {% for l in it.legs %}<div class="small">{{ l.action.value|lower }} {{ l.quantity }} × {{ l.contract.key }}</div>{% endfor %}
+                    {% endif %}
+                </td>
+                <td class="text-end text-nowrap">
+                    {% if it.strategy == 'rebuild' %}{{ leg.quantity }} sh<br><span class="small text-muted">≈ {{ money(it.details.est_cost) }}, max ${{ "%.2f"|format(it.details.worst_price) }}</span>
+                    {% else %}{{ leg.quantity }}<br><span class="small text-muted">credit ≈ {{ money(it.details.expected_credit) }}</span>{% endif %}
+                </td>
+                <td class="small">
+                    {% if it.strategy == 'rebuild' %}Held {{ money(it.details.held_value) }} → target {{ money(it.details.target_value) }}
+                    {% else %}Score {{ "%.2g"|format(it.details.score or 0) }}{% if it.details.max_loss %}, max loss {{ money(it.details.max_loss) }}{% endif %}{% if it.details.timing_reasons %}; {{ it.details.timing_reasons|join(', ') }}{% endif %}{% endif %}
+                    <div class="text-muted">The risk gate re-checks margin and the crash test when it's sent.</div>
+                </td>
+                <td class="text-nowrap">
+                    {% if row.filled %}<span class="badge bg-success">filled {{ row.filled }}</span>
+                    {% elif row.status == 'approved' %}<span class="badge bg-success">approved: sending</span>
+                    {% elif row.status == 'pending' %}<span class="badge bg-warning text-dark">waiting for you</span>
+                    {% elif row.status == 'rejected' %}<span class="badge bg-secondary">rejected</span>
+                    {% elif row.status == 'expired' %}<span class="badge bg-secondary">expired</span>
+                    {% else %}<span class="badge bg-light text-dark">queued</span>{% endif %}
+                </td>
+                <td>
+                    {% if row.status == 'pending' and not row.filled %}
+                    <form method="post" action="/bot/approvals/{{ it.intent_id }}" class="d-flex gap-1">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <input type="hidden" name="next" value="/bot/rebuild">
+                        <button class="btn btn-sm btn-success" name="decision" value="approve" type="submit">Approve</button>
+                        <button class="btn btn-sm btn-outline-danger" name="decision" value="reject" type="submit">Reject</button>
+                    </form>
+                    {% else %}<span class="small text-muted">—</span>{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% endif %}
+    </div>
+</div>
+<p class="small text-muted">After you approve, the engine sends a limit order (from the mid, never above the max price for shares or below the minimum credit for options) on its next pass in market hours. Items stay open for {{ "%g"|format(config.rebuild.approval_hours) }} hours and are asked once. When the shares have filled, build the next plan: it adds the next step and covered calls on the new shares.</p>
+{% endif %}
+{% endblock %}

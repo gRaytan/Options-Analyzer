@@ -190,7 +190,11 @@ class Executor:
         if where is Route.ASK:
             status = self.approvals.status(intent.intent_id)
             if status in (ApprovalStatus.UNKNOWN, ApprovalStatus.EXPIRED):
-                self.approvals.request(intent, describe(intent))
+                if status is ApprovalStatus.EXPIRED and intent.details.get("ask_once"):
+                    return None  # a plan item the owner let expire: don't ask again
+                ttl_s = intent.details.get("approval_ttl_s")
+                ttl = timedelta(seconds=float(ttl_s)) if ttl_s else None
+                self.approvals.request(intent, describe(intent), ttl)
                 return None
             if status is not ApprovalStatus.APPROVED:
                 return None  # pending or rejected

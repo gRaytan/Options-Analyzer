@@ -678,7 +678,102 @@ def create_app(config=None):
                     flash("Rejected. Nothing will be sent.", 'warning')
             except ApprovalError as exc:
                 flash(str(exc), 'danger')
-        return redirect(url_for('bot_approvals'))
+        nxt = request.form.get("next", "")
+        if nxt.startswith("/bot/") and "//" not in nxt:
+            return redirect(nxt)
+        return redirect(url_for("bot_approvals"))
+
+    @app.route("/bot/rebuild", methods=["GET", "POST"])
+    def bot_rebuild():
+        """Rebuild after a margin call: targets -> a staged plan, approve each item."""
+        from datetime import datetime as _dt, timezone as _tz
+        from src.trading import rebuild as rb
+        from src.trading.domain import StockContract
+
+        if request.method == "POST":
+            if not csrf_ok():
+                flash("Form expired; please try again.", "danger")
+                return redirect(url_for("bot_rebuild"))
+            try:
+                targets = rb.parse_targets(request.form.get("targets", ""))
+            except ValueError as exc:
+                flash(f"Targets: {exc}", "danger")
+                return redirect(url_for("bot_rebuild"))
+            now = _dt.now(_tz.utc)
+            with Journal(journal_path()) as journal:
+                journal.append(
+                    "rebuild_requests",
+                    {
+                        "request_id": rb.new_plan_id("web", now),
+                        "targets": targets,
+                        "options": request.form.get("options") == "on",
+                        "by": "web-ui",
+                        "requested_at": now.isoformat(),
+                    },
+                )
+            flash(
+                "Plan requested. The engine builds it on its next pass in market "
+                "hours (within 5 minutes) and then asks you to approve each item.",
+                "success",
+            )
+            return redirect(url_for("bot_rebuild"))
+
+        account = positions = req = plan = None
+        items = []
+        if os.path.exists(journal_path()):
+            with Journal(journal_path()) as journal:
+                rec = journal.latest("account_snapshot")
+                account = rec.data if rec else None
+                rec = journal.latest("positions_snapshot")
+                positions = list(rec.data) if rec else []
+                rec = journal.latest("rebuild_requests")
+                req = rec.data if rec else None
+                rec = journal.latest("rebuild_plans")
+                plan = rec.data if rec else None
+                if plan is not None:
+                    queue = ApprovalQueue(journal)
+                    for it in plan.get("intents", []):
+                        filled = sum(
+                            f.data.quantity
+                            for f in journal.read("fills", key=it.intent_id)
+                        )
+                        status = queue.status(it.intent_id).value
+                        items.append({"intent": it, "status": status, "filled": filled})
+        stocks = [
+            p
+            for p in (positions or [])
+            if isinstance(p.contract, StockContract) and p.quantity > 0
+        ]
+        stock_value = sum(p.quantity * (p.market_price or p.avg_cost) for p in stocks)
+        last_targets = (req or {}).get("targets") or {}
+        if last_targets:
+            default_targets = ", ".join(
+                f"{k}={v * 100:g}%" for k, v in last_targets.items()
+            )
+        elif stocks and stock_value > 0:
+            default_targets = ", ".join(
+                f"{p.contract.symbol}={p.quantity * (p.market_price or p.avg_cost) / stock_value * 100:.0f}%"
+                for p in stocks
+            )
+        else:
+            default_targets = "SPY=50%, QQQM=50%"
+        waiting = bool(
+            req and (plan is None or plan.get("request_id") != req.get("request_id"))
+        )
+        return render_template(
+            "bot_rebuild.html",
+            account=account,
+            stocks=stocks,
+            stock_value=stock_value,
+            req=req,
+            plan=plan,
+            items=items,
+            waiting=waiting,
+            default_targets=default_targets,
+            config=load_trading_config(),
+            portfolios=app.portfolios,
+            portfolio_filter=session.get("portfolio_filter", "all"),
+        )
 
     @app.route('/bot/opportunities')
     def bot_opportunities():

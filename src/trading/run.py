@@ -27,6 +27,9 @@ from src.trading.risk.budget import BudgetTracker
 from src.trading import guard as assignment_guard
 from src.trading import rolls
 from src.trading import spreads
+from src.trading import rebuild
+from src.trading.scanner import ScanResult
+from dataclasses import replace
 from src.trading.assignments import handle_assignment
 from src.trading import margin_restoration
 from src.trading.approvals import ApprovalQueue
@@ -394,6 +397,7 @@ async def _cycle(
                 snap,
                 notifier,
                 entry_ctx if scan else None,
+                rebuild_ctx=entry_ctx,
             )
         if jobs is not None and sched.EXPIRY_SWEEP in jobs:
             _expiry_sweep(positions, journal, notifier)
@@ -593,7 +597,15 @@ def _done(journal, intent_id: str) -> bool:
 
 
 async def _act(
-    executor, journal, config, margin, positions, snap, notifier, entry_ctx=None
+    executor,
+    journal,
+    config,
+    margin,
+    positions,
+    snap,
+    notifier,
+    entry_ctx=None,
+    rebuild_ctx=None,
 ) -> None:
     """Act on this cycle's findings, through the mode policy (T28)."""
     if snap is None:
@@ -693,6 +705,12 @@ async def _act(
             executor, journal, config, margin, positions, snap, entry_ctx, today
         )
 
+    # 6. The owner's rebuild plan: build it on request, then submit its items;
+    #    each one waits for the owner's approval (rebuild.py).
+    await _rebuild(
+        executor, journal, config, margin, positions, snap, rebuild_ctx, today
+    )
+
 
 async def _enter(
     executor, journal, config, margin, positions, snap, ctx, today
@@ -721,23 +739,7 @@ async def _enter(
     ):
         return
     ctx.last_scan = now
-    if ctx.history is None:
-        cache = os.path.join(
-            os.environ.get("TRADING_CACHE_DIR", "data/trading/cache"), "history"
-        )
-        ctx.history = HistoryStore(executor.broker, cache)
-    result = await run_scan(
-        executor.broker,
-        ctx.history,
-        positions,
-        snap,
-        config,
-        today,
-        events=ctx.events,
-        journal=journal,
-        tracker=ctx.tracker,
-        regime=budget.get("regime", "unknown"),
-    )
+    result = await _scan(executor, journal, config, positions, snap, ctx, budget, today)
     intents = entry_rules.entry_intents(
         result,
         budget,
@@ -757,6 +759,122 @@ async def _enter(
     for intent in intents:
         journal.append("intents", intent, key=intent.intent_id)
         await executor.submit(intent)
+
+
+async def _scan(executor, journal, config, positions, snap, ctx, budget, today):
+    if ctx.history is None:
+        cache = os.path.join(
+            os.environ.get("TRADING_CACHE_DIR", "data/trading/cache"), "history"
+        )
+        ctx.history = HistoryStore(executor.broker, cache)
+    return await run_scan(
+        executor.broker,
+        ctx.history,
+        positions,
+        snap,
+        config,
+        today,
+        events=ctx.events,
+        journal=journal,
+        tracker=ctx.tracker,
+        regime=budget.get("regime", "unknown"),
+    )
+
+
+async def _rebuild(executor, journal, config, margin, positions, snap, ctx, today):
+    """Build the requested rebuild plan once, then submit its open items."""
+    req = journal.latest("rebuild_requests")
+    plan_rec = journal.latest("rebuild_plans")
+    if req is not None and (
+        plan_rec is None
+        or plan_rec.data.get("request_id") != req.data.get("request_id")
+    ):
+        try:
+            plan = await _build_rebuild_plan(
+                executor, journal, config, margin, positions, snap, ctx, today, req.data
+            )
+        except BrokerError as exc:
+            log.warning("rebuild plan: market data unavailable (%s); retrying", exc)
+            return
+        journal.append("rebuild_plans", plan.to_dict(), key=plan.plan_id)
+        log.info("REBUILD plan %s: %d items", plan.plan_id, len(plan.intents))
+        plan_rec = journal.latest("rebuild_plans")
+    if plan_rec is None:
+        return
+    for intent in plan_rec.data.get("intents", []):
+        if not _done(journal, intent.intent_id):
+            await executor.submit(intent)
+
+
+async def _build_rebuild_plan(
+    executor, journal, config, margin, positions, snap, ctx, today, request
+):
+    targets = {k.upper(): float(v) for k, v in request.get("targets", {}).items()}
+    now = utcnow()
+    plan_id = rebuild.new_plan_id(request.get("request_id", ""), now)
+    budget = ctx.budget.last if ctx is not None and ctx.budget is not None else None
+    regime = (budget or {}).get("regime", "unknown")
+    stock_quotes = await executor.quotes([StockContract(s) for s in targets])
+    prices = {}
+    for key, q in stock_quotes.items():
+        px = q.mid if q.mid is not None else q.last
+        if px:
+            prices[q.contract.symbol] = px
+    options = [p.contract for p in positions if isinstance(p.contract, OptionContract)]
+    quotes = await executor.quotes(options) if options else {}
+    steps, fit, notes = rebuild.plan_shares(
+        positions, quotes, snap, prices, targets, config, regime, today
+    )
+    plan = rebuild.RebuildPlan(
+        plan_id,
+        request.get("request_id", ""),
+        now,
+        targets,
+        snap.net_liquidation,
+        snap.excess_liquidity,
+        snap.cushion,
+        sum(
+            p.quantity * (prices.get(p.contract.symbol) or p.market_price or 0.0)
+            for p in positions
+            if isinstance(p.contract, StockContract) and p.quantity > 0
+        ),
+        regime,
+        steps,
+        fit,
+        rebuild.stock_intents(plan_id, steps, config, now),
+        notes,
+    )
+    reading = margin.last
+    if not request.get("options", True):
+        plan.notes.append("Options not requested in this plan.")
+    elif ctx is None:
+        plan.notes.append("Options skipped: the scanner isn't available in this run.")
+    elif reading is None or not reading.allows_opening:
+        plan.notes.append("Options skipped: margin isn't in the normal state.")
+    else:
+        result = await _scan(
+            executor, journal, config, positions, snap, ctx, budget, today
+        )
+        forced = ScanResult(
+            [replace(c, fire=True) for c in result.candidates], result.rejected
+        )
+        opts = entry_rules.entry_intents(
+            forced,
+            budget,
+            config,
+            journal,
+            today,
+            positions=positions,
+            nlv=snap.net_liquidation,
+            excess_liquidity=snap.excess_liquidity,
+        )
+        plan.intents += rebuild.option_intents(plan_id, opts, config)
+        if not opts:
+            plan.notes.append(
+                "No option trade passes the filters right now (premium, liquidity, "
+                "risk budget or VIX regime)."
+            )
+    return plan
 
 
 _last_guard: list = []
