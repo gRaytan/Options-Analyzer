@@ -34,6 +34,11 @@ def test_ladder_steps_and_cap():
     # Selling at bid 1.00 / ask 1.10: best -1.10, natural -1.00.
     assert ladder(-1.10, -1.00) == pytest.approx([-1.05, -1.04, -1.03, -1.02, -1.01])
     assert ladder(-1.10, -1.00, emergency=True)[-1] == pytest.approx(-1.00)
+    # Opening credit: one rung 10% of the spread better than the mid first.
+    assert ladder(-1.10, -1.00, improve=0.10)[:2] == pytest.approx([-1.06, -1.05])
+    assert ladder(-1.10, -1.00, emergency=True, improve=0.10)[0] == pytest.approx(
+        -1.05
+    )  # never in an emergency
 
 
 def test_tick_and_rounding():
@@ -98,7 +103,7 @@ def test_fills_when_market_comes_to_us_and_journals_everything(tmp_path):
     om = OrderManager(broker, journal, sleep=clock)
     res = run(om.execute(intent(), quotes_from(broker), approve))
     assert res.status is ExecStatus.FILLED and res.filled == 2
-    assert res.prices[0] == -1.05
+    assert res.prices[0] == -1.06  # an opening sale starts above the mid
     assert journal.count("intents") == 1 and journal.count("orders") == 1
     assert journal.count("risk_checks") == 1 and journal.count("fills") == 1
     events = [r.data["event"] for r in journal.read("order_events")]
@@ -113,8 +118,8 @@ def test_unfilled_after_ladder_is_cancelled(tmp_path):
     res = run(om.execute(intent(), quotes_from(broker), approve))
     assert res.status is ExecStatus.UNFILLED
     assert res.prices == pytest.approx(
-        [-1.05, -1.04, -1.03, -1.02, -1.01]
-    )  # never past -1.01
+        [-1.06, -1.05, -1.04, -1.03, -1.02, -1.01]
+    )  # above the mid first, never past -1.01
     assert run(broker.open_orders()) == []
     assert om.failed_cycles["intent-1"] == 1
 
@@ -217,3 +222,15 @@ def test_step_override_for_qqqm(tmp_path):
         )
     )
     assert waits and set(waits) == {300}
+
+
+def test_closing_buy_starts_at_the_mid(tmp_path):
+    """Only opening credit orders start above the mid; a buy-back starts at it."""
+    broker, journal = make_env(tmp_path)
+    broker.set_position(PUT, -2, 1.0)
+    om = OrderManager(broker, journal, sleep=Clock(broker))
+    close = intent(
+        (OrderLeg(PUT, Action.BUY, 2),), iid="close-1", kind=IntentKind.CLOSE
+    )
+    res = run(om.execute(close, quotes_from(broker), approve))
+    assert res.prices[0] == pytest.approx(1.05)
