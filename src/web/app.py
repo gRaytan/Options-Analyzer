@@ -1,6 +1,6 @@
 """Flask web application for Options Analyzer."""
 import os
-from datetime import datetime
+from datetime import date, datetime
 import secrets
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, session
 from werkzeug.utils import secure_filename
@@ -134,6 +134,23 @@ def create_app(config=None):
                     account_names.append(p.account_name)
 
             combined.account_name = " + ".join(account_names) if account_names else "Combined"
+
+            # Margin figures (Cash Report): the latest statement of each account,
+            # summed across accounts. Several statements of one account are
+            # different dates of the same money, so they aren't added up.
+            latest = {}
+            for pid, p in app.portfolios.items():
+                acct = p.account_id or pid
+                cur = latest.get(acct)
+                if cur is None or (p.period_end or date.min) >= (cur.period_end or date.min):
+                    latest[acct] = p
+            for field_name in ("net_liquidation_value", "excess_liquidity", "maintenance_margin",
+                               "initial_margin", "available_funds", "buying_power", "sma",
+                               "gross_position_value"):
+                setattr(combined, field_name,
+                        sum(getattr(p, field_name, 0.0) or 0.0 for p in latest.values()))
+            if len(latest) == 1:
+                combined.account_id = next(iter(latest))
 
             # Recalculate for combined
             if combined.options:

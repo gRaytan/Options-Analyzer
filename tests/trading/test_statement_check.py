@@ -179,4 +179,34 @@ def test_page_with_a_statement(tmp_path, monkeypatch):
     html = c.get(
         "/bot/check?targets=SPY%3D40%25%2C+BRK.B%3D12%25&regime=elevated"
     ).get_data(as_text=True)
-    assert "Rebuild preview" in html and "BRK B" in html and "Preview only" in html
+    # Cushion 39% in this statement: the preview says to restore it before buying.
+    assert "Rebuild preview" in html and "Restore the margin cushion" in html
+    assert "$900,000" in html  # the statement's net liquidation, not $0
+
+
+def test_combined_view_keeps_margin_figures(tmp_path, monkeypatch):
+    """'All Combined' (the default filter): margin numbers come from the latest
+    statement of each account, not summed across months of the same account."""
+    from src.web.app import create_app
+
+    monkeypatch.setenv("TRADING_JOURNAL", str(tmp_path / "j.db"))
+    app = create_app()
+    older = portfolio()
+    older.period_end = date(2026, 10, 31)
+    older.net_liquidation_value = 1_100_000.0
+    app.portfolios = {"oct": older, "nov": portfolio()}
+    with app.test_request_context("/"):
+        combined, _ = app.get_active_portfolio()
+    assert combined.net_liquidation_value == 900_000.0  # November, not 2.0M
+    assert (
+        combined.excess_liquidity == 350_000.0
+        and combined.maintenance_margin == 400_000.0
+    )
+    other = portfolio()
+    other.account_id = "U7654321"
+    app.portfolios = {"a": portfolio(), "b": other}
+    with app.test_request_context("/"):
+        combined, _ = app.get_active_portfolio()
+    assert combined.net_liquidation_value == 1_800_000.0  # two accounts add up
+    html = app.test_client().get("/bot/check").get_data(as_text=True)
+    assert "$1,800,000" in html
