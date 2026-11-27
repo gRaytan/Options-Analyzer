@@ -29,6 +29,8 @@ from src.trading import guard as assignment_guard
 from src.trading import rolls
 from src.trading import spreads
 from src.trading import rebuild
+from src.trading import hedge
+from src.trading.domain import HistoryKind
 from src.trading.scanner import ScanResult, report_strategies
 from dataclasses import replace
 from src.trading.assignments import handle_assignment
@@ -746,6 +748,10 @@ async def _act(
         executor, journal, config, margin, positions, snap, rebuild_ctx, today
     )
 
+    # 7. The crash hedge (collar): planned once a day, each order approved by you.
+    if config.enabled_strategies[StrategyName.TAIL_HEDGE].open:
+        await _hedge(executor, journal, config, positions, snap, today)
+
 
 async def _opportunities(executor, journal, config, positions, snap, ctx, today):
     """Scan the real market for the report (Opportunities page, daily digest)."""
@@ -898,6 +904,89 @@ async def _scan(
         tracker=ctx.tracker,
         regime=(budget or {}).get("regime", "unknown"),
         strategies=strategies,
+    )
+
+
+def _todays_hedge(journal, today):
+    for rec in reversed(journal.read("job_runs", key="hedge")):
+        if rec.data.get("date") == today.isoformat():
+            return rec.data
+    return None
+
+
+async def _hedge(executor, journal, config, positions, snap, today):
+    """Plan today's hedge orders once, then submit them (each waits for approval)."""
+    plan_data = _todays_hedge(journal, today)
+    if plan_data is None:
+        try:
+            result = await _build_hedge(executor, config, positions, snap, today)
+        except BrokerError as exc:
+            log.warning("hedge: market data unavailable (%s); retrying", exc)
+            return
+        plan_data = {**result.to_dict(), "date": today.isoformat()}
+        journal.append("job_runs", plan_data, key="hedge")
+        log.info(
+            "HEDGE coverage %.0f%%: %d orders planned",
+            result.need.coverage * 100,
+            len(result.intents),
+        )
+    for intent in plan_data.get("intents", []):
+        if not _done(journal, intent.intent_id):
+            await executor.submit(intent)
+
+
+async def _build_hedge(executor, config, positions, snap, today):
+    h = config.tail_hedge
+    broker = executor.broker
+    bars = await broker.daily_history(h.put_root, HistoryKind.PRICE, 10)
+    index_price = bars[-1].close if bars else 0.0
+    chains = await broker.option_chain(h.put_root)
+    chain = next(
+        (c for c in chains if c.trading_class.upper() == h.put_root.upper()),
+        chains[0] if chains else None,
+    )
+    to_quote = []
+    put = hedge.pick_put(chain, index_price, today, config) if chain else None
+    if put is not None:
+        to_quote.append(put)
+    _, roll = hedge.hedge_puts(positions, config, today)
+    to_quote += [p.contract for p in roll]
+    put_quotes = await executor.quotes(to_quote) if to_quote else {}
+    calls = {}
+    if h.style == "collar":
+        held = {
+            p.contract.symbol
+            for p in positions
+            if isinstance(p.contract, StockContract) and p.quantity > 0
+        }
+        wanted = [s_ for s_ in h.call_symbols if s_ in held]
+        # Strikes are set from the live price (never the shares' cost).
+        live = (
+            await executor.quotes([StockContract(s_) for s_ in wanted])
+            if wanted
+            else {}
+        )
+        prices = {}
+        for q in live.values():
+            px = q.mid if q.mid is not None else q.last
+            if px:
+                prices[q.contract.symbol] = px
+        for sym in h.call_symbols:
+            if (
+                sym not in prices
+                or hedge.uncovered_call_lots(positions, sym, h.call_coverage) <= 0
+            ):
+                continue
+            sym_chains = await broker.option_chain(sym)
+            if not sym_chains:
+                continue
+            call = hedge.pick_call(sym_chains[0], sym, prices[sym], today, config)
+            if call is None:
+                continue
+            q = (await executor.quotes([call])).get(call.key)
+            calls[sym] = (call, q)
+    return hedge.plan(
+        positions, snap, config, index_price, chain, put_quotes, calls, today, utcnow()
     )
 
 

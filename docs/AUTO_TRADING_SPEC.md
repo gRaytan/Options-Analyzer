@@ -368,10 +368,23 @@ assigned, but the guard still manages them (expiry settlement and loss control).
 
 **If a single-stock assignment still happens:** a put assignment → sell the shares at the next open; a call assignment → buy the shares back at the next open (R8). Alert immediately, and log it on the chain.
 
-### 5.12 Tail hedge
+### 5.12 Crash hedge (collar)
+
+Owner's goal (Nov 2026): **no margin call in a 20% crash**. Revised from a
+premium-funded put budget to a collar (`src/trading/hedge.py`, config
+`tail_hedge`):
 
 | Item | Default |
 |---|---|
+| Puts | XSP, **10% OTM**, 120–240 DTE (nearest to ~6 months); enough to cover **100% of the beta-weighted stock exposure** (NBIS 2.5×, QQQ/QQQM 1.2×) |
+| Calls (collar) | Covered calls **8% OTM**, same horizon, on **half** the SPY / QQQM / QQQ shares; their credit pays for most of the puts. Gains above +8% are capped on that half. `style: "puts"` buys the puts only |
+| Size limit | Net cost of a plan ≤ 2% of NLV; at most 20 XSP contracts per order |
+| Roll | Puts with ≤ 60 DTE stop counting: new ones are bought, the old ones sold for their remaining value |
+| Approval | **Every order waits for the owner's approval**, asked once a day; then the risk gate and IB |
+| In the stress test | Counted: in a −20% crash (1 month later, IV up) the puts gain ≈ $150k on a $1M account at ≈ $6k net cost per 6 months (estimate at VIX 26.6) |
+| Margin restoration | **Never closed** by §6.5 (it only buys back short options) |
+
+---|---|
 | Instrument | SPY puts (or XSP / SPXW puts), **10–15% OTM**, 60–120 DTE |
 | Budget | **5–10% of premium collected** in the trailing month, bought monthly in one order |
 | Roll | When DTE < 30, or when the hedge has gained ≥ 3× its cost (take part of the profit, then re-strike) |

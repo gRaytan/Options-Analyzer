@@ -296,19 +296,35 @@ class RegimeConfig(_Strict):
 
 
 class TailHedgeConfig(_Strict):
-    underlying: str = "SPY"
-    otm: Tuple[float, float] = (0.10, 0.15)
-    dte: Tuple[int, int] = (60, 120)
-    budget_pct_premium: Tuple[float, float] = (0.05, 0.10)
-    roll_dte: int = Field(default=30, gt=0)
-    take_profit_x: float = Field(default=3.0, gt=1.0)
+    """Crash hedge (hedge.py): a collar by default.
 
-    @field_validator("otm", "budget_pct_premium")
+    Long XSP puts ``put_otm`` below the index, ``put_dte`` days out, sized to
+    ``coverage`` x the beta-weighted stock exposure; paid for by calls
+    ``call_otm`` above on ``call_coverage`` of the shares in ``call_symbols``
+    (``style: "puts"`` buys the puts only). Rolled at ``roll_dte``. Every
+    order waits for the owner's approval.
+    """
+
+    style: str = "collar"  # collar | puts
+    put_root: str = "XSP"
+    put_otm: float = Field(default=0.10, gt=0.0, lt=0.5)
+    put_dte: Tuple[int, int] = (120, 240)
+    coverage: float = Field(default=1.0, gt=0.0, le=1.5)
+    call_otm: float = Field(default=0.08, gt=0.0, lt=0.5)
+    call_coverage: float = Field(default=0.5, ge=0.0, le=1.0)
+    call_symbols: List[str] = Field(default_factory=lambda: ["SPY", "QQQM", "QQQ"])
+    roll_dte: int = Field(default=60, gt=0)
+    min_shortfall: float = Field(default=0.10, ge=0.0, le=1.0)  # of the target
+    max_debit_pct_nlv: float = Field(default=0.02, gt=0.0, le=0.2)  # per plan
+
+    @field_validator("style")
     @classmethod
-    def _fraction_ranges(cls, v):
-        return _check_range(v)
+    def _style(cls, v):
+        if v not in ("collar", "puts"):
+            raise ValueError("style must be collar or puts")
+        return v
 
-    @field_validator("dte")
+    @field_validator("put_dte")
     @classmethod
     def _dte_range(cls, v):
         if not 0 < v[0] <= v[1]:

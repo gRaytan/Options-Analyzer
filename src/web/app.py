@@ -658,8 +658,14 @@ def create_app(config=None):
     def bot():
         """Trading bot status (read-only; data written by the engine)."""
         config, status = bot_status()
+        hedge_plan = None
+        if os.path.exists(journal_path()):
+            with Journal(journal_path()) as journal:
+                rec = journal.latest("job_runs", key="hedge")
+                hedge_plan = rec.data if rec else None
         return render_template('bot_status.html',
                              status=status,
+                             hedge=hedge_plan,
                              config=config,
                              floor=config.margin_floor,
                              portfolios=app.portfolios,
