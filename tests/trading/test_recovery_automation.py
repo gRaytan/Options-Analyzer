@@ -116,3 +116,22 @@ def test_breach_without_auto_alerts_and_keeps_the_option(tmp_path, monkeypatch):
 def test_breach_with_auto_buys_back(tmp_path, monkeypatch):
     positions, _ = _breach(tmp_path, monkeypatch, auto=True)
     assert positions == []
+
+
+def test_stress_gate_lets_covered_calls_through_a_failing_account():
+    """The account fails the crash test (naked puts): calls still pass, puts don't."""
+    from datetime import date
+
+    from src.trading.domain import AccountSnapshot
+    from src.trading.risk.stress import stress_checks
+    from tests.trading.test_limits import NOW
+
+    acct = AccountSnapshot("DU1", NOW, 400_000, 48_000, 300_000, 352_000, 40_000)
+    ex = exposures_from(HOLDINGS + [Position(xsp_put(), -30, 3.0)], QUOTES)
+    today = date(2026, 11, 23)
+    call = stress_checks(intent(SPY_CALL, qty=1), ex, QUOTES, acct, CONFIG, today)
+    assert call.approved, call.summary()
+    put = stress_checks(intent(xsp_put()), ex, QUOTES, acct, CONFIG, today)
+    assert {c.name for c in put.failures} >= {"stress_budget", "stress_el"}
+    too_many = stress_checks(intent(SPY_CALL, qty=5), ex, QUOTES, acct, CONFIG, today)
+    assert not too_many.approved  # 500 calls on 400 shares: not covered

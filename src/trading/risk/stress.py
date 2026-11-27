@@ -42,7 +42,12 @@ from src.trading.domain import (
     TradeIntent,
 )
 from src.trading.risk.checks import CheckResult, GateDecision
-from src.trading.risk.limits import Exposure, apply_intent, pair_put_spreads
+from src.trading.risk.limits import (
+    Exposure,
+    apply_intent,
+    fully_covered_calls,
+    pair_put_spreads,
+)
 from src.trading.risk.margin_type import reg_t_short_option_margin
 
 RATE = 0.04
@@ -225,6 +230,14 @@ def stress_checks(
     if intent is not None and intent.risk_reducing:
         return GateDecision(
             (CheckResult("stress", True, "risk-reducing: stress checks skipped"),)
+        )
+    if intent is not None and fully_covered_calls(intent, exposures):
+        # Shares cover every call: a crash makes the short calls *gain*, and a
+        # rally is capped by the shares. The trade can't raise any crash loss,
+        # so the account's existing book (which may fail these tests during a
+        # recovery) must not block it.
+        return GateDecision(
+            (CheckResult("stress", True, "covered call: can't add crash loss"),)
         )
     after = (
         apply_intent(list(exposures), intent, quotes)
