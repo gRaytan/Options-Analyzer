@@ -34,6 +34,7 @@ from src.trading import derisk
 from src.trading import external_calls as xcalls
 from src.trading import spikes as spikes_mod
 from src.trading import wings
+from src.trading import buy_ideas
 from src.trading.indicators import atr
 from src.trading.domain import HistoryKind
 from src.trading.scanner import ScanResult, report_strategies, uncovered_lots
@@ -52,7 +53,13 @@ from src.trading.tracker import Tracker
 from src.trading.config import StrategyName
 from src.trading.broker.ib_adapter import is_paper_account
 from src.trading.calendars import EventCalendar
-from src.trading.domain import OptionContract, StockContract
+from src.trading.domain import (
+    ExerciseStyle,
+    OptionContract,
+    Position,
+    Right,
+    StockContract,
+)
 from src.trading.status import write_heartbeat
 from src.trading import scheduler as sched
 from src.trading.calendars import MarketCalendar
@@ -1027,7 +1034,165 @@ async def _opportunities(executor, journal, config, positions, snap, ctx, today)
         len(result.candidates),
         len(result.ready()),
     )
+    try:
+        await _buy_ideas(executor, journal, config, positions, snap, ctx, today)
+    except BrokerError as exc:
+        log.warning("buy ideas: market data unavailable (%s)", exc)
     return result
+
+
+async def _buy_ideas(executor, journal, config, positions, snap, ctx, today):
+    """Once a day: stocks and options worth buying, sized to the account (report only)."""
+    if any(
+        r.data.get("date") == today.isoformat()
+        for r in journal.read("job_runs", key="buy_ideas")
+    ):
+        return None
+    from src.trading import (
+        indicators as ind_mod,
+    )  # pylint: disable=import-outside-toplevel
+    from src.trading.risk.stress import (  # pylint: disable=import-outside-toplevel
+        StressModel,
+        betas_from,
+        crash_scenario,
+    )
+    from src.trading.risk.limits import (  # pylint: disable=import-outside-toplevel
+        exposures_from,
+    )
+
+    if ctx.history is None:
+        cache = os.path.join(
+            os.environ.get("TRADING_CACHE_DIR", "data/trading/cache"), "history"
+        )
+        ctx.history = HistoryStore(executor.broker, cache)
+    held = {
+        p.contract.symbol
+        for p in positions
+        if isinstance(p.contract, StockContract) and p.quantity > 0
+    }
+    roots = {"XSP", "SPX", "SPXW"}
+    names = sorted((set(config.watchlist) | held) - roots)
+    opt_quotes = {}
+    try:
+        shorts = [
+            p.contract for p in positions if isinstance(p.contract, OptionContract)
+        ]
+        opt_quotes = await executor.quotes(shorts) if shorts else {}
+    except BrokerError:
+        pass
+    ideas = []
+    for sym in names:
+        bars = await ctx.history.daily(sym, HistoryKind.PRICE, 365)
+        ivs = [
+            b.close for b in await ctx.history.daily(sym, HistoryKind.IMPLIED_VOL, 365)
+        ]
+        ind = ind_mod.compute(bars, ivs)
+        why = buy_ideas.signals(bars, ind)
+        if not why:
+            continue
+        price = bars[-1].close
+        ideas.append(
+            buy_ideas.size_shares(
+                sym, price, positions, opt_quotes, snap, config, today, why
+            )
+        )
+        if (
+            ind is not None
+            and ind.iv_rank is not None
+            and ind.iv_rank <= buy_ideas.CALL_IVR_MAX
+        ):
+            chains = await executor.broker.option_chain(sym)
+            lo, hi = buy_ideas.CALL_DTE
+            calls = [
+                xcalls.call_contract(sym, e, k)
+                for ch in chains[:1]
+                for e in [x for x in ch.expiries if lo <= (x - today).days <= hi][:1]
+                for k in [k for k in ch.strikes if 0.75 * price <= k <= 0.95 * price][
+                    ::2
+                ][:8]
+            ]
+            cq = list((await executor.quotes(calls)).values()) if calls else []
+            idea = buy_ideas.long_call(sym, ind, cq, snap, config, why)
+            if idea is not None:
+                ideas.append(idea)
+    # Cheap crash protection on the index.
+    root = config.entry.index_scan_root
+    try:
+        bars = await ctx.history.daily(root, HistoryKind.PRICE, 365)
+        ivs = [
+            b.close for b in await ctx.history.daily(root, HistoryKind.IMPLIED_VOL, 365)
+        ]
+        ind = ind_mod.compute(bars, ivs)
+        if (
+            bars
+            and ind is not None
+            and ind.iv_rank is not None
+            and ind.iv_rank <= buy_ideas.HEDGE_IVR_MAX
+        ):
+            price = bars[-1].close
+            lo, hi = buy_ideas.HEDGE_DTE
+            chains = await executor.broker.option_chain(root)
+            ch = chains[0] if chains else None
+            exps = [
+                x for x in (ch.expiries if ch else ()) if lo <= (x - today).days <= hi
+            ]
+            if ch and exps:
+                k = min(
+                    ch.strikes, key=lambda s: abs(s - price * (1 - buy_ideas.HEDGE_OTM))
+                )
+                put = OptionContract(
+                    root,
+                    exps[0],
+                    float(k),
+                    Right.PUT,
+                    style=ExerciseStyle.EUROPEAN,
+                    cash_settled=True,
+                )
+                pq = (await executor.quotes([put])).get(put.key)
+                if pq is not None and pq.ask:
+                    quotes = {**opt_quotes, put.key: pq}
+                    scn = crash_scenario(config)
+
+                    def crash_el(extra):
+                        model = StressModel(
+                            exposures_from(list(positions) + extra, quotes),
+                            quotes,
+                            snap,
+                            today,
+                            betas_from(config),
+                        )
+                        return model.run(scn).excess_liquidity_after
+
+                    before = crash_el([])
+                    after = crash_el([Position(put, 1, pq.ask, pq.ask)]) - pq.ask * 100
+                    idea = buy_ideas.protection(ind.iv_rank, pq, before, after)
+                    if idea is not None:
+                        ideas.append(idea)
+    except BrokerError as exc:
+        log.warning("buy ideas: protection quote unavailable (%s)", exc)
+    data = {
+        "job": "buy_ideas",
+        "date": today.isoformat(),
+        "ideas": [i.to_dict() for i in ideas],
+    }
+    journal.append("job_runs", data, key="buy_ideas")
+    return data
+
+
+def _buy_ideas_lines(journal, today: str) -> str:
+    rec = journal.latest("job_runs", key="buy_ideas")
+    if rec is None or rec.data.get("date") != today:
+        return ""
+    ideas = [i for i in rec.data.get("ideas", []) if i.get("fits")]
+    if not ideas:
+        return ""
+    lines = [
+        f"BUY? {i['kind'].replace('_', ' ')}: {i['symbol']}"
+        + (f" {i['shares']} sh" if i.get("shares") else f" {i.get('key', '')}")
+        + f", ${i.get('cost', 0):,.0f} ({i['reasons'][0]})"
+        for i in ideas[:3]
+    ]
+    return "\nBuy ideas (you decide):\n" + "\n".join(lines)
 
 
 def _opportunities_digest(journal, config, notifier) -> Optional[dict]:
@@ -1069,6 +1234,7 @@ def _opportunities_digest(journal, config, notifier) -> Optional[dict]:
                 if data.get("report_only")
                 else ""
             )
+            + _buy_ideas_lines(journal, today)
             + "\nDetails on the Opportunities page."
         )
     report = {"job": sched.OPPORTUNITIES, "date": today, "best": best}

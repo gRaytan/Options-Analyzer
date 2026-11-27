@@ -936,13 +936,16 @@ def create_app(config=None):
     @app.route('/bot/opportunities')
     def bot_opportunities():
         """Latest scanner results (T30) with timing (T31)."""
-        scan = None
+        scan, buys = None, None
         if os.path.exists(journal_path()):
             with Journal(journal_path()) as journal:
                 rec = journal.latest("scan_results")
                 if rec is not None:
                     scan = {"ts": rec.ts, **rec.data}
-        return render_template('bot_opportunities.html', scan=scan,
+                b = journal.latest("job_runs", key="buy_ideas")
+                if b is not None:
+                    buys = b.data
+        return render_template('bot_opportunities.html', scan=scan, buys=buys,
                                portfolios=app.portfolios,
                                portfolio_filter=session.get('portfolio_filter', 'all'))
 

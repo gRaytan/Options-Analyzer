@@ -77,4 +77,21 @@
 {% endif %}
 
 <script>setTimeout(function () { window.location.reload(); }, 60000);</script>
+
+<div class="card mb-4"><div class="card-header"><i class="bi bi-cart-plus me-2"></i>Buy ideas{% if buys %} <span class="small text-muted">({{ buys.date }}, report only: you decide)</span>{% endif %}</div>
+<div class="card-body p-0"><div class="table-responsive"><table class="table mb-0">
+    <thead><tr><th>Idea</th><th>Name</th><th>What</th><th class="text-end">Cost</th><th>Fits the account?</th><th>Why</th></tr></thead>
+    <tbody>
+    {% for i in (buys.ideas if buys else []) %}
+    <tr><td>{{ i.kind.replace('_', ' ') }}</td><td>{{ i.symbol }}</td>
+        <td class="text-nowrap small">{% if i.shares %}{{ i.shares }} shares{% elif i.key %}{{ i.key }}{% if i.delta is not none %} (Δ {{ "%.2f"|format(i.delta|abs) }}){% endif %}{% else %}—{% endif %}</td>
+        <td class="text-end">{% if i.cost %}${{ "{:,.0f}".format(i.cost) }}{% else %}—{% endif %}</td>
+        <td>{% if i.fits %}<span class="badge bg-success">yes</span>{% else %}<span class="badge bg-secondary">not yet</span>{% endif %} <span class="small text-muted">{{ i.note }}</span></td>
+        <td class="small">{{ i.reasons|join('; ') }}</td></tr>
+    {% else %}
+    <tr><td colspan="6" class="text-muted">{% if buys %}No name has a buy signal today (a dip in an uptrend, or 20%+ below its 52-week high).{% else %}Built once a day from real market data once the engine runs with IB.{% endif %}</td></tr>
+    {% endfor %}
+    </tbody>
+</table></div></div>
+<div class="card-footer small text-muted">Shares are sized to keep Excess Liquidity above the new-trade floor and the account through the crash test; buy them through the Rebuild page. A long call can lose at most its cost and can't cause a margin call.</div></div>
 {% endblock %}
