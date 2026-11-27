@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+
+{% block title %}De-risk Plan - Options Analyzer{% endblock %}
+
+{% macro money(v) %}{% if v is none %}—{% else %}${{ "{:,.0f}".format(v) }}{% endif %}{% endmacro %}
+
+{% block content %}
+<div class="page-header">
+    <h4><i class="bi bi-shield-minus"></i> De-risk Plan</h4>
+    <p class="subtitle">Buy back the short options that make a crash dangerous: naked calls first, then the short puts that remove the most exposure per dollar, until short-put exposure is within 50% of your account. Nothing is sent until you approve that item.</p>
+</div>
+
+<div class="card mb-4"><div class="card-body">
+    <form method="post" action="/bot/derisk" class="d-flex flex-wrap gap-3 align-items-center">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="form-check mb-0">
+            <input class="form-check-input" type="checkbox" name="penny_calls" id="pc" checked>
+            <label class="form-check-label small" for="pc">Also buy back calls worth $0.05 or less (frees shares for monthly covered calls)</label>
+        </div>
+        <button class="btn btn-primary btn-sm" type="submit"><i class="bi bi-magic me-1"></i>Build de-risk plan from live prices</button>
+    </form>
+    <p class="small text-muted mt-2 mb-0">Before IB is connected, the <a href="/bot/check">Crash check</a> page shows the same plan from your uploaded statement.</p>
+</div></div>
+
+{% if waiting %}
+<div class="alert alert-info"><i class="bi bi-hourglass-split me-1"></i>Requested {{ req.requested_at[:16].replace('T', ' ') }} UTC. The engine builds it on its next pass in market hours (within 5 minutes). Refresh this page.</div>
+{% endif %}
+
+{% if plan %}
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between"><span><i class="bi bi-list-check me-2"></i>Plan {{ plan.plan_id }}</span>
+        <span class="small text-muted">Built {{ plan.created_at[:16].replace('T', ' ') }} UTC</span></div>
+    <div class="card-body small">
+        Short-put exposure <b>{{ money(plan.put_exposure_before) }} → {{ money(plan.put_exposure_after) }}</b> (limit {{ money(plan.put_cap) }}, 50% of {{ money(plan.nlv) }}).
+        Cash needed ≈ {{ money(plan.cash_needed) }}; the account value only drops by the spread and fees, ≈ {{ money(plan.friction) }}.
+        {% for n in plan.notes %}<div class="text-warning">{{ n }}</div>{% endfor %}
+    </div>
+    <div class="card-body p-0"><div class="table-responsive"><table class="table mb-0">
+        <thead><tr><th>#</th><th>Buy to close</th><th class="text-end">Cost</th><th>Why</th><th>Status</th><th>Decide</th></tr></thead>
+        <tbody>
+        {% for row in items %}{% set it = row.intent %}{% set leg = it.legs[0] %}
+        <tr>
+            <td>{{ it.details.order }}</td>
+            <td class="text-nowrap">{{ leg.quantity }} × {{ leg.contract.key }}{% if it.details.optional %} <span class="badge bg-secondary">optional</span>{% endif %}</td>
+            <td class="text-end text-nowrap">≈ {{ money(it.details.est_cost) }}<div class="small text-muted">max ${{ "%.2f"|format(it.details.worst_price) }}</div></td>
+            <td class="small">{{ it.details.reason }}</td>
+            <td class="text-nowrap">
+                {% if row.filled %}<span class="badge bg-success">bought {{ row.filled }}</span>
+                {% elif row.status == 'approved' %}<span class="badge bg-success">approved: sending</span>
+                {% elif row.status == 'pending' %}<span class="badge bg-warning text-dark">waiting for you</span>
+                {% elif row.status in ('rejected', 'expired') %}<span class="badge bg-secondary">{{ row.status }}</span>
+                {% else %}<span class="badge bg-light text-dark">queued</span>{% endif %}
+            </td>
+            <td>{% if row.status == 'pending' and not row.filled %}
+                <form method="post" action="/bot/approvals/{{ it.intent_id }}" class="d-flex gap-1">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="next" value="/bot/derisk">
+                    <button class="btn btn-sm btn-success" name="decision" value="approve" type="submit">Approve</button>
+                    <button class="btn btn-sm btn-outline-danger" name="decision" value="reject" type="submit">Reject</button>
+                </form>{% else %}<span class="small text-muted">—</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table></div></div>
+</div>
+{% endif %}
+{% endblock %}

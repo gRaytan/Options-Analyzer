@@ -590,6 +590,11 @@
                 </a>
             </li>
             <li class="nav-item">
+                <a class="nav-link nav-link-sub {% if request.endpoint == 'bot_derisk' %}active{% endif %}" href="/bot/derisk">
+                    <i class="bi bi-shield-minus"></i> De-risk plan
+                </a>
+            </li>
+            <li class="nav-item">
                 <a class="nav-link nav-link-sub {% if request.endpoint == 'bot_rebuild' %}active{% endif %}" href="/bot/rebuild">
                     <i class="bi bi-bricks"></i> Rebuild plan
                 </a>

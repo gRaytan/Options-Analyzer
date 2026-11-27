@@ -45,6 +45,8 @@ TABLES: Sequence[str] = (
     "job_runs",
     "rebuild_requests",
     "rebuild_plans",
+    "derisk_requests",
+    "derisk_plans",
 )
 
 
@@ -82,6 +84,8 @@ MIGRATIONS: List[List[str]] = [
     _create_table("job_runs"),
     # v6: rebuild plans after a margin call (requests from the web UI, plans from the engine)
     _create_table("rebuild_requests") + _create_table("rebuild_plans"),
+    # v7: de-risk plans (requests from the web UI, plans from the engine)
+    _create_table("derisk_requests") + _create_table("derisk_plans"),
 ]
 
 
