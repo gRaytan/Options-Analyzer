@@ -51,6 +51,7 @@ from src.trading.domain import (
     OptionContract,
     Quote,
     Right,
+    utcnow,
 )
 
 SPX_FAMILY = {"SPY", "XSP", "SPX"}
@@ -270,7 +271,15 @@ class SyntheticMarket:
             float(bsm_vega(*args)),
             iv=iv,
         )
-        ts = datetime.combine(day, time(20, 0), tzinfo=timezone.utc)
+        # Stamped "now" on the engine's clock (the backtest sets it to the
+        # cycle time), so the risk gate sees a live quote in every season.
+        # A fixed 20:00 UTC stamp was 40 minutes stale in winter (EST).
+        now = utcnow()
+        ts = (
+            now
+            if now.date() == day
+            else datetime.combine(day, time(20, 0), tzinfo=timezone.utc)
+        )
         return Quote(contract, bid, ask, ts, underlying_price=und, greeks=greeks)
 
     def quotes(self, contracts: Iterable[OptionContract], day: date) -> List[Quote]:

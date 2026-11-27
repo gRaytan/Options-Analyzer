@@ -135,3 +135,13 @@ def test_stress_gate_lets_covered_calls_through_a_failing_account():
     assert {c.name for c in put.failures} >= {"stress_budget", "stress_el"}
     too_many = stress_checks(intent(SPY_CALL, qty=5), ex, QUOTES, acct, CONFIG, today)
     assert not too_many.approved  # 500 calls on 400 shares: not covered
+
+
+def test_put_caps_block_only_increases():
+    """Puts already over the caps (after margin calls) don't block a covered call."""
+    over = HOLDINGS + [Position(xsp_put(), -30, 3.0)]  # $1.8M of puts > $500k cap
+    c = ctx(over, el_after=450_000)
+    names = {x.name for x in gate_decision(intent(SPY_CALL, qty=1), c, CONFIG).failures}
+    assert not names & {"short_put_notional", "index_put_notional", "expiry_ladder"}
+    put = {x.name for x in gate_decision(intent(xsp_put()), c, CONFIG).failures}
+    assert {"short_put_notional", "index_put_notional", "expiry_ladder"} <= put
