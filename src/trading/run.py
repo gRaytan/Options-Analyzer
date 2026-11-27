@@ -33,6 +33,7 @@ from src.trading import hedge
 from src.trading import derisk
 from src.trading import external_calls as xcalls
 from src.trading import spikes as spikes_mod
+from src.trading import wings
 from src.trading.indicators import atr
 from src.trading.domain import HistoryKind
 from src.trading.scanner import ScanResult, report_strategies, uncovered_lots
@@ -881,6 +882,9 @@ async def _act(
                 f"buy {int(abs(c.position.quantity))} {c.position.contract.key}"
                 for c in plan.closes[:8]
             ]
+            await _buy_wings(
+                executor, journal, config, positions, quotes, snap, est, notifier
+            )
             _alert(
                 notifier,
                 "critical",
@@ -1071,6 +1075,76 @@ def _opportunities_digest(journal, config, notifier) -> Optional[dict]:
     journal.append("job_runs", report, key=sched.OPPORTUNITIES)
     _alert(notifier, "report", f"opps:{today}", f"Opportunities {today}", body)
     return report
+
+
+async def _buy_wings(executor, journal, config, positions, quotes, snap, est, notifier):
+    """Below the floor, without buy-backs: protective puts under naked short puts."""
+    floor = config.margin_floor
+    if not floor.wings:
+        return []
+    now = utcnow()
+    today = now.date().isoformat()
+    spent = sum(
+        float(r.data.details.get("cost", 0.0))
+        for r in journal.read("intents")
+        if getattr(r.data, "trigger", "") == "MARGIN_WING"
+        and r.data.created_at.date().isoformat() == today
+    )
+    budget = floor.wing_budget_pct_nlv * snap.net_liquidation - spent
+    need = floor.restore_target - est
+    if budget <= 0 or need <= 0:
+        return []
+    found = []
+    for pos, n in wings.naked_puts(positions, quotes):
+        c = pos.contract
+        sq = quotes.get(c.key)
+        if sq is None or sq.underlying_price is None:
+            continue
+        try:
+            chains = await executor.broker.option_chain(c.underlying)
+            strikes = sorted(
+                {
+                    k
+                    for ch in chains
+                    if c.expiry in ch.expiries
+                    and (ch.trading_class or c.underlying)
+                    == (c.trading_class or c.underlying)
+                    for k in ch.strikes
+                }
+            )
+            cands = [
+                wings.put_contract(c, k)
+                for k in wings.wing_strikes(c, sq.underlying_price, strikes)[-12:]
+            ]
+            wq = await executor.quotes(cands) if cands else {}
+        except BrokerError as exc:
+            log.warning("wings: %s unavailable (%s)", c.key, exc)
+            continue
+        w = wings.best_wing(pos, n, {**quotes, **wq}, cands)
+        if w is not None:
+            found.append(w)
+    chosen = wings.choose(found, need, budget)
+    if not chosen:
+        return []
+    sent = []
+    for intent in wings.intents(chosen, now):
+        res = await executor.submit(intent)  # journaled by the order manager
+        sent.append((intent, res))
+    lines = [
+        f"buy {w.contracts} {w.long.key} under {w.short.contract.key}: "
+        f"${w.cost:,.0f} frees ≈ ${w.freed:,.0f}"
+        for w in chosen
+    ]
+    _alert(
+        notifier,
+        "critical",
+        f"wings:{today}",
+        "Margin: protective puts (no buy-backs)",
+        "Below the floor: turning naked puts into spreads.\n"
+        + "\n".join(lines)
+        + f"\nNet Excess Liquidity gained ≈ ${sum(w.net for w in chosen):,.0f}.",
+    )
+    return sent
 
 
 async def _enter_covered_calls_only(
