@@ -123,7 +123,12 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("TRADING_HEARTBEAT", str(hb))
     app = create_app()
     app.config["TESTING"] = True
-    return app.test_client()
+    # The fixture's data is stamped NOW: read it at NOW, not at today's date.
+    from src.trading.domain import set_clock
+
+    set_clock(lambda: NOW)
+    yield app.test_client()
+    set_clock(None)
 
 
 def test_bot_page_renders(client):

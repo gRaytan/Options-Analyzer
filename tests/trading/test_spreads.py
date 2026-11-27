@@ -283,6 +283,10 @@ def test_engine_spread_round_trip_in_fading_vix(tmp_path, monkeypatch):
     """VIX spike fading -> spreads only: the bot opens a put spread as one combo,
     then closes both legs together (one combo) when the market drops: the guard's
     roll trigger closes a spread instead of rolling its short leg alone."""
+    # The fixture's quotes are stamped NOW: run the engine at NOW, not today.
+    from src.trading import domain
+
+    monkeypatch.setattr(domain, "_CLOCK_OVERRIDE", lambda: NOW)
     broker = FakeAdapter(account_id="DU1", read_only=False)
     broker.set_position(StockContract("SPY"), 400, 670.0)
     bars = series(650, 0.008)
