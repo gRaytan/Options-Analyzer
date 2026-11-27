@@ -158,6 +158,13 @@
             <div class="progress-bar {{ 'bg-danger' if b.over_budget else ('bg-warning' if pct > 80 else 'bg-success') }}" style="width: {{ [pct, 100] | min }}%"></div>
         </div>
         <div class="small text-muted mt-2">{{ b.regime_detail }}{% if b.budget == 0 %} · no new risk in this regime{% endif %}</div>
+        {% if b.drawdown is defined and b.drawdown is not none %}
+        <div class="small mt-2">Options drawdown: <b>{{ "%.1f"|format(b.drawdown * 100) }}%</b> of NLV below the best point
+            (options P&amp;L ${{ "{:,.0f}".format(b.options_pnl or 0) }}, best ${{ "{:,.0f}".format(b.options_peak or 0) }}) ·
+            {% if b.halted %}<span class="badge bg-danger">no new trades</span>{% elif b.reduced %}<span class="badge bg-warning text-dark">risk halved</span>{% else %}<span class="badge bg-success">normal</span>{% endif %}
+            <span class="text-muted">halves at {{ "%.0f"|format(config.risk.options_dd_reduce * 100) }}%, stops at {{ "%.0f"|format(config.risk.options_dd_halt * 100) }}%, normal again under {{ "%.0f"|format(config.risk.options_dd_recover * 100) }}%</span>
+        </div>
+        {% endif %}
         {% set c = b.crash %}{% include "_crash_test.html" %}
     </div>
 </div>

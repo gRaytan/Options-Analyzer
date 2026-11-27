@@ -6,9 +6,17 @@ options book uses: its loss in the budget scenario (-20%, IV +50%) against
 5 minutes. The result goes to the heartbeat (status page) and, when it
 changes meaningfully, to the journal's ``budget_snapshot`` table.
 
-Options-book drawdown (which halves the budget) needs options P&L history,
-which arrives with metrics (T40). Until then drawdown is reported as
-"not tracked" and treated as 0.
+**Options-book drawdown** (spec §6.4): the options book's P&L since the
+bot started (every option fill's cash flow, fees included, plus the current
+options at their mid) is tracked against its peak. The drop from the peak,
+as a share of NLV, halves the budget at ``options_dd_reduce`` (5%), stops new
+risk at ``options_dd_halt`` (8%), and returns to normal under
+``options_dd_recover`` (2%). The peak survives restarts (journaled with the
+budget snapshot).
+
+Limitation: an option that settles at expiry produces no fill, so its
+settlement isn't counted; the guards close or roll anything in the money
+before expiration day ends, which keeps this small.
 """
 
 from __future__ import annotations
@@ -45,6 +53,7 @@ class BudgetTracker:
         self.regime: Optional[Regime] = None
         self._regime_at: Optional[datetime] = None
         self.reduced = False
+        self.peak: Optional[float] = None  # options-book P&L peak ($)
         self.last: Optional[dict] = None
         self._journaled_at: Optional[datetime] = None
 
@@ -67,6 +76,28 @@ class BudgetTracker:
         self._regime_at = now
         return self.regime
 
+    def _options_pnl(self, positions: List[Position], quotes) -> float:
+        """Options-book P&L since the start: fill cash flows + open options at mid."""
+        total = 0.0
+        for rec in self.journal.read("fills"):
+            f = rec.data
+            c = f.contract
+            if isinstance(c, OptionContract):
+                total += -f.action.sign * f.price * f.quantity * c.multiplier
+                total -= f.commission
+        for p in positions:
+            c = p.contract
+            if isinstance(c, OptionContract):
+                q = quotes.get(c.key)
+                mark = q.mid if q is not None and q.mid is not None else p.market_price
+                if mark is not None:
+                    total += p.quantity * c.multiplier * mark
+        return float(total)
+
+    def _restored_peak(self) -> float:
+        rec = self.journal.latest("budget_snapshot")
+        return float((rec.data or {}).get("options_peak") or 0.0) if rec else 0.0
+
     async def update(
         self,
         broker: BrokerAdapter,
@@ -76,8 +107,6 @@ class BudgetTracker:
         if account is None or account.net_liquidation <= 0:
             return self.last
         regime = await self._refresh_regime(broker)
-        state = budget_state(regime, 0.0, self.reduced, self.config.risk)
-        self.reduced = state.reduced
         options = [
             p.contract for p in positions if isinstance(p.contract, OptionContract)
         ]
@@ -89,6 +118,13 @@ class BudgetTracker:
                 log.warning(
                     "budget: option quotes unavailable (%s); unknown deltas/IVs", exc
                 )
+        options_pnl = self._options_pnl(positions, quotes)
+        if self.peak is None:
+            self.peak = self._restored_peak()
+        self.peak = max(self.peak, options_pnl, 0.0)
+        drawdown = max(0.0, self.peak - options_pnl) / account.net_liquidation
+        state = budget_state(regime, drawdown, self.reduced, self.config.risk)
+        self.reduced = state.reduced
         exposures = exposures_from(positions, quotes)
         model = StressModel(
             exposures, quotes, account, self._clock().date(), betas_from(self.config)
@@ -111,7 +147,11 @@ class BudgetTracker:
             "used": used,
             "free": max(0.0, budget - used),
             "over_budget": bool(used > budget),
-            "drawdown": None,  # tracked from T40
+            "drawdown": drawdown,
+            "options_pnl": options_pnl,
+            "options_peak": self.peak,
+            "reduced": state.reduced,
+            "halted": state.halted,
             "crash": {
                 "move": self.config.risk.crash_move,
                 "stock_pnl": float(crash.stock_pnl),
@@ -132,6 +172,7 @@ class BudgetTracker:
             prev is None
             or prev["regime"] != result["regime"]
             or prev["multiplier"] != result["multiplier"]
+            or prev.get("options_peak") != result.get("options_peak")
             or abs(prev["used"] - result["used"]) > 0.01 * account.net_liquidation
             or self._journaled_at is None
             or now - self._journaled_at >= JOURNAL_EVERY

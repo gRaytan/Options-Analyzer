@@ -369,7 +369,10 @@ async def _cycle(
                 adapter, positions, config, events, notifier, journal, snap
             )
         if budget is not None:
+            before = budget.last or {}
             used = await budget.update(adapter, positions, snap)
+            if used:
+                _drawdown_alert(notifier, before, used, config)
             crash = (used or {}).get("crash")
             if crash and not crash["survives"]:
                 _alert(
@@ -424,6 +427,50 @@ async def _cycle(
     except BrokerError as exc:
         log.warning("no positions: %s", exc)
     return reconcile_state, last_reconcile
+
+
+def _drawdown_alert(notifier, before: dict, now: dict, config) -> None:
+    """Alert when the options drawdown halves the budget, halts new risk, or clears."""
+
+    def level(d):
+        return (
+            "halted"
+            if d.get("halted")
+            else ("reduced" if d.get("reduced") else "normal")
+        )
+
+    old, new = level(before), level(now)
+    if old == new or (not before and new == "normal"):
+        return
+    dd = now.get("drawdown") or 0.0
+    risk = config.risk if config else None
+    text = {
+        "halted": (
+            "critical",
+            f"Options drawdown {dd:.1%}: no new trades",
+            f"The options book is {dd:.1%} of NLV below its best point "
+            f"(stop at {risk.options_dd_halt:.0%}). The bot opens nothing new and "
+            "only manages what's open, until the drawdown is back under "
+            f"{risk.options_dd_recover:.0%}."
+            if risk
+            else "",
+        ),
+        "reduced": (
+            "warning",
+            f"Options drawdown {dd:.1%}: risk halved",
+            f"The options book is {dd:.1%} of NLV below its best point "
+            f"(halve at {risk.options_dd_reduce:.0%}): new trades get half the usual "
+            "risk budget."
+            if risk
+            else "",
+        ),
+        "normal": (
+            "info",
+            "Options drawdown recovered",
+            f"The options drawdown is {dd:.1%}: the risk budget is back to normal.",
+        ),
+    }[new]
+    _alert(notifier, text[0], "options-drawdown", text[1], text[2])
 
 
 SCAN_EVERY_S = 15 * 60  # spec §8: the scanner runs every 15 minutes
