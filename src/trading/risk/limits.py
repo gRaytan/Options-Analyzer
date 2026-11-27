@@ -8,9 +8,9 @@ always get out; they still pass the sanity checks (T17).
 |---|---|
 | ``el_after`` | IB what-if Excess Liquidity after the trade >= $125k |
 | ``cushion_after`` | EL after / net liquidation >= 40% |
-| ``short_put_notional`` | all short puts: strike x 100 x qty <= 50% NLV (a put spread counts at its width) |
-| ``index_put_notional`` | index short puts (XSP/SPX...) <= 40% NLV |
-| ``expiry_ladder`` | short-put notional in one expiry <= 35% of the short-put cap |
+| ``short_put_notional`` | all short puts: strike x 100 x qty <= 50% NLV (a put spread counts at its width), or not increased |
+| ``index_put_notional`` | index short puts (XSP/SPX...) <= 40% NLV, or not increased |
+| ``expiry_ladder`` | short-put notional in one expiry <= 35% of the short-put cap, or not increased |
 | ``per_name`` | delta-dollar exposure per underlying <= 15% NLV, or not increased |
 | ``per_sector`` | same per sector, 35% NLV |
 | ``options_beta_delta`` | options-only beta-weighted delta-dollars <= +35% NLV |
@@ -368,36 +368,51 @@ def check_limits(
     after = apply_intent(ctx.exposures, intent, ctx.quotes)
 
     # R8: short-put notional caps (spreads count at their width).
+    # Like the concentration caps, these block only trades that *add* short-put
+    # notional above the cap: a book already over it (e.g. after margin calls)
+    # must not block a covered call or a roll that leaves the puts as they are.
     netted = net_put_notional(after)
+    netted_before = net_put_notional(ctx.exposures)
     put_total = sum(n for _, n in netted)
+    put_before = sum(n for _, n in netted_before)
     put_cap = risk.short_put_notional_max * nlv
     checks.append(
         CheckResult(
             "short_put_notional",
-            put_total <= put_cap + EPS,
+            put_total <= put_cap + EPS or put_total <= put_before + EPS,
             f"short puts ${put_total:,.0f} (cap ${put_cap:,.0f})",
         )
     )
     index_total = sum(n for e, n in netted if e.is_index)
+    index_before = sum(n for e, n in netted_before if e.is_index)
     index_cap = risk.index_put_notional_max * nlv
     checks.append(
         CheckResult(
             "index_put_notional",
-            index_total <= index_cap + EPS,
+            index_total <= index_cap + EPS or index_total <= index_before + EPS,
             f"index short puts ${index_total:,.0f} (cap ${index_cap:,.0f})",
         )
     )
 
     # Expiry ladder, measured against the short-put cap.
-    by_expiry: Dict[date, float] = defaultdict(float)
-    for e, n in netted:
-        by_expiry[e.contract.expiry] += n
+    def ladder(items) -> Dict[date, float]:
+        out: Dict[date, float] = defaultdict(float)
+        for e, n in items:
+            out[e.contract.expiry] += n
+        return out
+
+    by_expiry, by_expiry_before = ladder(netted), ladder(netted_before)
     ladder_cap = risk.expiry_max_share * put_cap
+    over = {
+        d: n
+        for d, n in by_expiry.items()
+        if n > ladder_cap + EPS and n > by_expiry_before.get(d, 0.0) + EPS
+    }
     worst = max(by_expiry.items(), key=lambda kv: kv[1], default=(None, 0.0))
     checks.append(
         CheckResult(
             "expiry_ladder",
-            worst[1] <= ladder_cap + EPS,
+            not over,
             f"largest expiry {worst[0]}: ${worst[1]:,.0f} (cap ${ladder_cap:,.0f})",
         )
     )
