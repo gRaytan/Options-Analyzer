@@ -10,7 +10,9 @@ For each intent:
    new is sent.
 2. **Risk gate.** The caller's gate function (sanity checks, limits, stress)
    must approve the first order. Every decision is journaled.
-3. **Pricing ladder.** Start at the mid. Every ``step_s`` seconds (60; QQQM
+3. **Pricing ladder.** Start at the mid; an opening sale for a credit starts
+   one rung better, 10% of the spread above the mid, to collect a bit more
+   premium (patient sellers often get filled there). Every ``step_s`` seconds (60; QQQM
    300), move 10% of the spread toward the natural price, re-quoting each
    time, for up to 4 steps, never beyond mid + 40% of the spread
    (emergency: up to the natural price).
@@ -43,6 +45,7 @@ from src.trading.broker.base import (
 from src.trading.domain import (
     Contract,
     Fill,
+    IntentKind,
     OptionContract,
     OrderRequest,
     Quote,
@@ -58,6 +61,7 @@ log = logging.getLogger("trading.orders")
 STEP_FRACTION = 0.10
 MAX_STEPS = 4
 WORST_FRACTION = 0.40
+OPEN_IMPROVE_FRACTION = 0.10  # opening credit orders start this far better than mid
 MAX_FAILED_CYCLES = 3
 
 QuotesFn = Callable[[List[Contract]], Awaitable[Dict[str, Quote]]]
@@ -95,16 +99,21 @@ def tick_size(contract: Contract, price: float) -> float:
     return 0.01
 
 
-def ladder(best: float, natural: float, emergency: bool = False) -> List[float]:
+def ladder(
+    best: float, natural: float, emergency: bool = False, improve: float = 0.0
+) -> List[float]:
     """Net limit prices: mid, then 10% of the spread per step toward natural.
 
     Prices are net debits per unit (credits negative), so ``natural >= best``
-    and moving toward natural means paying more / receiving less.
+    and moving toward natural means paying more / receiving less. ``improve``
+    adds a first rung that much of the spread *better* than the mid.
     """
     mid = (best + natural) / 2
     spread = natural - best
     cap = natural if emergency else mid + WORST_FRACTION * spread
     prices = [min(mid + k * STEP_FRACTION * spread, cap) for k in range(MAX_STEPS + 1)]
+    if improve > 0 and not emergency and spread > 0:
+        prices.insert(0, max(mid - improve * spread, best))
     if emergency:
         prices.append(natural)
     out: List[float] = []
@@ -204,7 +213,7 @@ class OrderManager:
         if market is None:
             return None
         best, natural = market
-        prices = ladder(best, natural, emergency)
+        prices = ladder(best, natural, emergency, self._improve(intent, best, natural))
         raw = prices[min(step, len(prices) - 1)]
         tick = max(tick_size(leg.contract, raw) for leg in intent.legs)
         # Round the cap *up* to the next tick (at most the natural price), so a
@@ -219,6 +228,16 @@ class OrderManager:
                 return None  # the market can't meet the intent's worst price
         self._cap = round(cap, 2)
         return round_to_tick(min(raw, cap), tick, best, cap)
+
+    @staticmethod
+    def _improve(intent: TradeIntent, best: float, natural: float) -> float:
+        """Start better than mid for an opening sale that takes in a credit."""
+        is_credit = (best + natural) / 2 < 0
+        return (
+            OPEN_IMPROVE_FRACTION
+            if intent.kind is IntentKind.OPEN and is_credit
+            else 0.0
+        )
 
     def _note_failure(self, intent_id: str) -> None:
         n = self.failed_cycles.get(intent_id, 0) + 1
@@ -270,6 +289,11 @@ class OrderManager:
         self._event(iid, "placed", price=price, status=state.status.value)
         step_s = self._step_for(intent)
 
+        # One more step when the ladder starts above the mid, so the last
+        # rungs toward the natural price are still reached.
+        extra = (
+            1 if self._improve(intent, *(net_market(order, quotes) or (0, 0))) else 0
+        )
         step = 0
         while not state.status.is_done:
             await self._sleep(step_s)
@@ -277,7 +301,7 @@ class OrderManager:
             if state.status.is_done:
                 break
             step += 1
-            if step > MAX_STEPS + (1 if emergency else 0):
+            if step > MAX_STEPS + (1 if emergency else 0) + extra:
                 break
             quotes = await quotes_fn(contracts)
             new_price = self._price(intent, quotes, step, emergency)
