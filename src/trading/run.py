@@ -32,8 +32,10 @@ from src.trading import rebuild
 from src.trading import hedge
 from src.trading import derisk
 from src.trading import external_calls as xcalls
+from src.trading import spikes as spikes_mod
+from src.trading.indicators import atr
 from src.trading.domain import HistoryKind
-from src.trading.scanner import ScanResult, report_strategies
+from src.trading.scanner import ScanResult, report_strategies, uncovered_lots
 from dataclasses import replace
 from src.trading.assignments import handle_assignment
 from src.trading import margin_restoration
@@ -313,6 +315,19 @@ async def _cycle(
         observe = breach or bool(jobs & OBSERVE_JOBS)
         act = breach or bool(jobs & ACT_JOBS)
         scan = sched.SCAN in jobs
+    if (
+        jobs is not None
+        and sched.MARGIN in jobs
+        and not scan
+        and config is not None
+        and getattr(executor, "broker", None) is not None
+        and entry_ctx is not None
+        and _in_trade_window(utcnow())
+    ):
+        # Real time (~60 s): a sharp move or a VIX jump runs the scan now
+        # instead of waiting for the next 15-minute one.
+        if await _spike_watch(executor, journal, config, entry_ctx, notifier):
+            observe = act = scan = True
     if not observe:
         return reconcile_state, last_reconcile
     try:
@@ -487,6 +502,100 @@ OBSERVE_JOBS = frozenset(
     }
 )
 ACT_JOBS = frozenset({sched.MANAGE, sched.SCAN, sched.EXPIRY_SWEEP})
+
+
+def _in_trade_window(now) -> bool:
+    """Inside the manage/scan window: 15 min after the open to 15 min before the close."""
+    session = MarketCalendar().session(now.astimezone(sched.ET).date())
+    if session is None:
+        return False
+    return session[0] + sched.TRADE_MARGIN <= now <= session[1] - sched.TRADE_MARGIN
+
+
+async def _spike_watch(executor, journal, config, ctx, notifier) -> bool:
+    """Quote the underlyings and VIX; on a fresh spike alert, and say to scan now.
+
+    Returns True when a spike concerns what the bot trades in this account
+    (the caller runs the scan this tick). A spike on shares at another broker
+    sends today's recommended call there at once (the bot can't trade it).
+    """
+    now = utcnow()
+    today = now.astimezone(sched.ET).date()
+    if getattr(ctx, "spikes", None) is None:
+        ctx.spikes = spikes_mod.SpikeWatch(journal)
+    try:
+        positions = await executor.broker.positions()
+    except BrokerError:
+        return False
+    sw = config.enabled_strategies
+    call_syms = set(uncovered_lots(positions, config))
+    ext = [h for h in xcalls.holdings_from(external_holdings_data()) if h.cc_calls > 0]
+    ext_syms = {h.symbol for h in ext}
+    puts_on = any(
+        sw[s].open for s in (StrategyName.INDEX_PUT, StrategyName.PUT_SPREAD) if s in sw
+    )
+    put_syms = {"SPY"} if puts_on else set()
+    symbols = sorted(call_syms | ext_syms | put_syms)
+    if not symbols:
+        return False
+    try:
+        quotes = await executor.quotes(
+            [StockContract(s) for s in symbols] + [StockContract("VIX")]
+        )
+    except BrokerError as exc:
+        log.debug("spike watch: quotes unavailable (%s)", exc)
+        return False
+    if ctx.history is None:
+        cache = os.path.join(
+            os.environ.get("TRADING_CACHE_DIR", "data/trading/cache"), "history"
+        )
+        ctx.history = HistoryStore(executor.broker, cache)
+
+    def last(q):
+        return None if q is None else (q.last or q.mid)
+
+    async def past(symbol):
+        try:
+            bars = await ctx.history.daily(symbol, HistoryKind.PRICE, 45)
+        except (BrokerError, NotImplementedError):
+            return []
+        return [b for b in bars if b.day < today]
+
+    found = []
+    for sym in symbols:
+        bars = await past(sym)
+        if not bars:
+            continue
+        found += spikes_mod.stock_spikes(
+            sym,
+            last(quotes.get(sym)),
+            bars[-1].close,
+            atr(bars),
+            want_up=sym in call_syms or sym in ext_syms,
+            want_down=sym in put_syms,
+        )
+    vix_now = last(quotes.get("VIX"))
+    vix_bars = await past("VIX")
+    if vix_bars:
+        found += spikes_mod.vix_spikes(
+            vix_now, vix_bars[-1].close, ctx.spikes.vix_high(today, vix_now)
+        )
+    fresh = ctx.spikes.new(found, now)
+    scan_now = False
+    for s in fresh:
+        if s.kind == spikes_mod.UP and s.symbol in ext_syms:
+            await _external_calls(executor, journal, today, notifier, spike=s)
+        if s.symbol in call_syms or s.symbol in put_syms or s.symbol == "VIX":
+            scan_now = True
+            _alert(
+                notifier,
+                "report",
+                f"spike:{s.symbol}:{s.kind}:{now:%H%M}",
+                f"Spike: {s.symbol} ({s.kind.replace('_', ' ')})",
+                s.detail + ". Scanning now; the bot sells only if timing, premium "
+                "and the risk checks agree.",
+            )
+    return scan_now
 
 
 def _preopen(adapter, config, events, positions, journal, notifier) -> None:
@@ -1113,17 +1222,23 @@ def external_holdings_data(path: str = "data/config/external_holdings.json") -> 
         return {}
 
 
-async def _external_calls(executor, journal, today, notifier):
-    """Recommend today's covered calls at the other broker; alert when one needs rolling."""
+async def _external_calls(executor, journal, today, notifier, spike=None):
+    """Recommend today's covered calls at the other broker; alert when one needs rolling.
+
+    ``spike`` (a :class:`spikes.Spike` on one of those holdings): recommend
+    now for that symbol, outside the once-a-day schedule, and say why.
+    """
     holdings = [
         h for h in xcalls.holdings_from(external_holdings_data()) if h.cc_calls > 0
     ]
+    if spike is not None:
+        holdings = [h for h in holdings if h.symbol == spike.symbol]
     if not holdings:
         return
     records = [r.data for r in journal.read("external_trades")]
     open_ = xcalls.open_calls(records, today)
     # Watch the open calls every scan.
-    if open_:
+    if open_ and spike is None:
         try:
             quotes = await executor.quotes([c.contract for c in open_])
         except BrokerError as exc:
@@ -1145,7 +1260,7 @@ async def _external_calls(executor, journal, today, notifier):
         r.data.get("date") == today.isoformat()
         for r in journal.read("job_runs", key="external_calls")
     )
-    if done:
+    if done and spike is None:
         return
     recs = []
     for h in holdings:
@@ -1178,6 +1293,8 @@ async def _external_calls(executor, journal, today, notifier):
         "date": today.isoformat(),
         "recommendations": [r.to_dict() for r in recs],
     }
+    if spike is not None:
+        data["spike"] = spike.to_dict()
     journal.append("job_runs", data, key="external_calls")
     lines = [
         f"Sell {r.contracts} {r.contract.key} at about ${r.quote.bid:.2f}+ "
@@ -1185,7 +1302,18 @@ async def _external_calls(executor, journal, today, notifier):
         for r in recs
         if r.contract is not None and r.contracts > 0
     ]
-    if lines:
+    if lines and spike is not None:
+        _alert(
+            notifier,
+            "report",
+            f"ext-spike:{spike.symbol}:{utcnow():%Y%m%d%H%M}",
+            f"Sell now at your other broker: {spike.symbol} spiked",
+            spike.detail
+            + ".\n"
+            + "\n".join(lines)
+            + "\nRecord the sale on the Other broker page once placed.",
+        )
+    elif lines:
         _alert(
             notifier,
             "report",

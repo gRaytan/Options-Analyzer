@@ -48,6 +48,7 @@ TABLES: Sequence[str] = (
     "derisk_requests",
     "derisk_plans",
     "external_trades",
+    "spike_events",
 )
 
 
@@ -89,6 +90,8 @@ MIGRATIONS: List[List[str]] = [
     _create_table("derisk_requests") + _create_table("derisk_plans"),
     # v8: option trades the owner placed at another broker (recorded by hand)
     _create_table("external_trades"),
+    # v9: real-time spike triggers (spikes.py)
+    _create_table("spike_events"),
 ]
 
 

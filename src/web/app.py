@@ -952,12 +952,13 @@ def create_app(config=None):
         from datetime import date as _date
         from src.trading import premium
 
-        records = []
+        records, spike_rows = [], []
         if os.path.exists(journal_path()):
             with Journal(journal_path()) as journal:
                 records = [r.data for r in journal.read("scan_results")]
+                spike_rows = [r.data for r in journal.read("spike_events")][-20:][::-1]
         r = premium.report(records, _date.today().isoformat())
-        return render_template('bot_premium.html', r=r,
+        return render_template('bot_premium.html', r=r, spikes=spike_rows,
                                portfolios=app.portfolios,
                                portfolio_filter=session.get('portfolio_filter', 'all'))
 

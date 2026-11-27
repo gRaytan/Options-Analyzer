@@ -182,6 +182,8 @@ def contract_to_ib(contract: Contract):
     from ib_async import Option, Stock  # pylint: disable=import-outside-toplevel
 
     if isinstance(contract, StockContract):
+        if contract.symbol.upper() in INDEX_EXCHANGES:  # VIX, SPX, XSP: an index
+            return underlying_to_ib(contract.symbol, contract.currency)
         return Stock(contract.symbol, "SMART", contract.currency)
     return Option(
         contract.underlying,
