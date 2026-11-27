@@ -5,7 +5,7 @@
 | ``paper`` | paper only | send | send | send |
 | ``shadow`` | live, read-only | log only | log only | log only |
 | ``approve`` | live | ask | ask (except rolls at <= 1 DTE: send) | send |
-| ``auto`` | live | ask (send with ``auto_open``) | send | send |
+| ``auto`` | live | ask (send with ``auto_open``, or for ``auto_open_strategies``) | send | send |
 
 * **log** = journaled as a shadow intent, nothing sent; **ask** = the
   approval queue (T27); **send** = the order manager (T22), after the risk gate.
@@ -82,5 +82,7 @@ def route(intent: TradeIntent, config: TradingConfig, is_live: bool, env=None) -
         return Route.ASK
     # Mode.AUTO
     if _is_opening(intent) and not config.auto_open:
-        return Route.ASK
+        auto = {s.value for s in config.auto_open_strategies}
+        if intent.strategy not in auto:
+            return Route.ASK
     return Route.SEND

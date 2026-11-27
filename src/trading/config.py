@@ -382,6 +382,10 @@ class TradingConfig(_Strict):
     # Stage 5: entries go out without approval. Off = entries need approval
     # even in auto mode (Stage 4, "auto-manage"; spec §11).
     auto_open: bool = False
+    # In auto mode, openings of these strategies go out without approval even
+    # when auto_open is off (e.g. covered calls, which need no margin); the
+    # rest still ask. The risk gate checks every order either way.
+    auto_open_strategies: List[StrategyName] = Field(default_factory=list)
     # Key 1 of 2 for live trading; key 2 is TRADING_ALLOW_LIVE=yes in the
     # environment. Both are needed before any order can reach a live account.
     live_trading_enabled: bool = False

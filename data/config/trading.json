@@ -1,5 +1,6 @@
 {
   "mode": "paper",
+  "auto_open_strategies": ["covered_call"],
   "margin_type": "reg_t",
   "enabled_strategies": {
     "covered_call": {"manage": true, "open": true},

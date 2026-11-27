@@ -203,3 +203,10 @@ def test_covered_calls_sold_and_no_new_puts(week):
         and i.strategy in ("index_put", "put_spread", "stock_put")
     ]
     assert not opened_puts
+
+
+def test_each_fill_is_reported(week):
+    _, data, _, alerts = week
+    filled = [a for a in alerts if a[2] == "Filled: covered call"]
+    assert filled and all(a[0] == "report" for a in filled)
+    assert "premium in" in filled[0][3]

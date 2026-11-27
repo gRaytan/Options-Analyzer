@@ -68,7 +68,12 @@ class Executor:
         env: Optional[Dict[str, str]] = None,
         clock: Callable[[], datetime] = utcnow,
         regime_multiplier: Callable[[], float] = lambda: 1.0,
+        on_result: Optional[
+            Callable[[TradeIntent, ExecutionResult, bool], None]
+        ] = None,
     ):
+        # Called after every order attempt: (intent, result, owner-approved).
+        self.on_result = on_result
         self.broker = broker
         self.journal = journal
         self.config = config
@@ -187,6 +192,7 @@ class Executor:
                 key=intent.intent_id,
             )
             return None
+        approved = False
         if where is Route.ASK:
             status = self.approvals.status(intent.intent_id)
             if status in (ApprovalStatus.UNKNOWN, ApprovalStatus.EXPIRED):
@@ -198,12 +204,18 @@ class Executor:
                 return None
             if status is not ApprovalStatus.APPROVED:
                 return None  # pending or rejected
+            approved = True
         if not self.in_window(intent):
             return None  # retried next cycle in market hours
         res = await self.orders.execute(
             intent, self.quotes, self.gate, emergency=emergency
         )
         log.info("%s -> %s %s", describe(intent), res.status.value, res.detail)
+        if self.on_result is not None:
+            try:
+                self.on_result(intent, res, approved)
+            except Exception:  # pylint: disable=broad-except
+                log.exception("order result callback failed")
         return res
 
     async def submit_all(

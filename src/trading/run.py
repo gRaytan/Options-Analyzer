@@ -646,6 +646,18 @@ def _make_executor(
 
     approvals = ApprovalQueue(journal, on_request=on_request)
 
+    def on_result(intent, res, approved) -> None:
+        msg = order_result_message(intent, res, approved)
+        if msg is not None:
+            title, body = msg
+            _alert(
+                notifier,
+                "report",
+                f"order:{intent.intent_id}:{res.status.value}",
+                title,
+                body,
+            )
+
     def regime_multiplier() -> float:
         return (
             budget.last["multiplier"] if budget.last else 0.0
@@ -659,6 +671,51 @@ def _make_executor(
         orders,
         approvals,
         regime_multiplier=regime_multiplier,
+        on_result=on_result,
+    )
+
+
+def order_result_message(intent, res, approved: bool):
+    """(title, body) telling the owner what happened to an order, or None.
+
+    Filled, partly filled and unfilled orders are always reported; a gate or
+    broker rejection only for an order the owner approved (otherwise the
+    scanner simply tries again later and the daily report covers it).
+    """
+    status = res.status.value
+    if status not in ("filled", "partial", "unfilled", "rejected"):
+        return None
+    if status == "rejected" and not approved:
+        return None
+    legs = ", ".join(
+        f"{leg.action.value.lower()} {leg.quantity} {leg.contract.key}"
+        for leg in intent.legs
+    )
+    what = intent.strategy.replace("_", " ")
+    if status in ("filled", "partial") and res.avg_price is not None:
+        mult = getattr(intent.legs[0].contract, "multiplier", 100)
+        cash = -res.avg_price * res.filled * mult  # credits are negative prices
+        side = "premium in" if cash >= 0 else "paid"
+        head = "Filled" if status == "filled" else "Partly filled"
+        return (
+            f"{head}: {what}",
+            f"{legs} at ${abs(res.avg_price):.2f} ({res.filled} filled):"
+            f" ${abs(cash):,.0f} {side}.",
+        )
+    if status == "unfilled":
+        tried = (
+            f" (limits {abs(res.prices[0]):.2f} to {abs(res.prices[-1]):.2f})"
+            if res.prices
+            else ""
+        )
+        return (
+            f"Unfilled: {what}",
+            f"{legs}: not filled after the price steps{tried}; cancelled,"
+            " the bot tries again later.",
+        )
+    return (
+        f"Approved order rejected: {what}",
+        f"{legs}: {res.detail or 'rejected'}",
     )
 
 
