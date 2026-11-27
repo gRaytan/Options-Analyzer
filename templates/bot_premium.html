@@ -8,6 +8,18 @@
     <p class="subtitle">Is today's premium worth selling? Premium is the annual yield of the best option per name (credit / capital × 365 / days). The bot sells only when its timing rules say so, and never when premium is in the bottom 25% of its last 60 days. Past calls are graded once 5 more scan days exist.</p>
 </div>
 
+{% if spikes %}
+<div class="card mb-4"><div class="card-header"><i class="bi bi-lightning-charge me-2"></i>Recent spikes (checked every minute)</div>
+<div class="card-body p-0"><div class="table-responsive"><table class="table mb-0">
+    <thead><tr><th>When (UTC)</th><th>Name</th><th>Trigger</th><th>What</th></tr></thead>
+    <tbody>
+    {% for s in spikes %}
+    <tr><td class="text-nowrap small">{{ s.at[:16].replace('T', ' ') }}</td><td>{{ s.symbol }}</td><td>{{ s.kind.replace('_', ' ') }}</td><td class="small">{{ s.detail }}</td></tr>
+    {% endfor %}
+    </tbody>
+</table></div></div></div>
+{% endif %}
+
 {% if not r.snapshot %}
 <div class="alert alert-secondary">No scans recorded yet. The history builds up from every scan once the engine runs with IB market data.</div>
 {% else %}
