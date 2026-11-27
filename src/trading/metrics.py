@@ -260,18 +260,42 @@ def sortino(values: Sequence[float], periods: int = 252) -> Optional[float]:
     return sum(rets) / len(rets) / dd * math.sqrt(periods)
 
 
+def income_by_month(
+    months: Dict[str, Dict[str, float]], external: Sequence[dict] = ()
+) -> Dict[str, float]:
+    """Net option premium per month: sold - bought back - fees, plus the calls the
+    owner sold and bought back at another broker (recorded by hand)."""
+    out: Dict[str, float] = {
+        m: v["premium"] - v.get("bought", 0.0) - v["fees"] for m, v in months.items()
+    }
+    sold = {r.get("trade_id"): r for r in external if r.get("action") == "sell"}
+    for r in external:
+        month = str(r.get("date", ""))[:7]
+        if not month:
+            continue
+        if r.get("action") == "sell":
+            out[month] = out.get(month, 0.0) + r["price"] * 100 * r["contracts"]
+        elif r.get("action") == "buy" and r.get("trade_id") in sold:
+            n = sold[r["trade_id"]]["contracts"]
+            out[month] = out.get(month, 0.0) - float(r.get("price", 0)) * 100 * n
+    return dict(sorted(out.items()))
+
+
 def monthly(trades: Iterable[Trade], fills: Sequence) -> Dict[str, Dict[str, float]]:
     """month -> premium sold, fees (by fill month) and realized P&L (by close month)."""
     out: Dict[str, Dict[str, float]] = defaultdict(
-        lambda: {"premium": 0.0, "fees": 0.0, "pnl": 0.0}
+        lambda: {"premium": 0.0, "bought": 0.0, "fees": 0.0, "pnl": 0.0}
     )
     for f in fills:
         if not isinstance(f.contract, OptionContract):
             continue
         m = f.ts.strftime("%Y-%m")
         out[m]["fees"] += f.commission
+        amount = f.price * f.quantity * f.contract.multiplier
         if f.action.sign < 0:
-            out[m]["premium"] += f.price * f.quantity * f.contract.multiplier
+            out[m]["premium"] += amount
+        else:
+            out[m]["bought"] += amount
     for t in trades:
         if t.is_closed:
             out[t.closed.strftime("%Y-%m")]["pnl"] += t.pnl

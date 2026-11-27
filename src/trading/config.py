@@ -391,6 +391,8 @@ class TradingConfig(_Strict):
     index: IndexConfig = IndexConfig()
     entry: EntryConfig = EntryConfig()
     rebuild: RebuildConfig = RebuildConfig()
+    # Monthly option-income goal for the Metrics page ($; 0 = not shown).
+    income_goal_monthly: float = Field(default=0.0, ge=0.0)
     exit: ExitConfig = ExitConfig()
     guard: GuardConfig = GuardConfig()
     margin_floor: MarginFloorConfig = MarginFloorConfig()

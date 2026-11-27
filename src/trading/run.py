@@ -31,6 +31,7 @@ from src.trading import spreads
 from src.trading import rebuild
 from src.trading import hedge
 from src.trading import derisk
+from src.trading import external_calls as xcalls
 from src.trading.domain import HistoryKind
 from src.trading.scanner import ScanResult, report_strategies
 from dataclasses import replace
@@ -796,6 +797,10 @@ async def _act(
         executor, journal, config, margin, positions, snap, rebuild_ctx, today
     )
 
+    # 6a. Covered calls at the other broker: recommend and watch (the owner trades).
+    if rebuild_ctx is not None:
+        await _external_calls(executor, journal, today, notifier)
+
     # 6b. The owner's de-risk plan: buy-backs, each one approved (derisk.py).
     await _derisk(executor, journal, config, positions, snap, today)
 
@@ -956,6 +961,103 @@ async def _scan(
         regime=(budget or {}).get("regime", "unknown"),
         strategies=strategies,
     )
+
+
+def external_holdings_data(path: str = "data/config/external_holdings.json") -> dict:
+    """The raw holdings file (see external_holdings.example.json); {} if absent."""
+    import json  # pylint: disable=import-outside-toplevel
+
+    try:
+        with open(
+            os.environ.get("TRADING_EXTERNAL_HOLDINGS", path), encoding="utf-8"
+        ) as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+async def _external_calls(executor, journal, today, notifier):
+    """Recommend today's covered calls at the other broker; alert when one needs rolling."""
+    holdings = [
+        h for h in xcalls.holdings_from(external_holdings_data()) if h.cc_calls > 0
+    ]
+    if not holdings:
+        return
+    records = [r.data for r in journal.read("external_trades")]
+    open_ = xcalls.open_calls(records, today)
+    # Watch the open calls every scan.
+    if open_:
+        try:
+            quotes = await executor.quotes([c.contract for c in open_])
+        except BrokerError as exc:
+            log.warning("other-broker calls: quotes unavailable (%s)", exc)
+            quotes = {}
+        for h in holdings:
+            for a in xcalls.roll_alerts(h, open_, quotes, today):
+                _alert(
+                    notifier,
+                    "warning",
+                    f"ext-roll:{a.call.trade_id}",
+                    f"Roll your {a.call.contract.key} call (other broker)",
+                    f"{a.reason}. Roll it up and out at the other broker for a net "
+                    f"credit (a later expiry, a higher strike), or buy it back, so the "
+                    f"shares aren't called away. Then record it on the Other broker page.",
+                )
+    # Recommend once a day.
+    done = any(
+        r.data.get("date") == today.isoformat()
+        for r in journal.read("job_runs", key="external_calls")
+    )
+    if done:
+        return
+    recs = []
+    for h in holdings:
+        try:
+            chains = await executor.broker.option_chain(h.symbol)
+            stock = (await executor.quotes([StockContract(h.symbol)])).get(h.symbol)
+            price = (stock.mid or stock.last) if stock else None
+            if not chains or not price:
+                recs.append(
+                    xcalls.Recommendation(h.symbol, 0, note="no chain or price")
+                )
+                continue
+            chain = chains[0]
+            exps = xcalls.candidate_expiries(chain.expiries, today)
+            strikes = [k for k in chain.strikes if price < k <= price * 1.35]
+            contracts = [
+                xcalls.call_contract(h.symbol, e, k)
+                for e in exps[:2]
+                for k in strikes[::2][:15]
+            ]
+            quotes = (
+                list((await executor.quotes(contracts)).values()) if contracts else []
+            )
+        except BrokerError as exc:
+            log.warning("other-broker calls: %s unavailable (%s)", h.symbol, exc)
+            return  # retry on the next scan
+        recs.append(xcalls.recommend(h, open_, quotes))
+    data = {
+        "job": "external_calls",
+        "date": today.isoformat(),
+        "recommendations": [r.to_dict() for r in recs],
+    }
+    journal.append("job_runs", data, key="external_calls")
+    lines = [
+        f"Sell {r.contracts} {r.contract.key} at about ${r.quote.bid:.2f}+ "
+        f"(delta {r.quote.greeks.delta:.2f}, ≈ ${r.premium:,.0f})"
+        for r in recs
+        if r.contract is not None and r.contracts > 0
+    ]
+    if lines:
+        _alert(
+            notifier,
+            "report",
+            f"ext-calls:{today}",
+            "Covered calls to sell at your other broker",
+            "\n".join(lines)
+            + "\nRecord the sale on the Other broker page once placed.",
+        )
 
 
 def external_shares(path: str = "data/config/external_holdings.json") -> dict:

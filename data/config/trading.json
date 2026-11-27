@@ -9,6 +9,7 @@
     "tail_hedge":   {"manage": true, "open": true}
   },
   "risk": {"crash_move": -0.30},
+  "income_goal_monthly": 5000,
   "watchlist": {
     "SPY":  {"strategies": ["covered_call"], "cc_max_coverage": 0.5, "beta": 1.0},
     "QQQ":  {"strategies": ["covered_call"], "cc_max_coverage": 0.5, "beta": 1.2},
