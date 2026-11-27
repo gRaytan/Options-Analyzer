@@ -170,6 +170,10 @@ def _ivs():
 
 def test_engine_sells_an_index_put_on_paper(tmp_path, monkeypatch):
     """Paper mode, normal margin, elevated VIX, rich XSP premium -> the bot sells a put by itself."""
+    # The fixture's quotes are stamped NOW: run the engine at NOW, not today.
+    from src.trading import domain
+
+    monkeypatch.setattr(domain, "_CLOCK_OVERRIDE", lambda: NOW)
     from tests.trading.test_scanner import fair_quote, series
 
     monkeypatch.setattr(run, "HEARTBEAT_FILE", str(tmp_path / "hb.json"))
