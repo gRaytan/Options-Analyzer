@@ -163,6 +163,18 @@
 </div>
 {% endif %}
 
+{% if hedge %}
+<div class="card mb-4">
+    <div class="card-header d-flex align-items-center"><i class="bi bi-umbrella me-2"></i>Crash hedge ({{ config.tail_hedge.style }})
+        <span class="ms-auto small text-muted">Plan of {{ hedge.date }}</span></div>
+    <div class="card-body small">
+        Puts cover <b>{{ "%.0f"|format(hedge.coverage * 100) }}%</b> of your beta-weighted stock exposure (${{ "{:,.0f}".format(hedge.covered) }} of ${{ "{:,.0f}".format(hedge.exposure) }}; target {{ "%.0f"|format(config.tail_hedge.coverage * 100) }}%).
+        {% if hedge.intents %}<div class="mt-1">{{ hedge.intents|length }} order(s) waiting for your approval on the <a href="/bot/approvals">Approvals</a> page{% if hedge.put_cost %}: puts ≈ ${{ "{:,.0f}".format(hedge.put_cost) }}{% if hedge.call_credit %}, paid by ≈ ${{ "{:,.0f}".format(hedge.call_credit) }} of covered calls{% endif %}{% endif %}.</div>{% endif %}
+        {% for n in hedge.notes %}<div class="text-muted">{{ n }}</div>{% endfor %}
+    </div>
+</div>
+{% endif %}
+
 {% if status.reconcile %}
 {% set r = status.reconcile %}
 {% if r.mismatches %}
