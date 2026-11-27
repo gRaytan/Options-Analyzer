@@ -778,6 +778,40 @@ def create_app(config=None):
             portfolio_filter=session.get("portfolio_filter", "all"),
         )
 
+    @app.route('/bot/check')
+    def bot_check():
+        """Crash test and rebuild preview from the uploaded IB statement (no IB needed)."""
+        from datetime import date as _date
+        from src.trading import rebuild as rb
+        from src.trading import statement as st
+
+        portfolio, _ = get_active_portfolio()
+        if portfolio is None:
+            return render_template('bot_check.html', book=None,
+                                   portfolios=app.portfolios,
+                                   portfolio_filter=session.get('portfolio_filter', 'all'))
+        config = load_trading_config()
+        book = st.from_portfolio(portfolio)
+        rows = st.crash_table(book, config)
+        worst = st.by_position(book, config, config.risk.crash_move)
+        targets_text = request.args.get('targets', '').strip()
+        preview = None
+        if targets_text:
+            try:
+                targets = rb.parse_targets(targets_text)
+                prices = book.prices()
+                steps, fit, notes = rb.plan_shares(
+                    book.positions, book.quotes, book.account, prices, targets,
+                    config, request.args.get('regime', 'elevated'), book.as_of or _date.today())
+                preview = {"steps": steps, "fit": fit, "notes": notes, "targets": targets}
+            except ValueError as exc:
+                flash(f"Targets: {exc}", 'danger')
+        return render_template('bot_check.html', book=book, rows=rows, worst=worst,
+                               preview=preview, targets_text=targets_text or "SPY=40%, QQQM=40%, BRK.B=12%, NBIS=5%",
+                               config=config, portfolio=portfolio,
+                               portfolios=app.portfolios,
+                               portfolio_filter=session.get('portfolio_filter', 'all'))
+
     @app.route('/bot/opportunities')
     def bot_opportunities():
         """Latest scanner results (T30) with timing (T31)."""
