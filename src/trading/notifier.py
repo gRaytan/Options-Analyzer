@@ -7,6 +7,8 @@ Channels are configured from the environment (never from committed files):
   ``ALERT_EMAIL_TO``.
 * **Telegram** (push to your phone): ``ALERT_TELEGRAM_TOKEN`` (from
   @BotFather) and ``ALERT_TELEGRAM_CHAT_ID``.
+* **Slack** (with Approve / Reject buttons on approval requests):
+  ``SLACK_BOT_TOKEN`` and ``SLACK_CHANNEL``; see ``src/trading/slack.py``.
 * **Log**: always on.
 
 Rules:
@@ -135,6 +137,12 @@ def channels_from_env(env: Optional[Dict[str, str]] = None) -> List[Channel]:
                 [a.strip() for a in env["ALERT_EMAIL_TO"].split(",") if a.strip()],
             )
         )
+    if env.get("SLACK_BOT_TOKEN") and env.get("SLACK_CHANNEL"):
+        from src.trading.slack import (
+            SlackChannel,
+        )  # pylint: disable=import-outside-toplevel
+
+        out.append(SlackChannel(env["SLACK_BOT_TOKEN"], env["SLACK_CHANNEL"]))
     if env.get("ALERT_TELEGRAM_TOKEN") and env.get("ALERT_TELEGRAM_CHAT_ID"):
         out.append(
             TelegramChannel(env["ALERT_TELEGRAM_TOKEN"], env["ALERT_TELEGRAM_CHAT_ID"])

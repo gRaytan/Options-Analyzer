@@ -17,7 +17,13 @@ def compose():
 
 def test_services_and_restart_policy():
     services = compose()["services"]
-    assert set(services) == {"ib-gateway", "trading-engine", "web-ui", "watchdog"}
+    assert set(services) == {
+        "ib-gateway",
+        "trading-engine",
+        "web-ui",
+        "watchdog",
+        "slack-approver",
+    }
     for svc in services.values():
         assert svc["restart"] == "unless-stopped"
 

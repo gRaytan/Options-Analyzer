@@ -45,6 +45,19 @@ to `127.0.0.1:5900` through the VPN or an SSH tunnel
 In `deploy/gateway.env`, set `TRADING_MODE=live` and the live username and password. In
 `docker-compose.yml`, set `IB_PORT: "4003"` for both services. In `.env`, set the live `U...` account.
 
+## Slack: alerts and Approve / Reject buttons
+Every alert goes to one Slack channel, and each approval request (rebuild plan, hedge, trades in `approve` mode) gets **Approve** and **Reject** buttons. The app uses Socket Mode: it connects out to Slack, so no port is opened on the server.
+
+1. Go to api.slack.com/apps → **Create New App** → From scratch, in your workspace.
+2. **Socket Mode:** turn it on and create an app-level token with the `connections:write` scope. That's `SLACK_APP_TOKEN` (`xapp-...`).
+3. **Interactivity & Shortcuts:** turn it on. No URL is needed with Socket Mode.
+4. **OAuth & Permissions:** add the bot scope `chat:write`, install the app to the workspace, and copy the Bot User OAuth Token. That's `SLACK_BOT_TOKEN` (`xoxb-...`).
+5. Create a private channel (e.g. `#options-bot`), invite the app (`/invite @YourApp`), and copy the channel ID (channel name → About). That's `SLACK_CHANNEL`.
+6. Your member ID: click your profile → ⋮ → **Copy member ID**. That's `SLACK_APPROVER_IDS`. Only these users can press the buttons.
+7. Put the four values in `.env`, then run `docker compose up -d`.
+
+An approved order still goes through the bot's risk gate (margin, crash test) before it reaches IB.
+
 ## Watchdog and backups
 The `watchdog` service runs on its own, so it keeps working if the engine crashes:
 

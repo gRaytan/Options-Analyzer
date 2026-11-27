@@ -32,4 +32,4 @@ python-dotenv==1.0.0
 ib_async==2.1.0
 pydantic==2.9.2
 exchange_calendars==4.13.2
-
+slack_sdk==3.33.4

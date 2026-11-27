@@ -59,6 +59,17 @@ services:
       retries: 3
       start_period: 60s
 
+  slack-approver:
+    # Approve / Reject buttons in Slack (Socket Mode: outbound only, no open
+    # port). Idle until SLACK_APP_TOKEN, SLACK_BOT_TOKEN and
+    # SLACK_APPROVER_IDS are set in .env.
+    build: .
+    restart: unless-stopped
+    command: ["python", "-m", "src.trading.slack"]
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+
   web-ui:
     build: .
     restart: unless-stopped
