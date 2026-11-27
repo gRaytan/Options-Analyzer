@@ -74,6 +74,7 @@ class Candidate:
     timing: float = 1.0
     fire: bool = False  # ready to sell now (tracker, T31)
     timing_reasons: tuple = ()
+    premium_pct: Optional[float] = None  # premium vs its 60-day history (0-1)
     # Put credit spreads (T34): the protective long put (same expiry, lower strike).
     long_contract: Optional[OptionContract] = None
     long_quote: Optional[Quote] = None
@@ -116,6 +117,7 @@ class Candidate:
             "timing": self.timing,
             "fire": self.fire,
             "timing_reasons": list(self.timing_reasons),
+            "premium_pct": self.premium_pct,
             "dte": self.dte,
             "long_key": self.long_contract.key if self.long_contract else None,
             "width": self.width,
@@ -132,6 +134,15 @@ class ScanResult:
 
     def best(self, n: int = 10) -> List[Candidate]:
         return sorted(self.candidates, key=lambda c: -c.score)[:n]
+
+    def best_by_underlying(self) -> List[Candidate]:
+        """The highest-premium candidate per (strategy, underlying)."""
+        top: Dict[tuple, Candidate] = {}
+        for c in self.candidates:
+            k = (c.strategy, c.contract.underlying.upper())
+            if k not in top or c.annual_yield > top[k].annual_yield:
+                top[k] = c
+        return list(top.values())
 
     def ready(self) -> List[Candidate]:
         """Candidates the tracker says to sell now, best first."""
@@ -722,7 +733,10 @@ async def scan(
 
             bars = await history.daily(sym, HistoryKind.PRICE, 365)
             best_raw = max(c.score for c in passed)
-            t = tracker.timing(strategy, sym, ind, bars, regime, best_raw, today)
+            best_yield = max(c.annual_yield for c in passed)
+            t = tracker.timing(
+                strategy, sym, ind, bars, regime, best_raw, today, best_yield
+            )
             passed = [
                 replace(
                     c,
@@ -731,6 +745,7 @@ async def scan(
                     timing=t.multiplier,
                     fire=t.fire,
                     timing_reasons=t.reasons,
+                    premium_pct=t.premium_pct,
                 )
                 for c in passed
             ]
@@ -743,6 +758,10 @@ async def scan(
             {
                 "date": today.isoformat(),
                 "best": [c.to_dict() for c in result.best(20)],
+                # The richest premium per strategy and underlying, so the
+                # premium history (tracker, Premium timing page) covers every
+                # name even when it isn't in the overall top 20.
+                "by_underlying": [c.to_dict() for c in result.best_by_underlying()],
                 "rejected": result.rejected,
                 "regime": regime,
                 # Strategies scanned for the report but not enabled to open.

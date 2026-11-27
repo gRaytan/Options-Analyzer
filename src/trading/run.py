@@ -879,6 +879,11 @@ def _opportunities_digest(journal, config, notifier) -> Optional[dict]:
                 + (f" (delta {abs(delta):.2f})" if delta is not None else "")
                 + f", credit ${c.get('net_credit', 0):,.0f}/contract,"
                 f" yield {c.get('annual_yield', 0):.0%}/yr"
+                + (
+                    f" ({c['premium_pct']:.0%} percentile of 60 days)"
+                    if c.get("premium_pct") is not None
+                    else ""
+                )
             )
         if not lines:
             top = sorted(data.get("rejected", {}).items(), key=lambda kv: -kv[1])[:3]
