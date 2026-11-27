@@ -1,0 +1,4 @@
+{
+  "_comment": "Shares you hold at other brokers. Copy to external_holdings.json (git-ignored) and edit. The bot can't trade them; it uses them to recognize calls covered elsewhere and to plan covered calls for you to place.",
+  "AAPL": {"shares": 500, "broker": "other", "account": "cash"}
+}

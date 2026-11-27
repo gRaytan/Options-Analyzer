@@ -30,6 +30,7 @@ from src.trading import rolls
 from src.trading import spreads
 from src.trading import rebuild
 from src.trading import hedge
+from src.trading import derisk
 from src.trading.domain import HistoryKind
 from src.trading.scanner import ScanResult, report_strategies
 from dataclasses import replace
@@ -795,6 +796,9 @@ async def _act(
         executor, journal, config, margin, positions, snap, rebuild_ctx, today
     )
 
+    # 6b. The owner's de-risk plan: buy-backs, each one approved (derisk.py).
+    await _derisk(executor, journal, config, positions, snap, today)
+
     # 7. The crash hedge (collar): planned once a day, each order approved by you.
     if config.enabled_strategies[StrategyName.TAIL_HEDGE].open:
         await _hedge(executor, journal, config, positions, snap, today)
@@ -952,6 +956,61 @@ async def _scan(
         regime=(budget or {}).get("regime", "unknown"),
         strategies=strategies,
     )
+
+
+def external_shares(path: str = "data/config/external_holdings.json") -> dict:
+    """Shares held at other brokers ({"AAPL": 500}), from a local, git-ignored file."""
+    import json  # pylint: disable=import-outside-toplevel
+
+    try:
+        with open(
+            os.environ.get("TRADING_EXTERNAL_HOLDINGS", path), encoding="utf-8"
+        ) as fh:
+            data = json.load(fh)
+        return {
+            k.upper(): float(v.get("shares", v) if isinstance(v, dict) else v)
+            for k, v in data.items()
+            if not k.startswith("_")
+        }
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+async def _derisk(executor, journal, config, positions, snap, today):
+    """Build the requested de-risk plan once, then submit its open items."""
+    req = journal.latest("derisk_requests")
+    plan_rec = journal.latest("derisk_plans")
+    if req is not None and (
+        plan_rec is None
+        or plan_rec.data.get("request_id") != req.data.get("request_id")
+    ):
+        options = [
+            p.contract for p in positions if isinstance(p.contract, OptionContract)
+        ]
+        try:
+            quotes = await executor.quotes(options) if options else {}
+        except BrokerError as exc:
+            log.warning("de-risk plan: quotes unavailable (%s); retrying", exc)
+            return
+        built = derisk.plan(
+            positions,
+            quotes,
+            snap,
+            config,
+            req.data.get("request_id", ""),
+            utcnow(),
+            external_shares(),
+            req.data.get("penny_calls", True),
+        )
+        built.intents = derisk.intents(built, config, today)
+        journal.append("derisk_plans", built.to_dict(), key=built.plan_id)
+        log.info("DE-RISK plan %s: %d items", built.plan_id, len(built.intents))
+        plan_rec = journal.latest("derisk_plans")
+    if plan_rec is None:
+        return
+    for intent in plan_rec.data.get("intents", []):
+        if not _done(journal, intent.intent_id):
+            await executor.submit(intent)
 
 
 def _todays_hedge(journal, today):

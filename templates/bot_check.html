@@ -59,6 +59,25 @@
     </tbody>
 </table></div></div></div>
 
+{% if derisk and derisk.items %}
+<div class="card mb-4"><div class="card-header"><i class="bi bi-shield-minus me-2"></i>De-risk plan (from the statement)</div>
+<div class="card-body small">
+    Short-put exposure <b>${{ "{:,.0f}".format(derisk.put_exposure_before) }} → ${{ "{:,.0f}".format(derisk.put_exposure_after) }}</b> (limit ${{ "{:,.0f}".format(derisk.put_cap) }}, 50% of the account).
+    Cash needed ≈ ${{ "{:,.0f}".format(derisk.cash_needed) }}; account value drops only by the spread, ≈ ${{ "{:,.0f}".format(derisk.friction) }}.
+    Prices are the statement's marks: check live prices before trading. With IB connected, the <a href="/bot/derisk">De-risk plan</a> page sends these as orders you approve.
+</div>
+<div class="card-body p-0"><div class="table-responsive"><table class="table table-sm mb-0">
+    <thead><tr><th>#</th><th>Buy to close</th><th class="text-end">≈ Cost</th><th class="text-end">Exposure removed</th><th>Why</th></tr></thead>
+    <tbody>
+    {% for i in derisk.items %}
+    <tr><td>{{ loop.index }}</td><td class="text-nowrap">{{ i.contracts }} × {{ i.position.contract.key }}{% if i.optional %} <span class="badge bg-secondary">optional</span>{% endif %}</td>
+        <td class="text-end">${{ "{:,.0f}".format(i.cost) }}</td><td class="text-end">{% if i.removes %}${{ "{:,.0f}".format(i.removes) }}{% else %}—{% endif %}</td>
+        <td class="small">{{ i.reason }}</td></tr>
+    {% endfor %}
+    </tbody>
+</table></div></div></div>
+{% endif %}
+
 <div class="card mb-4"><div class="card-header"><i class="bi bi-bricks me-2"></i>Rebuild preview (first step)</div>
 <div class="card-body">
     <form method="get" action="/bot/check" class="row g-2 align-items-end mb-3">

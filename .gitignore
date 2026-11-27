@@ -74,3 +74,5 @@ data/backups/
 
 # Deployment secrets
 deploy/gateway.env
+# Holdings at other brokers (personal)
+data/config/external_holdings.json

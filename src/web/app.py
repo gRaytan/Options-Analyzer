@@ -817,6 +817,11 @@ def create_app(config=None):
         book = st.from_portfolio(portfolio)
         rows = st.crash_table(book, config)
         worst = st.by_position(book, config, config.risk.crash_move)
+        from src.trading import derisk as dr
+        from src.trading.run import external_shares
+
+        derisk_plan = dr.plan(book.positions, book.quotes, book.account, config,
+                              "statement", external_shares=external_shares())
         targets_text = request.args.get('targets', '').strip()
         preview = None
         if targets_text:
@@ -830,8 +835,49 @@ def create_app(config=None):
             except ValueError as exc:
                 flash(f"Targets: {exc}", 'danger')
         return render_template('bot_check.html', book=book, rows=rows, worst=worst,
+                               derisk=derisk_plan,
                                preview=preview, targets_text=targets_text or "SPY=40%, QQQM=40%, BRK.B=12%, NBIS=5%",
                                config=config, portfolio=portfolio,
+                               portfolios=app.portfolios,
+                               portfolio_filter=session.get('portfolio_filter', 'all'))
+
+    @app.route('/bot/derisk', methods=['GET', 'POST'])
+    def bot_derisk():
+        """De-risk plan from live positions: buy-backs, each approved by the owner."""
+        from datetime import datetime as _dt, timezone as _tz
+        from src.trading import rebuild as rb
+
+        if request.method == 'POST':
+            if not csrf_ok():
+                flash("Form expired; please try again.", 'danger')
+                return redirect(url_for('bot_derisk'))
+            now = _dt.now(_tz.utc)
+            with Journal(journal_path()) as journal:
+                journal.append("derisk_requests", {
+                    "request_id": rb.new_plan_id("derisk", now),
+                    "penny_calls": request.form.get('penny_calls') == 'on',
+                    "by": "web-ui",
+                    "requested_at": now.isoformat(),
+                })
+            flash("De-risk plan requested. The engine builds it from live prices on its next "
+                  "pass in market hours, then asks you to approve each buy-back.", 'success')
+            return redirect(url_for('bot_derisk'))
+        req = plan = None
+        items = []
+        if os.path.exists(journal_path()):
+            with Journal(journal_path()) as journal:
+                rec = journal.latest("derisk_requests")
+                req = rec.data if rec else None
+                rec = journal.latest("derisk_plans")
+                plan = rec.data if rec else None
+                if plan is not None:
+                    queue = ApprovalQueue(journal)
+                    for it in plan.get("intents", []):
+                        filled = sum(f.data.quantity for f in journal.read("fills", key=it.intent_id))
+                        items.append({"intent": it, "status": queue.status(it.intent_id).value,
+                                      "filled": filled})
+        waiting = bool(req and (plan is None or plan.get("request_id") != req.get("request_id")))
+        return render_template('bot_derisk.html', req=req, plan=plan, items=items, waiting=waiting,
                                portfolios=app.portfolios,
                                portfolio_filter=session.get('portfolio_filter', 'all'))
 
