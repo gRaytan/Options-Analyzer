@@ -9,6 +9,14 @@
     "tail_hedge":   {"manage": true, "open": true}
   },
   "risk": {"crash_move": -0.30},
+  "margin_floor": {
+    "excess_liquidity_min": 25000, "entry_buffer": 100000,
+    "restore_target": 35000, "emergency_level": 10000,
+    "cushion_emergency": 0.03, "cushion_breach": 0.07,
+    "cushion_restore": 0.10, "cushion_min_new_trade": 0.35,
+    "auto": false
+  },
+  "entry": {"cc_all_holdings": true},
   "income_goal_monthly": 5000,
   "watchlist": {
     "SPY":  {"strategies": ["covered_call"], "cc_max_coverage": 0.5, "beta": 1.0},

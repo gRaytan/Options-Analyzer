@@ -706,6 +706,30 @@ async def _act(
             else snap.excess_liquidity
         )
         plan = margin_restoration.plan(positions, quotes, snap, est, config, flagged)
+        emergency = reading.state.value == "emergency"
+        if plan.closes and not config.margin_floor.auto and not emergency:
+            # Owner's choice: avoid buy-backs. Below the floor the bot only warns
+            # (with the cheapest closes that would fix it); it acts on its own only
+            # in an emergency, before IB liquidates at worse prices.
+            lines = [
+                f"buy {int(abs(c.position.quantity))} {c.position.contract.key}"
+                for c in plan.closes[:8]
+            ]
+            _alert(
+                notifier,
+                "critical",
+                "restoration-advice",
+                "Margin below the floor: action suggested",
+                f"Excess Liquidity is ${est:,.0f} (floor ${config.margin_floor.excess_liquidity_min:,.0f}). "
+                f"The cheapest way to free ${plan.need:,.0f}: "
+                + "; ".join(lines)
+                + ". The bot buys back on its own only below "
+                f"${config.margin_floor.emergency_level:,.0f} (emergency).",
+            )
+            await _enter_covered_calls_only(
+                executor, journal, config, margin, positions, snap, entry_ctx, today
+            )
+            return
         if plan.closes:
             result = await margin_restoration.restore(
                 plan,
@@ -878,8 +902,41 @@ def _opportunities_digest(journal, config, notifier) -> Optional[dict]:
     return report
 
 
+async def _enter_covered_calls_only(
+    executor, journal, config, margin, positions, snap, ctx, today
+):
+    """Margin below the floor (and buy-backs off): still sell covered calls,
+    which add cash and need no margin. Nothing in an emergency."""
+    if ctx is None or margin.last is None or margin.last.state.value == "emergency":
+        return
+    scanned = await _opportunities(
+        executor, journal, config, positions, snap, ctx, today
+    )
+    await _enter(
+        executor,
+        journal,
+        config,
+        margin,
+        positions,
+        snap,
+        ctx,
+        today,
+        scanned=scanned,
+        covered_calls_only=True,
+    )
+
+
 async def _enter(
-    executor, journal, config, margin, positions, snap, ctx, today, scanned=None
+    executor,
+    journal,
+    config,
+    margin,
+    positions,
+    snap,
+    ctx,
+    today,
+    scanned=None,
+    covered_calls_only=False,
 ) -> None:
     opening = [
         StrategyName.COVERED_CALL,
@@ -891,12 +948,24 @@ async def _enter(
         return
     reading = margin.last
     budget = ctx.budget.last if ctx.budget is not None else None
-    if reading is None or not reading.allows_opening:
-        return  # margin state must be normal
     if not ctx.halts.allows_opening():
         return
-    if not budget or budget.get("multiplier", 0) <= 0:
-        return  # unknown or rising VIX regime: no new risk
+    new_risk_ok = (
+        reading is not None
+        and reading.allows_opening  # margin state normal
+        and bool(budget)
+        and budget.get("multiplier", 0) > 0  # VIX regime allows new risk
+    )
+    if not new_risk_ok:
+        # Covered calls add cash and need no margin: still allowed, unless the
+        # margin state is an emergency or covered calls are switched off.
+        if (
+            reading is None
+            or reading.state.value == "emergency"
+            or not config.enabled_strategies[StrategyName.COVERED_CALL].open
+        ):
+            return
+        covered_calls_only = True
     if scanned is not None:
         # This tick's opportunities scan: entries only from strategies that may open.
         result = ScanResult(
@@ -918,6 +987,11 @@ async def _enter(
         ctx.last_scan = now
         result = await _scan(
             executor, journal, config, positions, snap, ctx, budget, today
+        )
+    if covered_calls_only:
+        result = ScanResult(
+            [c for c in result.candidates if c.strategy is StrategyName.COVERED_CALL],
+            result.rejected,
         )
     intents = entry_rules.entry_intents(
         result,

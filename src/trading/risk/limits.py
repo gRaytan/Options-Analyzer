@@ -33,11 +33,12 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from src.trading.config import RiskConfig, TradingConfig
 from src.trading.domain import (
     AccountSnapshot,
+    Action,
     Contract,
     MarginImpact,
     OptionContract,
@@ -286,6 +287,61 @@ def _concentration_checks(
     ]
 
 
+def fully_covered_calls(intent: TradeIntent, exposures: Sequence[Exposure]) -> bool:
+    """True when every leg sells calls that shares already held fully cover.
+
+    Shares per underlying must cover the calls already short there plus the
+    new ones, 100 shares (the multiplier) per contract.
+    """
+    if not intent.legs:
+        return False
+    new: Dict[str, int] = defaultdict(int)
+    for leg in intent.legs:
+        c = leg.contract
+        if not (
+            isinstance(c, OptionContract)
+            and c.right is Right.CALL
+            and leg.action is Action.SELL
+        ):
+            return False
+        new[c.underlying.upper()] += leg.quantity * c.multiplier
+    for sym, need in new.items():
+        shares = sum(
+            e.quantity
+            for e in exposures
+            if isinstance(e.contract, StockContract) and e.underlying.upper() == sym
+        )
+        short_calls = sum(
+            -e.quantity * e.multiplier
+            for e in exposures
+            if isinstance(e.contract, OptionContract)
+            and e.contract.right is Right.CALL
+            and e.quantity < 0
+            and e.underlying.upper() == sym
+        )
+        if shares < short_calls + need:
+            return False
+    return True
+
+
+def _margin_after_checks(ctx, floor, nlv: float) -> List[CheckResult]:
+    el_after = ctx.impact.excess_liquidity_after
+    need = floor.entry_min_excess_liquidity
+    cushion_after = el_after / nlv if nlv > 0 else 0.0
+    return [
+        CheckResult(
+            "el_after",
+            el_after >= need,
+            f"EL after ${el_after:,.0f} (need ${need:,.0f})",
+        ),
+        CheckResult(
+            "cushion_after",
+            cushion_after >= floor.cushion_min_new_trade,
+            f"cushion after {cushion_after:.1%} (need {floor.cushion_min_new_trade:.0%})",
+        ),
+    ]
+
+
 def check_limits(
     intent: TradeIntent, ctx: LimitContext, floor, risk: RiskConfig
 ) -> GateDecision:
@@ -298,24 +354,16 @@ def check_limits(
     nlv = ctx.account.net_liquidation
     checks: List[CheckResult] = []
 
-    # R1 / R9: margin after the trade, from IB's what-if.
-    el_after = ctx.impact.excess_liquidity_after
-    need = floor.entry_min_excess_liquidity
-    checks.append(
-        CheckResult(
-            "el_after",
-            el_after >= need,
-            f"EL after ${el_after:,.0f} (need ${need:,.0f})",
+    # R1 / R9: margin after the trade, from IB's what-if. A fully covered call
+    # needs no margin and adds cash, so it can't lower Excess Liquidity: it's
+    # allowed even when the account is under the new-trade floor.
+    if fully_covered_calls(intent, ctx.exposures):
+        checks.append(CheckResult("el_after", True, "covered call: needs no margin"))
+        checks.append(
+            CheckResult("cushion_after", True, "covered call: needs no margin")
         )
-    )
-    cushion_after = el_after / nlv if nlv > 0 else 0.0
-    checks.append(
-        CheckResult(
-            "cushion_after",
-            cushion_after >= floor.cushion_min_new_trade,
-            f"cushion after {cushion_after:.1%} (need {floor.cushion_min_new_trade:.0%})",
-        )
-    )
+    else:
+        checks.extend(_margin_after_checks(ctx, floor, nlv))
 
     after = apply_intent(ctx.exposures, intent, ctx.quotes)
 
