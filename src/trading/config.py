@@ -97,6 +97,9 @@ class EntryConfig(_Strict):
     index_put_delta: Tuple[float, float] = (0.10, 0.16)
     stock_put_delta: Tuple[float, float] = (0.10, 0.20)
     cc_max_coverage: float = Field(default=0.5, ge=0.0, le=1.0)
+    # Sell covered calls on every stock held, not only watchlist names (at the
+    # defaults here). Keeps the holdings list out of the committed config.
+    cc_all_holdings: bool = False
     cc_skip_strong_uptrend: bool = True
     min_vol_edge: float = Field(default=1.10, ge=1.0)
     ivr_min_index: float = Field(default=25, ge=0, le=100)

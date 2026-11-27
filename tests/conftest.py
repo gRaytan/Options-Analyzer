@@ -15,3 +15,20 @@ def _real_clock_after_each_test():
     from src.trading.domain import set_clock
 
     set_clock(None)
+
+
+@pytest.fixture(autouse=True)
+def _default_margin_floor(monkeypatch):
+    """Engine tests use the default margin floors, not the account's profile
+    in data/config/trading.json (which can be tuned to the account's state)."""
+    from src.trading import config as cfg
+    from src.trading import run
+
+    real = cfg.load_trading_config
+
+    def load(*a, **k):
+        return real(*a, **k).model_copy(
+            update={"margin_floor": cfg.MarginFloorConfig()}
+        )
+
+    monkeypatch.setattr(run, "load_trading_config", load)

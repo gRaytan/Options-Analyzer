@@ -192,11 +192,14 @@ def uncovered_lots(
     out = {}
     for sym, n in shares.items():
         w = _watch(config, sym)
-        if w is None or StrategyName.COVERED_CALL not in w.strategies:
+        if w is None:
+            if not config.entry.cc_all_holdings:
+                continue
+        elif StrategyName.COVERED_CALL not in w.strategies:
             continue
         cap = (
             w.cc_max_coverage
-            if w.cc_max_coverage is not None
+            if w is not None and w.cc_max_coverage is not None
             else config.entry.cc_max_coverage
         )
         lots = int(n * cap // 100) - int(short_calls.get(sym, 0))
