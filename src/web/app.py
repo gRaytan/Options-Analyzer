@@ -1,6 +1,6 @@
 """Flask web application for Options Analyzer."""
 import os
-from datetime import datetime
+from datetime import date, datetime
 import secrets
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, session
 from werkzeug.utils import secure_filename
@@ -134,6 +134,23 @@ def create_app(config=None):
                     account_names.append(p.account_name)
 
             combined.account_name = " + ".join(account_names) if account_names else "Combined"
+
+            # Margin figures (Cash Report): the latest statement of each account,
+            # summed across accounts. Several statements of one account are
+            # different dates of the same money, so they aren't added up.
+            latest = {}
+            for pid, p in app.portfolios.items():
+                acct = p.account_id or pid
+                cur = latest.get(acct)
+                if cur is None or (p.period_end or date.min) >= (cur.period_end or date.min):
+                    latest[acct] = p
+            for field_name in ("net_liquidation_value", "excess_liquidity", "maintenance_margin",
+                               "initial_margin", "available_funds", "buying_power", "sma",
+                               "gross_position_value"):
+                setattr(combined, field_name,
+                        sum(getattr(p, field_name, 0.0) or 0.0 for p in latest.values()))
+            if len(latest) == 1:
+                combined.account_id = next(iter(latest))
 
             # Recalculate for combined
             if combined.options:
@@ -777,6 +794,40 @@ def create_app(config=None):
             portfolios=app.portfolios,
             portfolio_filter=session.get("portfolio_filter", "all"),
         )
+
+    @app.route('/bot/check')
+    def bot_check():
+        """Crash test and rebuild preview from the uploaded IB statement (no IB needed)."""
+        from datetime import date as _date
+        from src.trading import rebuild as rb
+        from src.trading import statement as st
+
+        portfolio, _ = get_active_portfolio()
+        if portfolio is None:
+            return render_template('bot_check.html', book=None,
+                                   portfolios=app.portfolios,
+                                   portfolio_filter=session.get('portfolio_filter', 'all'))
+        config = load_trading_config()
+        book = st.from_portfolio(portfolio)
+        rows = st.crash_table(book, config)
+        worst = st.by_position(book, config, config.risk.crash_move)
+        targets_text = request.args.get('targets', '').strip()
+        preview = None
+        if targets_text:
+            try:
+                targets = rb.parse_targets(targets_text)
+                prices = book.prices()
+                steps, fit, notes = rb.plan_shares(
+                    book.positions, book.quotes, book.account, prices, targets,
+                    config, request.args.get('regime', 'elevated'), book.as_of or _date.today())
+                preview = {"steps": steps, "fit": fit, "notes": notes, "targets": targets}
+            except ValueError as exc:
+                flash(f"Targets: {exc}", 'danger')
+        return render_template('bot_check.html', book=book, rows=rows, worst=worst,
+                               preview=preview, targets_text=targets_text or "SPY=40%, QQQM=40%, BRK.B=12%, NBIS=5%",
+                               config=config, portfolio=portfolio,
+                               portfolios=app.portfolios,
+                               portfolio_filter=session.get('portfolio_filter', 'all'))
 
     @app.route('/bot/opportunities')
     def bot_opportunities():
