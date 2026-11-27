@@ -946,6 +946,21 @@ def create_app(config=None):
                                portfolios=app.portfolios,
                                portfolio_filter=session.get('portfolio_filter', 'all'))
 
+    @app.route('/bot/premium')
+    def bot_premium():
+        """Premium timing: today's premium vs its history, and graded sell/wait calls."""
+        from datetime import date as _date
+        from src.trading import premium
+
+        records = []
+        if os.path.exists(journal_path()):
+            with Journal(journal_path()) as journal:
+                records = [r.data for r in journal.read("scan_results")]
+        r = premium.report(records, _date.today().isoformat())
+        return render_template('bot_premium.html', r=r,
+                               portfolios=app.portfolios,
+                               portfolio_filter=session.get('portfolio_filter', 'all'))
+
     @app.route('/bot/metrics')
     def bot_metrics():
         """Bot performance from the journal (T40): win rate, fees, slippage, P&L."""
