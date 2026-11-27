@@ -167,6 +167,8 @@ def check_reduces_position(intent: TradeIntent, ctx: OrderContext) -> CheckResul
         return CheckResult(
             "reduces_position", True, "roll: opening leg checked by limits"
         )
+    if intent.details.get("wing_for"):
+        return _check_wing(intent, ctx)
     for leg in intent.legs:
         held = ctx.positions.get(leg.contract.key, 0.0)
         change = leg.action.sign * leg.quantity
@@ -219,3 +221,49 @@ def working_contract_keys(orders: Iterable) -> Set[str]:
         if not state.status.is_done:
             keys.update(leg.contract.key for leg in state.order.legs)
     return keys
+
+
+def _check_wing(intent: TradeIntent, ctx: OrderContext) -> CheckResult:
+    """A wing (wings.py) buys puts under a held short put: verify, don't trust.
+
+    Exactly one leg: a BUY of a put on the same root and expiry as the short
+    named in ``wing_for``, at a lower strike, for no more contracts than are
+    held short there. Then it can only cap the short's loss.
+    """
+    from src.trading.domain import (  # pylint: disable=import-outside-toplevel
+        OptionContract,
+        Right,
+    )
+
+    short_key = intent.details["wing_for"]
+    held = ctx.positions.get(short_key, 0.0)
+    if len(intent.legs) != 1:
+        return CheckResult("reduces_position", False, "a wing has exactly one leg")
+    leg = intent.legs[0]
+    c = leg.contract
+    ok = (
+        isinstance(c, OptionContract)
+        and c.right is Right.PUT
+        and leg.action is Action.BUY
+        and held < 0
+        and leg.quantity <= abs(held) + PRICE_EPSILON
+    )
+    if ok:
+        root = (c.trading_class or c.underlying).upper()
+        parts = short_key.split(" ")
+        ok = (
+            len(parts) == 4
+            and parts[0].upper() == root
+            and parts[1] == c.expiry.isoformat()
+            and parts[2] == "P"
+            and float(parts[3]) > c.strike
+        )
+    if not ok:
+        return CheckResult(
+            "reduces_position",
+            False,
+            f"{c.key}: not a wing under a held short put ({short_key}, held {held:+g})",
+        )
+    return CheckResult(
+        "reduces_position", True, f"wing under {short_key} (held {held:+g})"
+    )

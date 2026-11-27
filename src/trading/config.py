@@ -201,6 +201,10 @@ class MarginFloorConfig(_Strict):
     cushion_emergency: float = Field(default=0.15, ge=0.0, le=1.0)
     check_interval_s: int = Field(default=60, gt=0)
     auto: bool = True
+    # Below the floor with auto off: buy protective puts under naked short
+    # puts (wings.py), turning them into spreads, instead of buying back.
+    wings: bool = True
+    wing_budget_pct_nlv: float = Field(default=0.005, ge=0.0, le=0.05)  # per day
 
     @model_validator(mode="after")
     def _ordering(self):

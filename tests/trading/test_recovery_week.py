@@ -210,3 +210,20 @@ def test_each_fill_is_reported(week):
     filled = [a for a in alerts if a[2] == "Filled: covered call"]
     assert filled and all(a[0] == "report" for a in filled)
     assert "premium in" in filled[0][3]
+
+
+def test_wings_free_margin_without_buy_backs(week):
+    """The naked puts get a protective put below them: margin falls, EL rises."""
+    result, data, start, alerts = week
+    wings_bought = [i for i in data["intents"] if i.trigger == "MARGIN_WING"]
+    assert wings_bought
+    filled = [
+        f
+        for f in data["fills"]
+        if isinstance(f.contract, OptionContract)
+        and f.contract.right is Right.PUT
+        and f.action is Action.BUY
+    ]
+    assert sum(f.quantity for f in filled) == PUTS  # every naked put now a spread
+    assert result.days[0].excess_liquidity > start.excess_liquidity * 1.15
+    assert any(a[2] == "Margin: protective puts (no buy-backs)" for a in alerts)
