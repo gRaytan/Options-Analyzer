@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block title %}Other Broker - Options Analyzer{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h4><i class="bi bi-box-arrow-up-right"></i> Covered calls at your other broker</h4>
+    <p class="subtitle">The bot can't trade there, so it recommends the call to sell each day (from IB's live market data), watches the calls you record, and alerts you when one needs rolling. You place the orders yourself.</p>
+</div>
+
+{% if not holdings %}
+<div class="alert alert-secondary">No holdings set up. Copy <code>data/config/external_holdings.example.json</code> to <code>data/config/external_holdings.json</code> (git-ignored) and list your shares, e.g. <code>"META": {"shares": 1000, "cc_calls": 6, "cc_delta": 0.15}</code>.</div>
+{% else %}
+<div class="card mb-4"><div class="card-header"><i class="bi bi-lightbulb me-2"></i>Today's recommendation{% if recs %} <span class="small text-muted">({{ recs.date }})</span>{% endif %}</div>
+<div class="card-body p-0"><div class="table-responsive"><table class="table mb-0">
+    <thead><tr><th>Holding</th><th>Sell</th><th class="text-end">Bid / mid</th><th class="text-end">Delta</th><th class="text-end">≈ Premium</th><th>Note</th></tr></thead>
+    <tbody>
+    {% for h in holdings %}
+        {% set r = (recs.recommendations if recs else [])|selectattr('symbol', 'equalto', h.symbol)|first %}
+        <tr><td>{{ h.symbol }} <span class="small text-muted">{{ "{:,.0f}".format(h.shares) }} sh, target {{ h.cc_calls }} calls</span></td>
+        {% if r and r.key and r.contracts %}
+            <td class="text-nowrap">{{ r.contracts }} × {{ r.key }}</td>
+            <td class="text-end">${{ "%.2f"|format(r.bid or 0) }} / ${{ "%.2f"|format(r.mid or 0) }}</td>
+            <td class="text-end">{{ "%.2f"|format(r.delta or 0) }}</td>
+            <td class="text-end">${{ "{:,.0f}".format(r.premium) }}</td><td></td>
+        {% else %}
+            <td colspan="4" class="text-muted">—</td><td class="small">{{ r.note if r else "Built in market hours once IB is connected." }}</td>
+        {% endif %}</tr>
+    {% endfor %}
+    </tbody>
+</table></div></div></div>
+
+<div class="card mb-4"><div class="card-header"><i class="bi bi-list-ul me-2"></i>Open calls you recorded</div>
+<div class="card-body p-0"><div class="table-responsive"><table class="table mb-0">
+    <thead><tr><th>Call</th><th class="text-end">Contracts</th><th class="text-end">Sold at</th><th class="text-end">Days left</th><th>Close it</th></tr></thead>
+    <tbody>
+    {% for c in open_calls %}
+    <tr><td>{{ c.contract.key }}</td><td class="text-end">{{ c.contracts }}</td><td class="text-end">${{ "%.2f"|format(c.premium) }}</td>
+        <td class="text-end">{{ (c.contract.expiry - today).days }}</td>
+        <td><form method="post" action="/bot/external" class="d-flex gap-1">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="trade_id" value="{{ c.trade_id }}">
+            <select name="action" class="form-select form-select-sm" style="width:9rem"><option value="buy">bought back</option><option value="expired">expired</option><option value="assigned">assigned</option></select>
+            <input name="price" class="form-control form-control-sm" style="width:6rem" placeholder="price">
+            <button class="btn btn-sm btn-outline-light" type="submit">Record</button></form></td></tr>
+    {% else %}
+    <tr><td colspan="5" class="text-muted">None recorded.</td></tr>
+    {% endfor %}
+    </tbody>
+</table></div></div></div>
+
+<div class="card mb-4"><div class="card-header"><i class="bi bi-pencil-square me-2"></i>Record a call you sold</div><div class="card-body">
+    <form method="post" action="/bot/external" class="row g-2 align-items-end">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="sell">
+        <div class="col-md-2"><label class="form-label small">Symbol</label><input name="symbol" class="form-control" value="{{ holdings[0].symbol }}"></div>
+        <div class="col-md-2"><label class="form-label small">Expiry</label><input name="expiry" type="date" class="form-control" required></div>
+        <div class="col-md-2"><label class="form-label small">Strike</label><input name="strike" type="number" step="0.5" class="form-control" required></div>
+        <div class="col-md-2"><label class="form-label small">Contracts</label><input name="contracts" type="number" min="1" class="form-control" value="{{ holdings[0].cc_calls or 1 }}"></div>
+        <div class="col-md-2"><label class="form-label small">Price per share</label><input name="price" type="number" step="0.01" class="form-control" required></div>
+        <div class="col-md-2"><button class="btn btn-primary w-100" type="submit">Record sale</button></div>
+    </form>
+    <p class="small text-muted mt-2 mb-0">Recorded premiums count toward your monthly income goal on the Metrics page.</p>
+</div></div>
+{% endif %}
+{% endblock %}

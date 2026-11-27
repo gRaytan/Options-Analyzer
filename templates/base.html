@@ -600,6 +600,11 @@
                 </a>
             </li>
             <li class="nav-item">
+                <a class="nav-link nav-link-sub {% if request.endpoint == 'bot_external' %}active{% endif %}" href="/bot/external">
+                    <i class="bi bi-box-arrow-up-right"></i> Other broker
+                </a>
+            </li>
+            <li class="nav-item">
                 <a class="nav-link nav-link-sub {% if request.endpoint == 'bot_metrics' %}active{% endif %}" href="/bot/metrics">
                     <i class="bi bi-graph-up-arrow"></i> Metrics
                 </a>

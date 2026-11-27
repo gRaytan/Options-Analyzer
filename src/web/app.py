@@ -881,6 +881,58 @@ def create_app(config=None):
                                portfolios=app.portfolios,
                                portfolio_filter=session.get('portfolio_filter', 'all'))
 
+    @app.route('/bot/external', methods=['GET', 'POST'])
+    def bot_external():
+        """Covered calls at another broker: recommendations, open calls, record trades."""
+        from datetime import date as _date, datetime as _dt, timezone as _tz
+        from src.trading import external_calls as xc
+        from src.trading.run import external_holdings_data
+
+        if request.method == 'POST':
+            if not csrf_ok():
+                flash("Form expired; please try again.", 'danger')
+                return redirect(url_for('bot_external'))
+            f = request.form
+            try:
+                action = f.get('action', 'sell')
+                if action == 'sell':
+                    expiry = _date.fromisoformat(f['expiry'])
+                    strike, contracts, price = float(f['strike']), int(f['contracts']), float(f['price'])
+                    sold_on = _date.fromisoformat(f.get('date') or _date.today().isoformat())
+                    if contracts <= 0 or price < 0 or strike <= 0:
+                        raise ValueError("contracts, strike and price must be positive")
+                    rec = {"action": "sell", "symbol": f['symbol'].strip().upper(), "expiry": expiry.isoformat(),
+                           "strike": strike, "contracts": contracts, "price": price, "date": sold_on.isoformat(),
+                           "trade_id": xc.record_id(f['symbol'], expiry, strike, sold_on)}
+                else:
+                    if action not in ('buy', 'expired', 'assigned'):
+                        raise ValueError("unknown action")
+                    rec = {"action": action, "trade_id": f['trade_id'], "price": float(f.get('price') or 0),
+                           "date": _date.today().isoformat()}
+            except (KeyError, ValueError) as exc:
+                flash(f"Not recorded: {exc}", 'danger')
+                return redirect(url_for('bot_external'))
+            rec["recorded_at"] = _dt.now(_tz.utc).isoformat()
+            with Journal(journal_path()) as journal:
+                journal.append("external_trades", rec, key=rec["trade_id"])
+            flash("Recorded.", 'success')
+            return redirect(url_for('bot_external'))
+
+        holdings = xc.holdings_from(external_holdings_data())
+        records, recs = [], None
+        if os.path.exists(journal_path()):
+            with Journal(journal_path()) as journal:
+                records = [r.data for r in journal.read("external_trades")]
+                rec = journal.latest("job_runs", key="external_calls")
+                recs = rec.data if rec else None
+        today = _date.today()
+        open_ = xc.open_calls(records, today)
+        sold = [r for r in records if r.get("action") == "sell"]
+        return render_template('bot_external.html', holdings=holdings, open_calls=open_,
+                               sold=sold, recs=recs, today=today,
+                               portfolios=app.portfolios,
+                               portfolio_filter=session.get('portfolio_filter', 'all'))
+
     @app.route('/bot/opportunities')
     def bot_opportunities():
         """Latest scanner results (T30) with timing (T31)."""
@@ -901,9 +953,16 @@ def create_app(config=None):
         from src.trading import metrics as bot_metrics_mod
 
         m = None
+        external = []
         if os.path.exists(journal_path()):
             with Journal(journal_path()) as journal:
                 m = bot_metrics_mod.compute(journal, today=_date.today())
+                external = [r.data for r in journal.read("external_trades")]
+        goal = load_trading_config().income_goal_monthly
+        income = bot_metrics_mod.income_by_month(m.months if m else {}, external)
+        this_month = _date.today().strftime("%Y-%m")
+        income_view = {"goal": goal, "months": list(income), "amounts": list(income.values()),
+                       "this_month": income.get(this_month, 0.0), "month": this_month}
         chart = None
         if m is not None:
             chart = {
@@ -916,6 +975,7 @@ def create_app(config=None):
             }
         years = sorted({t.closed.year for t in m.closed}) if m else []
         return render_template('bot_metrics.html', m=m, chart=chart, years=years,
+                               income=income_view,
                                portfolios=app.portfolios,
                                portfolio_filter=session.get('portfolio_filter', 'all'))
 

@@ -47,6 +47,7 @@ TABLES: Sequence[str] = (
     "rebuild_plans",
     "derisk_requests",
     "derisk_plans",
+    "external_trades",
 )
 
 
@@ -86,6 +87,8 @@ MIGRATIONS: List[List[str]] = [
     _create_table("rebuild_requests") + _create_table("rebuild_plans"),
     # v7: de-risk plans (requests from the web UI, plans from the engine)
     _create_table("derisk_requests") + _create_table("derisk_plans"),
+    # v8: option trades the owner placed at another broker (recorded by hand)
+    _create_table("external_trades"),
 ]
 
 
